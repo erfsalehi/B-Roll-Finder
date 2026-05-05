@@ -1,0 +1,7 @@
+groq
+mutagen
+yt-dlp
+streamlit
+python-dotenv
+tenacity
+requests

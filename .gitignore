@@ -1,0 +1,10 @@
+venv/
+.env
+__pycache__/
+.cache/
+downloads/
+*Api.txt
+*api.txt
+*.log
+.vscode/
+.idea/

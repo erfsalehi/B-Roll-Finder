@@ -1,0 +1,111 @@
+def format_time(seconds: int) -> str:
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"[{h:02d}:{m:02d}:{s:02d}]"
+
+def format_srt_time(seconds: int) -> str:
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d},000"
+
+def generate_keywords_txt(slots: list) -> str:
+    lines = []
+    for slot in slots:
+        ts_str = format_time(slot['timestamp'])
+        script_text = slot.get('text', '')
+        lines.append(f'{ts_str} Script: "{script_text}"')
+        
+        keywords = slot.get('keywords', [])
+        for i, kw in enumerate(keywords, 1):
+            lines.append(f"  {i}. {kw}")
+        lines.append("") # Empty line separator
+    return "\n".join(lines)
+
+def generate_youtube_txt(slots: list) -> str:
+    lines = []
+    for slot in slots:
+        results = slot.get('video_results', slot.get('youtube_results', []))
+        if not results:
+            continue
+            
+        ts_str = format_time(slot['timestamp'])
+        primary_kw = slot.get('keywords', [''])[0]
+        lines.append(f"{ts_str} {primary_kw}")
+        
+        for res in results:
+            source = res.get('source', 'youtube').upper()
+            lines.append(f"[{source}] {res['title']} | {res['url']}")
+        lines.append("") # Empty line separator
+    return "\n".join(lines)
+
+def generate_srt(slots: list) -> str:
+    lines = []
+    for i, slot in enumerate(slots, 1):
+        start_ts = format_srt_time(slot['timestamp'])
+        end_ts = format_srt_time(slot.get('end_timestamp', slot['timestamp'] + 1))
+        
+        primary_kw = "No keyword"
+        keywords = slot.get('keywords', [])
+        if keywords:
+            primary_kw = keywords[0]
+            
+        lines.append(str(i))
+        lines.append(f"{start_ts} --> {end_ts}")
+        lines.append(primary_kw)
+        lines.append("") # Empty line separator
+    return "\n".join(lines)
+
+import json
+
+def generate_shot_list_txt(shots: list) -> str:
+    lines = []
+    for shot in shots:
+        start = shot.get('timestamp_start_str', '00:00:00')
+        end = shot.get('timestamp_end_str', '00:00:00')
+        priority = shot.get('priority', 'medium').upper()
+        shot_type = shot.get('shot_type', 'medium').upper()
+        
+        lines.append(f"[{start} - {end}]  PRIORITY: {priority}  SHOT: {shot_type}")
+        lines.append(f"Script:  {shot.get('text', '')}")
+        lines.append(f"Intent:  {shot.get('shot_intent', '')}")
+        lines.append(f"Queries: {' | '.join(shot.get('search_queries', []))}")
+        
+        results = shot.get('video_results', [])
+        if results:
+            lines.append("Candidates:")
+            for idx, res in enumerate(results):
+                source = res.get('source', 'unknown').capitalize()
+                lines.append(f"  {idx+1}. [{source}] {res.get('title', 'Video')} - {res.get('url', '')}")
+        lines.append("")
+    return "\n".join(lines)
+
+def generate_fcpxml(shots: list) -> str:
+    # A basic FCPXML wrapper for markers
+    xml = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml.append('<!DOCTYPE fcpxml>')
+    xml.append('<fcpxml version="1.9">')
+    xml.append('  <library>')
+    xml.append('    <event name="B-Roll Director Markers">')
+    xml.append('      <project name="Generated Markers">')
+    xml.append('        <sequence format="r1" tcStart="0s" tcFormat="NDF">')
+    xml.append('          <spine>')
+    xml.append('            <gap name="Master" duration="3600s" start="0s">')
+    
+    for shot in shots:
+        start_sec = shot.get('timestamp', 0)
+        intent = shot.get('shot_intent', '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        queries = " | ".join(shot.get('search_queries', [])).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        marker_name = f"{intent} ({queries})"
+        
+        xml.append(f'              <marker start="{start_sec}s" duration="1s" value="{marker_name}"/>')
+        
+    xml.append('            </gap>')
+    xml.append('          </spine>')
+    xml.append('        </sequence>')
+    xml.append('      </project>')
+    xml.append('    </event>')
+    xml.append('  </library>')
+    xml.append('</fcpxml>')
+    return "\n".join(xml)

@@ -1,0 +1,186 @@
+PRD: B-Roll Finder
+AI-assisted footage discovery tool for video editors
+Author: Erfan Salehi  |  Version: 0.1 (Draft)  |  Date: May 2026
+1. Overview
+1.1 Problem
+Video editing for narration-driven content (10-minute explainer/educational videos) requires sourcing relevant B-roll footage for every few seconds of voiceover. Currently this is a fully manual process: read the script, mentally translate each sentence into a visual concept, search YouTube, evaluate results, copy links, repeat. For a 10-minute video this means 200-300 individual searches and easily 2-4 hours of pre-production work before any actual editing begins.
+1.2 Solution
+A local desktop tool (Streamlit-based) that takes a script + matching voiceover audio and produces three timestamped output files: a list of visual keywords per timestamp, a YouTube search results file with the top 3 links per keyword, and an SRT file aligning everything to the voice timing. The intro (first 30 seconds) gets denser keyword coverage (1 keyword per second) since intros need faster cuts; the rest of the video gets one keyword every ~2 seconds.
+1.3 Goals & Non-Goals
+Goals
+Reduce pre-production research time by 70%+ for a 10-minute video (target: under 30 minutes from script-to-search-list).
+Generate visual concepts (not literal keywords) suitable for B-roll search.
+Provide 2-3 keyword alternatives per timestamp so the editor can pick what reads best.
+Output editor-ready files: plain text + SRT that can be imported into Premiere/DaVinci as a guide track.
+Run fully locally with a clean UI shareable with non-technical editors. One-click dependency install.
+Operate on free-tier services only (Groq free tier, yt-dlp, no paid APIs required).
+Non-Goals (v1)
+Downloading actual video footage (only links and titles).
+Stock footage sources beyond YouTube (Pexels, Pixabay, etc.) — deferred to v2.
+Automatic editing or assembly — output is a research aid, not a final cut.
+Multi-language support — v1 is English script only.
+Cloud deployment, multi-user accounts, or shared workspaces.
+2. Users & Use Cases
+2.1 Primary User
+Erfan (PM / video producer): runs the tool on a personal machine, processes 2-3 videos per week, hands off output files to editors.
+2.2 Secondary Users
+Editors: receive the .txt and .srt files alongside the script and voiceover. May also run the tool themselves on a shared machine.
+2.3 Core Use Case
+User has a finished script (.txt) and a matching voiceover (.mp3 or .wav).
+User opens the app, uploads both files.
+App generates visual concept keywords aligned to voice timing.
+User reviews keywords in the UI, optionally tweaks them.
+User clicks 'Fetch YouTube Results' to get top 3 links per keyword.
+User downloads the three output files (keywords.txt, youtube_results.txt, timing.srt).
+3. Functional Requirements
+3.1 Inputs
+Input
+Required
+Notes
+Script (.txt)
+Yes
+Plain text. Source of truth for content. Must match the voiceover word-for-word.
+Voiceover (.mp3, .wav, .m4a)
+Yes
+Used for timing only — duration extracted, then text aligned proportionally to estimated speech rate. No transcription.
+Groq API key
+Yes
+Free-tier key, entered once via UI and saved to a local .env file.
+Intro duration override
+No
+Default 30s. User can change if their intro is shorter/longer.
+3.2 Timing Logic
+The app does NOT transcribe the audio. Timing is estimated from voiceover duration and script length:
+Extract voiceover duration in seconds (via mutagen / pydub).
+Tokenize the script into words. Compute average words per second (WPS) = total_words / duration.
+For the intro segment (0 to intro_duration, default 30s): create one timestamp every 1.0 second. Assign the words that fall in each second based on WPS.
+For the body (intro_duration to end): create one timestamp every 2.0 seconds, same word-assignment logic.
+Each timestamp slot gets the chunk of script text spoken during that interval.
+Note: This is an approximation. Real speech rate varies (pauses, emphasis). For a 10-minute video the per-segment drift will be 1-3 seconds — acceptable for B-roll guidance, since editors place clips with judgment, not frame-accuracy.
+3.3 Visual Keyword Generation (Groq)
+For each timestamp slot, the script chunk is sent to Groq (Llama 3.3 70B) with a prompt that asks for 2-3 visual concepts suitable for B-roll search.
+Prompt design (visual, not literal)
+Bad keyword: "the economy collapsed in 2008" → "economy 2008" (returns charts, talking heads)
+Good keyword: "the economy collapsed in 2008" → "stock market crash trading floor panic", "newspaper headlines recession 2008", "wall street worried traders"
+Batching: To stay well under Groq's free tier rate limits, keyword generation is batched — multiple timestamp slots per API call (e.g. 10 slots per request). Estimated total: ~30-50 API calls per 10-minute video.
+3.4 Output Files
+3.4.1 keywords.txt
+One block per timestamp, blank line separating blocks:
+[00:00:02] Script: "Welcome back to the channel"   1. youtube intro animation creator   2. content creator welcoming camera studio   3. channel logo reveal animation  [00:00:03] Script: "Today we're talking about"   1. presenter pointing at screen explaining   ...
+3.4.2 youtube_results.txt
+Generated only if the user clicks 'Fetch YouTube Results'. Format: one line per result, grouped by timestamp, title and link on the same line:
+[00:00:02] youtube intro animation creator Best YouTube Intro Templates 2026 | https://youtube.com/watch?v=... How to Make a Channel Intro | https://youtube.com/watch?v=... Free Intro Animations Pack | https://youtube.com/watch?v=...  [00:00:02] content creator welcoming camera studio ...
+3.4.3 timing.srt
+Standard SRT subtitle format. Each subtitle entry shows the top keyword for that timestamp. Importable into Premiere/DaVinci/Resolve as a guide track:
+1 00:00:00,000 --> 00:00:01,000 youtube intro animation creator  2 00:00:01,000 --> 00:00:02,000 presenter pointing at screen explaining  ...
+3.5 YouTube Search (yt-dlp)
+When the user clicks 'Fetch YouTube Results', the app uses yt-dlp's search functionality (ytsearch3:<keyword>) to retrieve the top 3 results per keyword. No browser automation, no API quota, no key required.
+Extract title and URL only — no metadata, no thumbnails (keeps response fast).
+Run searches concurrently with a small worker pool (e.g. 5 parallel) to keep total time under ~5 minutes for a full video.
+Show progress bar in UI: 'Searching YouTube: 47 / 300 keywords'.
+Handle yt-dlp errors gracefully — if a single keyword fails, skip it and continue, log to a separate errors.txt.
+4. User Interface (Streamlit)
+4.1 Single-Page Flow
+Step 1 — Setup (collapsible, first run only): Input field for Groq API key. Saved to local .env. 'Test connection' button.
+Step 2 — Upload: Two file uploaders — Script (.txt) and Voiceover (.mp3/.wav/.m4a). Show detected duration and word count once both are loaded.
+Step 3 — Settings: Intro duration (default 30s). Intro keyword interval (default 1s). Body keyword interval (default 2s). Number of alternatives per slot (default 3).
+Step 4 — Generate Keywords: Button triggers Groq call. Progress bar. Results displayed as an editable table — user can tweak any keyword inline.
+Step 5 — Fetch YouTube (optional): Button triggers yt-dlp searches. Progress bar with current keyword shown.
+Step 6 — Download: Three download buttons for keywords.txt, youtube_results.txt, timing.srt. Plus a 'Download all (.zip)' option.
+4.2 Design Principles
+Single page — no navigation, no tabs. Everything visible by scrolling.
+Sensible defaults so editors can use it without configuration.
+Show, don't tell — preview the first few keywords before committing to the full run.
+Persistent state — if the user closes and reopens, the last session is restored from a local cache.
+5. Technical Approach
+5.1 Stack
+Component
+Choice
+Language
+Python 3.10+
+UI
+Streamlit (single-file app, runs locally on http://localhost:8501)
+LLM
+Groq API — Llama 3.3 70B (free tier, ~14k req/day, fast inference)
+Audio metadata
+mutagen (lightweight, no ffmpeg dependency for duration extraction)
+YouTube search
+yt-dlp (ytsearch3: prefix, no API key, no quota)
+Concurrency
+concurrent.futures.ThreadPoolExecutor for parallel yt-dlp searches
+Config storage
+python-dotenv for API keys; local JSON file for session cache
+Distribution
+Single repo with run.bat (Windows) / run.sh (Mac/Linux) launcher that creates venv, installs requirements, starts Streamlit
+5.2 Project Structure
+broll-finder/ ├── app.py                  # Streamlit UI ├── core/ │   ├── timing.py           # Voiceover duration + script alignment │   ├── keywords.py         # Groq prompt + batching + parsing │   ├── youtube.py          # yt-dlp wrapper, parallel search │   └── output.py           # txt and srt writers ├── prompts/ │   └── visual_keywords.txt # System prompt for Groq ├── requirements.txt ├── run.sh / run.bat        # Bootstrap launcher └── README.md
+5.3 First-Run Bootstrap
+When an editor double-clicks run.sh / run.bat:
+Check Python 3.10+ is installed. If not, show a friendly message with download link.
+Create a local virtualenv (./venv) if it does not exist.
+pip install -r requirements.txt (idempotent — runs every launch but is fast on subsequent runs).
+Run streamlit run app.py.
+Open default browser to http://localhost:8501.
+5.4 Cost & Quota Sanity Check
+10-minute video → ~30 intro slots + ~285 body slots = ~315 timestamp slots.
+Batching 10 slots per Groq call → ~32 API calls per video.
+3 videos/week → ~96 calls/week. Groq free tier limit: ~14,000/day. Headroom: 99%+.
+YouTube searches via yt-dlp: ~315 keywords × 1 search = 315 searches/video. No quota; rate-limited by yt-dlp's own throttling but 5-worker concurrency keeps total under 5 minutes.
+6. Risks & Open Questions
+6.1 Risks
+Risk
+Likelihood / Impact
+Mitigation
+Timing drift on long videos (estimation vs reality)
+High / Low — drift is expected and tolerable for B-roll
+v2: optional Whisper-based transcription for true sync
+yt-dlp breaks if YouTube changes its frontend
+Medium / High — happens 2-3x/year
+Pin a known-good version; update via pip install -U yt-dlp; document fallback to manual search
+Visual keyword quality varies with script style
+Medium / Medium — abstract concepts produce abstract keywords
+Iterate on the system prompt; allow editor to override any keyword in the UI
+Groq free tier policy changes
+Low / High
+Architecture allows swapping providers (Together AI, Cerebras, local Ollama) with a single config change
+Editors uncomfortable installing Python
+Medium / Medium
+Bootstrap script handles everything; v2 consider PyInstaller-packaged .exe / .app
+6.2 Open Questions
+Should the YouTube search exclude Shorts (under 60s)? Often less useful as B-roll.
+Should keyword generation factor in the previous slot to avoid visual repetition (e.g. don't show the same 'newsroom' shot twice in 4 seconds)?
+Should the SRT use the top keyword, or join all 3 alternatives separated by ' / '?
+Do we want a dry-run / preview mode that processes only the first 60 seconds before committing to the full video?
+7. Milestones
+Week
+Milestone
+Deliverable
+1
+Core pipeline (CLI)
+Python script: input script.txt + voice.mp3 → output keywords.txt and timing.srt. No UI yet.
+2
+YouTube integration
+yt-dlp wrapper with parallel search; produces youtube_results.txt.
+3
+Streamlit UI v0
+File uploaders, settings, download buttons, progress bars. Editable keyword table.
+4
+Bootstrap + polish
+run.sh / run.bat launcher, README, dry-run mode, prompt iteration on real videos.
+5
+Editor pilot
+Hand to one editor, capture feedback for v1.1.
+8. Success Metrics
+Time-to-keyword-list: under 2 minutes for a 10-min video (Groq processing only).
+Time-to-full-research: under 10 minutes for a 10-min video (keywords + YouTube fetch).
+Keyword usefulness: subjective rating from editor — at least 60% of keywords used as-is, fewer than 20% requiring full rewrite. Tracked informally on the first 5 videos.
+Adoption: at least 1 editor using it independently within 2 weeks of pilot.
+Reliability: zero crashes on a 10-min video over 10 consecutive runs.
+9. Future Enhancements (v2+)
+Stock footage source integration — Pexels and Pixabay APIs (free, generous quota, license-clean B-roll).
+Whisper-based transcription for frame-accurate timing instead of estimation.
+Visual repetition detection — penalize keywords that overlap with the previous 2-3 slots.
+Multi-language support — Persian first, given existing usage at Tovo.
+Local LLM fallback (Ollama with Qwen 2.5 7B) for offline use.
+Premiere Pro / DaVinci Resolve panel extension for in-NLE keyword sync.
+PyInstaller-packaged desktop app — no Python required for editors.
