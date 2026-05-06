@@ -287,11 +287,14 @@ def render_classic_mode():
             st.success("Video results fetched!")
 
     # Step 6: Download Videos (Local)
-    st.header("Step 6: Download Videos (Local)")
-    col_vid1, col_vid2 = st.columns(2)
+    col_vid1, col_vid2, col_vid3, col_vid4 = st.columns(4)
     with col_vid1:
-        video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=1)
+        video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0) # Default to 1080p as per user preference
     with col_vid2:
+        strict_quality = st.checkbox("Strict Quality (Only get selected res or higher)", value=False)
+    with col_vid3:
+        max_size_mb = st.number_input("Max Video Size (MB)", value=100, min_value=1, max_value=2000)
+    with col_vid4:
         max_workers = st.slider("Max Concurrent Downloads", 1, 10, 3)
 
     c1, c2 = st.columns(2)
@@ -306,21 +309,26 @@ def render_classic_mode():
             st.session_state.dm.clear_and_reset()
 
             for i, slot in enumerate(st.session_state.slots):
-                # Handle both old 'youtube_results' and new 'video_results' 
                 results = slot.get('video_results', slot.get('youtube_results', []))
-
-                # Get the primary keyword and sanitize it for filenames
                 primary_kw = slot.get('keywords', ['Unknown'])[0]
                 safe_kw = "".join([c if c.isalnum() or c in " -_" else "_" for c in primary_kw]).strip()
 
+                # In Classic Mode, we might want to download all or just the top one. 
+                # Current behavior seems to download all candidates.
                 for j, res in enumerate(results):
                     source = res.get('source', 'youtube')
                     filename = f"{i+1}-{j+1}-{source}-{safe_kw}.mp4"
                     output_path = os.path.join("downloads", filename)
 
-                    # Pexels/Pixabay are 'direct' downloads, youtube is 'youtube'
                     dm_source = 'direct' if source in ['pexels', 'pixabay'] else 'youtube'
-                    task_id = st.session_state.dm.add_download(res['url'], output_path, video_quality, source=dm_source)
+                    task_id = st.session_state.dm.add_download(
+                        res['url'], 
+                        output_path, 
+                        video_quality, 
+                        source=dm_source,
+                        max_size_mb=max_size_mb,
+                        strict_quality=strict_quality
+                    )
                     st.session_state.dm.start_download(task_id)
 
     if c2.button("Cancel All Downloads"):
@@ -512,11 +520,14 @@ elif app_mode == "Director (v0.2)":
             st.success("Footage candidates found!")
             
         # --- Download Manager UI for Director Mode ---
-        st.header("Step 4.5: Download Videos (Local)")
-        col_vid1, col_vid2 = st.columns(2)
+        col_vid1, col_vid2, col_vid3, col_vid4 = st.columns(4)
         with col_vid1:
-            video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=1, key="d_vq")
+            video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0, key="d_vq")
         with col_vid2:
+            strict_quality = st.checkbox("Strict Quality", value=False, key="d_strict")
+        with col_vid3:
+            max_size_mb = st.number_input("Max Video Size (MB)", value=100, min_value=1, max_value=2000, key="d_max_size")
+        with col_vid4:
             max_workers = st.slider("Max Concurrent Downloads", 1, 10, 3, key="d_mw")
             
         c_dl1, c_dl2 = st.columns(2)
@@ -532,8 +543,27 @@ elif app_mode == "Director (v0.2)":
                 if not results:
                     continue
                 
-                # Only download the top candidate
+                # Logic to find the first candidate that fits size/resolution
+                # Since size check is async in DM, we'll just add the top candidate
+                # but we'll improve this to at least filter by resolution locally if possible
+                
                 res = results[0]
+                # If strict quality is on, we can filter locally for stock APIs
+                if strict_quality and res.get('source') in ['pexels', 'pixabay']:
+                    # Simple resolution check: 1080p -> height >= 1080
+                    res_map = {'1080p': 1080, '720p': 720, '480p': 480}
+                    min_h = res_map.get(video_quality, 0)
+                    if res.get('height') and res.get('height') < min_h:
+                        # Try to find another candidate in results
+                        found = False
+                        for alt_res in results[1:]:
+                            if alt_res.get('height') and alt_res.get('height') >= min_h:
+                                res = alt_res
+                                found = True
+                                break
+                        if not found:
+                            continue # Skip this shot if no candidates meet resolution
+
                 url = res.get('url')
                 if not url:
                     continue
@@ -550,7 +580,14 @@ elif app_mode == "Director (v0.2)":
                 
                 dm_source = 'direct' if source in ['pexels', 'pixabay'] else 'youtube'
                 try:
-                    task_id = st.session_state.dm.add_download(url, output_path, video_quality, source=dm_source)
+                    task_id = st.session_state.dm.add_download(
+                        url, 
+                        output_path, 
+                        video_quality, 
+                        source=dm_source,
+                        max_size_mb=max_size_mb,
+                        strict_quality=strict_quality
+                    )
                     st.session_state.dm.start_download(task_id)
                     added_count += 1
                 except Exception as e:

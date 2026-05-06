@@ -109,24 +109,34 @@ def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, 
 class DownloadInterrupt(Exception):
     pass
 
-def download_video(url: str, output_path: str, quality: str, task_state: dict):
+def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False):
     """
     Downloads a video using yt-dlp with progress tracking and interruption support.
-    `task_state` is a dictionary that must contain:
-      - 'status': 'queued', 'downloading', 'paused', 'cancelled', 'completed', 'error'
-      - 'progress': float 0.0 to 1.0
+    Supports Premiere Pro compatibility, strict quality, and size limits.
     """
     # Map simple quality strings to yt-dlp format strings
-    format_map = {
-        '1080p': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        '720p': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        '480p': 'bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'Best': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'Worst': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst'
-    }
+    # We prioritize h264 for Premiere Pro compatibility
+    if strict_quality:
+        # Require exactly the height or higher (if higher is ok, but usually exact is what they mean by 'only get 1080p')
+        # However, yt-dlp's [height=1080] might fail if exactly 1080 isn't available.
+        # We'll use [height>=1080] if they want 1080p or better, or [height=1080] if they want ONLY 1080.
+        # Let's go with [height>=target] to be safe but strictly above the threshold.
+        res_map = {'1080p': 1080, '720p': 720, '480p': 480}
+        min_h = res_map.get(quality, 0)
+        q_filter = f"[height>={min_h}]" if min_h > 0 else ""
+    else:
+        res_map = {'1080p': 1080, '720p': 720, '480p': 480}
+        max_h = res_map.get(quality, 9999)
+        q_filter = f"[height<={max_h}]"
+
+    # Premiere Pro loves H.264 (avc1) and AAC (mp4a)
+    format_selector = f"bestvideo{q_filter}[vcodec^=avc1][ext=mp4]+bestaudio[acodec^=mp4a][ext=m4a]/best[ext=mp4]/best"
     
-    ydl_format = format_map.get(quality, 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best')
-    
+    if quality == 'Worst':
+        format_selector = 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst'
+    elif quality == 'Best':
+        format_selector = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+
     def my_hook(d):
         if task_state.get('status') == 'cancelled':
             raise DownloadInterrupt("Download cancelled by user")
@@ -142,8 +152,14 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict):
                 downloaded_bytes = d.get('downloaded_bytes', 0)
                 task_state['progress'] = downloaded_bytes / total_bytes
                 
+                # Check size during download if not caught early
+                if max_size_mb:
+                    size_mb = total_bytes / (1024 * 1024)
+                    if size_mb > max_size_mb:
+                        raise ValueError(f"Skipped: Video size ({size_mb:.1f}MB) exceeds limit ({max_size_mb}MB)")
+                
     ydl_opts = {
-        'format': ydl_format,
+        'format': format_selector,
         'outtmpl': output_path,
         'progress_hooks': [my_hook],
         'quiet': True,
@@ -153,18 +169,32 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict):
         'fragment_retries': 15,
         'file_access_retries': 5,
         'http_chunk_size': 10485760, # 10MB
+        # Premiere Pro compatibility: ensure standard MP4 container
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }],
     }
     
     try:
         task_state['status'] = 'downloading'
         task_state['progress'] = 0.0
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Check size before download if possible
+            if max_size_mb:
+                info = ydl.extract_info(url, download=False)
+                # Some formats don't have filesize but have filesize_approx
+                size = info.get('filesize') or info.get('filesize_approx')
+                if size:
+                    size_mb = size / (1024 * 1024)
+                    if size_mb > max_size_mb:
+                        raise ValueError(f"Skipped: Video size ({size_mb:.1f}MB) exceeds limit ({max_size_mb}MB)")
+
             ydl.download([url])
         task_state['status'] = 'completed'
         task_state['progress'] = 1.0
     except DownloadInterrupt:
         task_state['status'] = 'cancelled'
-        # Clean up partial file if needed, yt-dlp usually leaves .part files
         part_file = output_path + '.part'
         if os.path.exists(part_file):
             try: os.remove(part_file)

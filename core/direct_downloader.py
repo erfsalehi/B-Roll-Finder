@@ -3,10 +3,10 @@ import os
 import threading
 from core.youtube import DownloadInterrupt
 
-def download_direct_video(url: str, output_path: str, task_state: dict, max_retries: int = 10):
+def download_direct_video(url: str, output_path: str, task_state: dict, max_retries: int = 10, max_size_mb: float = None):
     """
     Downloads an MP4 directly via HTTP using requests.
-    Supports pause, resume, cancellation, and auto-resume on network drops.
+    Supports pause, resume, cancellation, auto-resume, and max size limit.
     """
     try:
         task_state['status'] = 'downloading'
@@ -16,6 +16,18 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
         downloaded = 0
         total_size = 0
         
+        # Check size before starting if a limit is set
+        if max_size_mb:
+            try:
+                head_resp = requests.head(url, allow_redirects=True, timeout=10)
+                cl = head_resp.headers.get('content-length')
+                if cl:
+                    size_mb = int(cl) / (1024 * 1024)
+                    if size_mb > max_size_mb:
+                        raise ValueError(f"Skipped: Video size ({size_mb:.1f}MB) exceeds limit ({max_size_mb}MB)")
+            except requests.exceptions.RequestException:
+                pass # If HEAD fails, we'll catch it during GET
+                
         # Check if file exists to resume
         if os.path.exists(output_path):
             downloaded = os.path.getsize(output_path)
@@ -43,6 +55,12 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
                         total_size = downloaded + content_length
                     else:
                         total_size = content_length
+                    
+                    # Double check size if HEAD failed or was skipped
+                    if max_size_mb and total_size > 0:
+                        size_mb = total_size / (1024 * 1024)
+                        if size_mb > max_size_mb:
+                            raise ValueError(f"Skipped: Video size ({size_mb:.1f}MB) exceeds limit ({max_size_mb}MB)")
                         
                 mode = 'ab' if downloaded > 0 else 'wb'
                 
