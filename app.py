@@ -211,7 +211,7 @@ def render_classic_mode():
             }
             table_data.append(row)
 
-        edited_df = st.data_editor(table_data, num_rows="dynamic", use_container_width=True)
+        edited_df = st.data_editor(table_data, num_rows="dynamic", width="stretch")
 
         # Sync edits back to session state
         if st.button("Save Edited Keywords"):
@@ -499,7 +499,7 @@ elif app_mode == "Director (v0.2)":
                 "Queries": ", ".join(shot.get("search_queries", [])),
                 "Candidate Specs": f"{shot['video_results'][0].get('width', '?')}x{shot['video_results'][0].get('height', '?')} | {round(shot['video_results'][0].get('file_size', 0)/(1024*1024), 1) if shot['video_results'][0].get('file_size') else '?'}MB" if shot.get('video_results') else "No candidates"
             })
-        st.dataframe(table_data, use_container_width=True)
+        st.dataframe(table_data, width="stretch")
         
         st.header("Step 4: Fetch Footage (Stage 2)")
         col_src1, col_src2, col_src3 = st.columns(3)

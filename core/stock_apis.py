@@ -48,7 +48,9 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3) -> list:
         return []
         
     url = "https://pixabay.com/api/videos/"
-    params = {"key": api_key, "q": keyword, "per_page": num_results}
+    # Pixabay per_page minimum is 3. If user wants 1, we fetch 3 and slice later.
+    fetch_count = max(3, num_results)
+    params = {"key": api_key, "q": keyword, "per_page": fetch_count}
     
     results = []
     try:
@@ -84,6 +86,9 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3) -> list:
                 'quality': best_quality,
                 'file_size': v_data.get('size')
             })
+            
+        # Slice to the original requested number
+        return results[:num_results]
     except Exception as e:
         print(f"Error searching Pixabay for '{keyword}': {e}")
         
