@@ -10,7 +10,7 @@ class DownloadManager:
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.tasks = {} # dict of task_id -> state dict
 
-    def add_download(self, url: str, output_path: str, quality: str, source: str = 'youtube', max_size_mb: float = None, strict_quality: bool = False) -> str:
+    def add_download(self, url: str, output_path: str, quality: str, source: str = 'youtube', max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False) -> str:
         task_id = str(uuid.uuid4())
         
         # Ensure output directory exists (handle relative paths safely)
@@ -28,7 +28,8 @@ class DownloadManager:
             'progress': 0.0,
             'error_msg': None,
             'max_size_mb': max_size_mb,
-            'strict_quality': strict_quality
+            'strict_quality': strict_quality,
+            'normalize': normalize
         }
         self.tasks[task_id] = state
         return task_id
@@ -43,9 +44,9 @@ class DownloadManager:
             state['progress'] = 0.0
             state['error_msg'] = None
             if state['source'] == 'youtube':
-                self.executor.submit(download_video, state['url'], state['output_path'], state['quality'], state, max_size_mb=state.get('max_size_mb'), strict_quality=state.get('strict_quality'))
+                self.executor.submit(download_video, state['url'], state['output_path'], state['quality'], state, max_size_mb=state.get('max_size_mb'), strict_quality=state.get('strict_quality'), normalize=state.get('normalize'))
             else:
-                self.executor.submit(download_direct_video, state['url'], state['output_path'], state, max_size_mb=state.get('max_size_mb'))
+                self.executor.submit(download_direct_video, state['url'], state['output_path'], state, max_size_mb=state.get('max_size_mb'), normalize=state.get('normalize'))
 
     def pause_download(self, task_id: str):
         state = self.tasks.get(task_id)

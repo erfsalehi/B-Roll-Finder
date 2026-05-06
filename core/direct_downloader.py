@@ -2,8 +2,9 @@ import requests
 import os
 import threading
 from core.youtube import DownloadInterrupt
+from core.ffmpeg_utils import normalize_video
 
-def download_direct_video(url: str, output_path: str, task_state: dict, max_retries: int = 10, max_size_mb: float = None):
+def download_direct_video(url: str, output_path: str, task_state: dict, max_retries: int = 10, max_size_mb: float = None, normalize: bool = False):
     """
     Downloads an MP4 directly via HTTP using requests.
     Supports pause, resume, cancellation, auto-resume, and max size limit.
@@ -90,6 +91,10 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
                     raise e
                 threading.Event().wait(2.0) # Wait before retry
                 
+        if normalize:
+            task_state['status'] = 'processing'
+            normalize_video(output_path)
+            
         task_state['status'] = 'completed'
         task_state['progress'] = 1.0
         

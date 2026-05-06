@@ -287,15 +287,17 @@ def render_classic_mode():
             st.success("Video results fetched!")
 
     # Step 6: Download Videos (Local)
-    col_vid1, col_vid2, col_vid3, col_vid4 = st.columns(4)
+    col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
     with col_vid1:
-        video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0) # Default to 1080p as per user preference
+        video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0)
     with col_vid2:
-        strict_quality = st.checkbox("Strict Quality (Only get selected res or higher)", value=False)
+        strict_quality = st.checkbox("Strict Quality", value=False)
     with col_vid3:
-        max_size_mb = st.number_input("Max Video Size (MB)", value=100, min_value=1, max_value=2000)
+        normalize_res = st.checkbox("Normalize (1080p)", value=True)
     with col_vid4:
-        max_workers = st.slider("Max Concurrent Downloads", 1, 10, 3)
+        max_size_mb = st.number_input("Max Size (MB)", value=100, min_value=1)
+    with col_vid5:
+        max_workers = st.slider("Max Concurrent", 1, 10, 3)
 
     c1, c2 = st.columns(2)
     if c1.button("Start Downloading Videos"):
@@ -327,7 +329,8 @@ def render_classic_mode():
                         video_quality, 
                         source=dm_source,
                         max_size_mb=max_size_mb,
-                        strict_quality=strict_quality
+                        strict_quality=strict_quality,
+                        normalize=normalize_res
                     )
                     st.session_state.dm.start_download(task_id)
 
@@ -493,7 +496,8 @@ elif app_mode == "Director (v0.2)":
                 "Intent": shot.get("shot_intent"),
                 "Type": shot.get("shot_type"),
                 "Priority": shot.get("priority"),
-                "Queries": ", ".join(shot.get("search_queries", []))
+                "Queries": ", ".join(shot.get("search_queries", [])),
+                "Candidate Specs": f"{shot['video_results'][0].get('width', '?')}x{shot['video_results'][0].get('height', '?')} | {round(shot['video_results'][0].get('file_size', 0)/(1024*1024), 1) if shot['video_results'][0].get('file_size') else '?'}MB" if shot.get('video_results') else "No candidates"
             })
         st.dataframe(table_data, use_container_width=True)
         
@@ -519,16 +523,50 @@ elif app_mode == "Director (v0.2)":
             save_cache()
             st.success("Footage candidates found!")
             
+        if st.button("Apply Filters to Candidates"):
+            filtered_count = 0
+            for shot in st.session_state.director_shots:
+                results = shot.get('video_results', [])
+                if not results:
+                    continue
+                
+                res_map = {'1080p': 1080, '720p': 720, '480p': 480}
+                min_h = res_map.get(video_quality, 0)
+                
+                new_results = []
+                for res in results:
+                    # Filter by resolution if strict
+                    if strict_quality:
+                        if res.get('height') and res.get('height') < min_h:
+                            continue
+                    
+                    # Filter by size if known
+                    if max_size_mb:
+                        if res.get('file_size') and res.get('file_size') / (1024*1024) > max_size_mb:
+                            continue
+                            
+                    new_results.append(res)
+                
+                if len(new_results) != len(results):
+                    filtered_count += (len(results) - len(new_results))
+                    shot['video_results'] = new_results
+            
+            st.success(f"Filtered out {filtered_count} candidates that didn't meet criteria.")
+            save_cache()
+            st.rerun()
+            
         # --- Download Manager UI for Director Mode ---
-        col_vid1, col_vid2, col_vid3, col_vid4 = st.columns(4)
+        col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
         with col_vid1:
             video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0, key="d_vq")
         with col_vid2:
             strict_quality = st.checkbox("Strict Quality", value=False, key="d_strict")
         with col_vid3:
-            max_size_mb = st.number_input("Max Video Size (MB)", value=100, min_value=1, max_value=2000, key="d_max_size")
+            normalize_res = st.checkbox("Normalize (1080p)", value=True, key="d_norm")
         with col_vid4:
-            max_workers = st.slider("Max Concurrent Downloads", 1, 10, 3, key="d_mw")
+            max_size_mb = st.number_input("Max Size (MB)", value=100, min_value=1, key="d_max_size")
+        with col_vid5:
+            max_workers = st.slider("Max Concurrent", 1, 10, 3, key="d_mw")
             
         c_dl1, c_dl2 = st.columns(2)
         if c_dl1.button("Start Downloading Top Candidates"):
@@ -586,7 +624,8 @@ elif app_mode == "Director (v0.2)":
                         video_quality, 
                         source=dm_source,
                         max_size_mb=max_size_mb,
-                        strict_quality=strict_quality
+                        strict_quality=strict_quality,
+                        normalize=normalize_res
                     )
                     st.session_state.dm.start_download(task_id)
                     added_count += 1

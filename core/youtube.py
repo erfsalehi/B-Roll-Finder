@@ -106,10 +106,12 @@ def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, 
             
     return slots
 
+from core.ffmpeg_utils import normalize_video
+
 class DownloadInterrupt(Exception):
     pass
 
-def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False):
+def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False):
     """
     Downloads a video using yt-dlp with progress tracking and interruption support.
     Supports Premiere Pro compatibility, strict quality, and size limits.
@@ -191,6 +193,11 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                         raise ValueError(f"Skipped: Video size ({size_mb:.1f}MB) exceeds limit ({max_size_mb}MB)")
 
             ydl.download([url])
+            
+        if normalize:
+            task_state['status'] = 'processing'
+            normalize_video(output_path)
+            
         task_state['status'] = 'completed'
         task_state['progress'] = 1.0
     except DownloadInterrupt:
