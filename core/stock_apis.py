@@ -1,5 +1,26 @@
+import re
 import requests
 import traceback
+from urllib.parse import urlparse
+
+
+def _pexels_slug_to_text(page_url: str) -> str:
+    """Extract semantic words from a Pexels page URL.
+
+    Pexels embeds the visual content in the page-URL slug, e.g.
+    https://www.pexels.com/video/woman-walking-in-the-park-12345/
+    -> 'woman walking in the park'
+    """
+    if not page_url:
+        return ""
+    try:
+        path = urlparse(page_url).path
+        slug = path.strip("/").split("/")[-1]
+        slug = re.sub(r"-?\d+$", "", slug)
+        return slug.replace("-", " ").strip()
+    except Exception:
+        return ""
+
 
 def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list = None) -> list:
     if not api_key or not keyword:
@@ -29,12 +50,16 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
                     elif best_file.get('quality') not in ['hd', 'uhd']:
                         best_file = vf
 
+            page_url = video.get('url', '')
+            semantic = _pexels_slug_to_text(page_url)
+            author = video.get('user', {}).get('name', 'Unknown')
             results.append({
-                'title': f"Pexels Video {video.get('id')}",
+                'title': semantic.title() if semantic else f"Pexels Video {video.get('id')}",
                 'url': best_file.get('link'),
+                'page_url': page_url,
                 'source': 'pexels',
                 'thumbnail': video.get('image', ''),
-                'description': f"By {video.get('user', {}).get('name', 'Unknown')} — {video.get('duration', '?')}s",
+                'description': f"By {author}",
                 'duration': video.get('duration'),
                 'is_short': False,
                 'width': best_file.get('width'),
@@ -81,12 +106,13 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
 
             v_data = videos[best_quality]
 
+            tags = hit.get('tags', '') or ''
             results.append({
-                'title': f"Pixabay: {hit.get('tags', 'video')}",
+                'title': tags.title() if tags else f"Pixabay Video {hit.get('id', '?')}",
                 'url': v_data.get('url'),
                 'source': 'pixabay',
                 'thumbnail': v_data.get('thumbnail', ''),
-                'description': f"Tags: {hit.get('tags', '')} — {hit.get('duration', '?')}s",
+                'description': '',
                 'duration': hit.get('duration'),
                 'is_short': False,
                 'width': v_data.get('width'),

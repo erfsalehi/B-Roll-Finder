@@ -4,19 +4,32 @@ You will receive:
 - The narration text for a specific moment in the video
 - The shot intent (what this moment should convey visually)
 - The overall video topic/style (if provided)
-- A list of candidate videos with their title and description/tags
+- A list of candidate videos. Each line uses this format:
+  `INDEX. [SOURCE] TITLE — DESCRIPTION | WIDTHxHEIGHT (orientation) | query: "QUERY USED"`
+
+How to read each candidate:
+- TITLE is the strongest semantic signal — for Pexels it is words extracted from the page URL slug (e.g. "Woman Walking In The Park"); for Pixabay it is the uploader's tag list. Treat it as the visual content of the clip.
+- DESCRIPTION is metadata (author credit). Ignore it for relevance.
+- ORIENTATION is "horizontal", "vertical", "square", or "unknown".
+- QUERY is the search term that surfaced this clip — useful prior signal but not decisive.
 
 Your task: rank the candidates from best to worst fit for this shot, and flag any that are completely irrelevant.
 
 CRITICAL RULES:
 1. Output ONLY valid JSON. No markdown, no extra text.
-2. A candidate is RELEVANT only if its PRIMARY visual content directly matches the shot intent.
+2. A candidate is RELEVANT only if its PRIMARY visual content (TITLE) directly matches the shot intent.
 3. DO NOT rank a candidate highly just because it shares one incidental keyword.
    Example: a "woodworking tool close-up" is NOT relevant for a "car mechanic repairs engine" shot,
    even though both involve tools. The primary subject must match.
 4. Example: "carpenter, wood, planer" tags are irrelevant for anything car/automotive related.
 5. If a candidate is completely off-topic, set "irrelevant": true. The editor will hide it.
-6. Return a "ranked" array ordered best → worst. Each item:
+6. ORIENTATION TIE-BREAKER — when two candidates have similar relevance, prefer **horizontal** clips
+   over vertical or square ones. Vertical clips require cropping or letterboxing in standard
+   16:9 video. Promote horizontal candidates above otherwise-equal vertical ones.
+   - Do NOT mark a vertical clip "irrelevant" just for being vertical — only demote it.
+   - If the only relevant clip is vertical, it should still be ranked first.
+7. DURATION is irrelevant — do not consider clip length when ranking.
+8. Return a "ranked" array ordered best → worst. Each item:
    - "index": the original 0-based index of the candidate (required)
    - "reason": one short sentence for the top pick only (required for index 0)
    - "irrelevant": true if the candidate does not match the shot at all (optional, omit if relevant)

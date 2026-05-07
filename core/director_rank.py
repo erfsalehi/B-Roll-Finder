@@ -9,6 +9,35 @@ def _load_rank_prompt() -> str:
         return f.read()
 
 
+def _orientation(c: dict) -> str:
+    w = c.get('width') or 0
+    h = c.get('height') or 0
+    if not w or not h:
+        return 'unknown'
+    if w > h:
+        return 'horizontal'
+    if h > w:
+        return 'vertical'
+    return 'square'
+
+
+def _format_candidate(i: int, c: dict) -> str:
+    src = (c.get('source') or '?').upper()
+    title = c.get('title') or '?'
+    desc = c.get('description') or ''
+    query = c.get('matched_query') or ''
+    w = c.get('width') or '?'
+    h = c.get('height') or '?'
+    orient = _orientation(c)
+    parts = [f"{i}. [{src}] {title}"]
+    if desc:
+        parts.append(f"— {desc}")
+    parts.append(f"| {w}x{h} ({orient})")
+    if query:
+        parts.append(f'| query: "{query}"')
+    return " ".join(parts)
+
+
 def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "",
                          video_topic: str = "", progress_callback=None) -> list:
     """
@@ -43,10 +72,7 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
                 progress_callback(done / total)
             continue
 
-        candidate_lines = [
-            f"{i}. [{c.get('source','?').upper()}] {c.get('title','?')} — {c.get('description','')}"
-            for i, c in enumerate(candidates)
-        ]
+        candidate_lines = [_format_candidate(i, c) for i, c in enumerate(candidates)]
 
         user_msg = (
             f"NARRATION: \"{shot.get('text', '')}\"\n"

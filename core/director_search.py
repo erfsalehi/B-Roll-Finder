@@ -5,10 +5,14 @@ from core.stock_apis import search_pexels, search_pixabay
 
 def _fetch_query(query: str, source: str, api_key: str, num_results: int, errors: list) -> list:
     if source == 'pexels':
-        return search_pexels(query, api_key, num_results, errors=errors)
-    if source == 'pixabay':
-        return search_pixabay(query, api_key, num_results, errors=errors)
-    return []
+        results = search_pexels(query, api_key, num_results, errors=errors)
+    elif source == 'pixabay':
+        results = search_pixabay(query, api_key, num_results, errors=errors)
+    else:
+        return []
+    for r in results:
+        r['matched_query'] = query
+    return results
 
 
 def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bool = True,
