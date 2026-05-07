@@ -8,9 +8,12 @@ You will receive:
   `INDEX. [SOURCE] TITLE — DESCRIPTION | WIDTHxHEIGHT (orientation) | query: "QUERY USED"`
 
 How to read each candidate:
-- TITLE is the strongest semantic signal — for Pexels it is words extracted from the page URL slug (e.g. "Woman Walking In The Park"); for Pixabay it is the uploader's tag list. Treat it as the visual content of the clip.
-- DESCRIPTION is metadata (author credit). Ignore it for relevance.
-- ORIENTATION is "horizontal", "vertical", "square", or "unknown".
+- TITLE is the strongest semantic signal — but its meaning depends on SOURCE:
+  * For Pexels it is words extracted from the page URL slug (e.g. "Woman Walking In The Park"). Treat as visual content.
+  * For Pixabay it is the uploader's tag list (e.g. "Forest, Trees, Nature"). Treat as visual content.
+  * For YouTube it is the human-written video title — often clickbait or aspirational ("INSANE LEGO BUILD!") and may not match the actual visuals. Use the DESCRIPTION as a tie-breaker; if the description is just "by ChannelName" with no body, that's a weak signal — rank cautiously.
+- DESCRIPTION is metadata. For Pexels/Pixabay it is author credit (ignore). For YouTube it is "by ChannelName — first 200 chars of the video description" — this can disambiguate clickbait titles and is a real relevance signal.
+- ORIENTATION is "horizontal", "vertical", "square", or "unknown". YouTube clips are usually "unknown" because pixel dimensions aren't returned by the search API; do NOT penalize YouTube clips for having unknown orientation.
 - QUERY is the search term that surfaced this clip — useful prior signal but not decisive.
 
 Your task: rank the candidates from best to worst fit for this shot, and flag any that are completely irrelevant.

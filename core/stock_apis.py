@@ -129,3 +129,89 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
             errors.append(msg)
 
     return results
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Trim text to ``limit`` chars, adding an ellipsis when cut."""
+    if not text:
+        return ""
+    text = " ".join(text.split())  # collapse whitespace / newlines
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def search_youtube_data_api(keyword: str, api_key: str, num_results: int = 3,
+                            errors: list = None) -> list:
+    """Search YouTube via the Data API v3.
+
+    Returns dicts in the same shape as ``search_pexels`` / ``search_pixabay``
+    so the downstream judge and editor UI need no special-casing. Width and
+    height are unavailable from search.list (would require a second
+    videos.list call), so they're left as ``None`` — the judge treats that
+    as orientation 'unknown', which the rank prompt handles.
+
+    Each call costs 100 quota units (default daily quota: 10,000). Callers
+    should rate-limit themselves; ``director_search`` only invokes this
+    once per shot, on the first query.
+    """
+    if not api_key or not keyword:
+        return []
+
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": keyword,
+        "type": "video",
+        "maxResults": max(1, min(num_results, 5)),
+        "safeSearch": "moderate",
+        "key": api_key,
+    }
+
+    results = []
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        for item in data.get("items", []):
+            video_id = item.get("id", {}).get("videoId")
+            if not video_id:
+                continue
+            snippet = item.get("snippet", {}) or {}
+            title = snippet.get("title") or "Untitled"
+            channel = snippet.get("channelTitle") or "Unknown channel"
+            raw_desc = snippet.get("description") or ""
+            # Pack channel + description into a single 'description' string
+            # so the judge sees the channel name as part of the relevance
+            # signal. Many channels are topic-specific ("AutoFix Garage")
+            # which is itself a strong prior.
+            desc = f"by {channel}"
+            if raw_desc.strip():
+                desc += f" — {_truncate(raw_desc, 200)}"
+            thumb = (snippet.get("thumbnails") or {}).get("medium", {}).get("url", "")
+
+            results.append({
+                "title": _truncate(title, 120),
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "page_url": f"https://www.youtube.com/watch?v={video_id}",
+                "source": "youtube",
+                "thumbnail": thumb,
+                "description": desc,
+                # search.list does not return duration or pixel dimensions.
+                # Filling these would require a second videos.list call; we
+                # skip it to stay on the daily quota.
+                "duration": None,
+                "is_short": False,
+                "width": None,
+                "height": None,
+                "quality": None,
+                "file_size": None,
+                "channel": channel,
+                "video_id": video_id,
+            })
+    except Exception as e:
+        msg = f"YouTube search failed for '{keyword}': {e}"
+        print(msg)
+        if errors is not None:
+            errors.append(msg)
+
+    return results

@@ -909,20 +909,46 @@ elif app_mode == "Director (v0.2)":
     if st.session_state.director_shots:
         st.header("Stage 2: Fetch Candidates")
 
-        col_s2a, col_s2b, col_s2c = st.columns(3)
+        col_s2a, col_s2b, col_s2c, col_s2d = st.columns(4)
         with col_s2a:
             use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb")
         with col_s2b:
             use_pixabay = st.checkbox("Pixabay", value=bool(os.getenv("PIXABAY_API_KEY")), key="d_pix_cb")
         with col_s2c:
+            use_youtube = st.checkbox(
+                "YouTube",
+                value=bool(os.getenv("YOUTUBE_API_KEY")),
+                key="d_yt_cb",
+                help=(
+                    "Adds YouTube as a search source. Each YT search costs "
+                    "100 quota units (default daily quota: 10,000), so to stay "
+                    "within budget the director only runs ONE YouTube search "
+                    "per shot — using the first query. Pexels and Pixabay still "
+                    "run all queries. Selected YT clips download via yt-dlp."
+                ),
+            )
+        with col_s2d:
             d_num_results = st.number_input("Results per query", value=3, min_value=1, max_value=10, key="d_nr")
+
+        # Quota nudge: number of YT calls about to fire.
+        if use_youtube and os.getenv("YOUTUBE_API_KEY"):
+            yt_calls = sum(
+                1 for s in st.session_state.director_shots
+                if s.get("priority") != "none" and s.get("search_queries")
+            )
+            est_units = yt_calls * 100
+            st.caption(
+                f"📺 YouTube enabled — ~{yt_calls} search call(s), "
+                f"~{est_units:,} quota unit(s) (daily quota is 10,000)."
+            )
 
         if st.button("Fetch Candidates", disabled=st.session_state.is_fetching, key="d_fetch"):
             if not _check_network():
                 st.error("No network connection detected.")
             elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
-                 not (use_pixabay and os.getenv("PIXABAY_API_KEY")):
-                st.error("No stock API keys configured. Add Pexels and/or Pixabay keys in Step 1.")
+                 not (use_pixabay and os.getenv("PIXABAY_API_KEY")) and \
+                 not (use_youtube and os.getenv("YOUTUBE_API_KEY")):
+                st.error("No search sources enabled. Add Pexels, Pixabay, and/or YouTube keys in Step 1 and tick at least one source.")
             else:
                 st.session_state.is_fetching = True
                 d_fetch_errors = []
@@ -934,6 +960,7 @@ elif app_mode == "Director (v0.2)":
                         st.session_state.director_shots,
                         use_pexels=use_pexels,
                         use_pixabay=use_pixabay,
+                        use_youtube=use_youtube,
                         num_results=d_num_results,
                         progress_callback=lambda p: pbar2.progress(p),
                         errors=d_fetch_errors,
