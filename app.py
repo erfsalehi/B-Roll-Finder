@@ -828,11 +828,21 @@ elif app_mode == "Director (v0.2)":
         with col_dp2:
             d_end_time = st.number_input("End Time (seconds)", value=min(st.session_state.audio_duration, 300.0) if st.session_state.audio_duration > 0 else 60.0, step=1.0, key="d_end")
 
+    # Video topic — single source of truth shared with Stage 3 ranking.
+    # Editing it here updates Stage 3, and vice versa, because Streamlit
+    # binds widgets with the same `key` to one session_state slot.
+    d_video_topic = st.text_input(
+        "What is this video about? (sharpens both query generation and ranking)",
+        placeholder="e.g. car mechanics and engine repair",
+        key="d_video_topic",
+        help="One sentence describing the topic. Used to disambiguate shot queries (so \"tool\" in a car video means \"wrench\", not \"saw\") and to filter off-topic candidates during ranking."
+    )
+
     custom_instructions = st.text_area("Style Hints (Optional)", placeholder="e.g. cinematic, slow motion, no talking heads", key="d_style")
-    
+
     if "director_shots" not in st.session_state:
         st.session_state.director_shots = []
-        
+
     if st.button("Generate Shot List"):
         if not os.getenv("GROQ_API_KEY"):
             st.error("Please set Groq API key.")
@@ -857,7 +867,8 @@ elif app_mode == "Director (v0.2)":
                         st.session_state.transcription_segments,
                         os.getenv("GROQ_API_KEY"),
                         progress_callback=lambda p: pbar.progress(p),
-                        custom_instructions=custom_instructions
+                        custom_instructions=custom_instructions,
+                        video_topic=d_video_topic,
                     )
                 else:
                     st.session_state.director_shots = generate_shot_list(
@@ -866,7 +877,8 @@ elif app_mode == "Director (v0.2)":
                         os.getenv("GROQ_API_KEY"),
                         progress_callback=lambda p: pbar.progress(p),
                         custom_instructions=custom_instructions,
-                        start_offset=start_offset
+                        start_offset=start_offset,
+                        video_topic=d_video_topic,
                     )
                 pbar.progress(1.0)
                 st.success("Shot list generated successfully!")
@@ -949,11 +961,16 @@ elif app_mode == "Director (v0.2)":
     if has_candidates:
         st.header("Stage 3: Rank & Filter Candidates")
         st.caption("AI ranks candidates by visual relevance, flags off-topic clips, and prefers horizontal videos.")
-        d_video_topic = st.text_input(
-            "What is this video about? (helps reject off-topic candidates)",
-            placeholder="e.g. car mechanics and engine repair",
-            key="d_video_topic"
-        )
+
+        # Read-only display of the topic set at Stage 1 (the input lives there
+        # to also benefit query generation; we cannot have a second text_input
+        # with the same key).
+        d_video_topic = st.session_state.get("d_video_topic", "")
+        if d_video_topic:
+            st.caption(f"📌 Using video topic: **{d_video_topic}** (edit in Step 3 above to change)")
+        else:
+            st.warning("⚠️ No video topic set. Set one in Step 3 above for the ranker to filter off-topic clips effectively.")
+
         if st.button("Rank Candidates with AI", key="d_rank"):
             if not os.getenv("GROQ_API_KEY"):
                 st.error("Groq API key required for ranking.")

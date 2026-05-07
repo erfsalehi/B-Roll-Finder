@@ -8,16 +8,40 @@ def load_director_prompt() -> str:
     with open(prompt_path, 'r', encoding='utf-8') as f:
         return f.read()
 
-def generate_shot_list(script_text: str, wps: float, api_key: str, progress_callback=None, custom_instructions: str = "", start_offset: float = 0.0) -> list:
+def _build_context_block(video_topic: str, custom_instructions: str) -> str:
+    """Compose the {custom_instructions_block} value used by director.txt.
+
+    The video topic is rendered first because it is the most useful frame
+    of reference: every query the LLM produces should be consistent with
+    it. The custom style notes follow as a softer guidance layer.
+    """
+    parts = []
+    if video_topic and video_topic.strip():
+        parts.append(
+            f"OVERALL VIDEO TOPIC: {video_topic.strip()}\n"
+            "Every search_queries entry MUST be plausibly relevant to this topic. "
+            "Words in the script that are ambiguous (e.g. \"tool\", \"market\", \"shot\") "
+            "should be disambiguated using this topic — for example, \"tool\" in a car "
+            "video means \"wrench\" or \"socket\", not \"saw\" or \"chisel\"."
+        )
+    if custom_instructions and custom_instructions.strip():
+        parts.append(
+            f"USER STYLE NOTES: {custom_instructions.strip()}\n"
+            "Apply these style preferences to shot framing, mood, and query phrasing."
+        )
+    return "\n\n".join(parts)
+
+
+def generate_shot_list(script_text: str, wps: float, api_key: str, progress_callback=None,
+                       custom_instructions: str = "", start_offset: float = 0.0,
+                       video_topic: str = "") -> list:
     if not api_key:
         raise ValueError("Groq API key is missing.")
-        
+
     client = Groq(api_key=api_key)
     system_prompt_template = load_director_prompt()
-    
-    custom_block = ""
-    if custom_instructions and custom_instructions.strip():
-        custom_block = f"USER CUSTOM INSTRUCTIONS: {custom_instructions.strip()}\\nPlease ensure the shot list strictly adheres to these style guidelines."
+
+    custom_block = _build_context_block(video_topic, custom_instructions)
     system_prompt = system_prompt_template.replace("{custom_instructions_block}", custom_block)
     
     # Split text to bypass Groq 6k TPM limits. ~250 words per chunk, respecting sentences.
@@ -95,20 +119,20 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
             
     return all_shots
 
-def generate_shot_list_from_transcription(segments: list, api_key: str, progress_callback=None, custom_instructions: str = "") -> list:
+def generate_shot_list_from_transcription(segments: list, api_key: str, progress_callback=None,
+                                          custom_instructions: str = "",
+                                          video_topic: str = "") -> list:
     """
     Uses precise transcription segments to generate a shot list.
     """
     import json
     if not api_key:
         raise ValueError("Groq API key is missing.")
-        
+
     client = Groq(api_key=api_key)
     system_prompt_template = load_director_prompt()
-    
-    custom_block = ""
-    if custom_instructions and custom_instructions.strip():
-        custom_block = f"USER CUSTOM INSTRUCTIONS: {custom_instructions.strip()}\\nPlease ensure the shot list strictly adheres to these style guidelines."
+
+    custom_block = _build_context_block(video_topic, custom_instructions)
     system_prompt = system_prompt_template.replace("{custom_instructions_block}", custom_block)
     # The director prompt might need a small tweak to understand [start - end] segments, 
     # but the base prompt is usually smart enough if we explain the format.
