@@ -101,7 +101,7 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
         if normalize:
             task_state['status'] = 'processing'
             task_state['speed'] = None
-            normalize_video(output_path)
+            normalize_video(output_path, task_state=task_state)
 
         task_state['status'] = 'completed'
         task_state['progress'] = 1.0

@@ -1,30 +1,33 @@
 import subprocess
 import os
+import time
 
-def normalize_video(input_path: str, target_res: str = "1920x1080") -> str:
+# Maximum time (seconds) to allow FFmpeg to normalize a single file.
+# 10 minutes is generous even for large 4K sources on slow hardware.
+_NORMALIZE_TIMEOUT = 600
+
+def normalize_video(input_path: str, target_res: str = "1920x1080", task_state: dict = None) -> str:
     """
     Uses FFmpeg to conform a video to exactly target_res (width x height).
     Adds black bars (letterbox/pillarbox) to maintain aspect ratio.
+    Supports cancellation via task_state and enforces a timeout so it never hangs.
     Returns the path to the normalized file.
     """
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input file not found: {input_path}")
-        
+
     width, height = map(int, target_res.split('x'))
-    
-    # Create a temporary output path
-    base, ext = os.path.splitext(input_path)
+    base, _ = os.path.splitext(input_path)
     output_path = f"{base}_normalized.mp4"
-    
-    # FFmpeg command:
-    # 1. Scale to fit within target width/height
-    # 2. Pad to exactly target width/height
-    # 3. Use yuv420p for maximum compatibility (Premiere Pro)
-    # 4. H.264 codec
+
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
-        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+        "-vf", (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+            f"format=yuv420p"
+        ),
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
@@ -32,18 +35,49 @@ def normalize_video(input_path: str, target_res: str = "1920x1080") -> str:
         "-b:a", "192k",
         output_path
     ]
-    
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    start = time.monotonic()
+
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-        # Replace original with normalized
+        while proc.poll() is None:
+            # Respect cancellation from the download manager
+            if task_state and task_state.get('status') == 'cancelled':
+                proc.kill()
+                proc.wait()
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                return input_path  # leave original; caller will clean up
+
+            # Hard timeout — never hang forever
+            if time.monotonic() - start > _NORMALIZE_TIMEOUT:
+                proc.kill()
+                proc.wait()
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                raise TimeoutError(
+                    f"FFmpeg timed out after {_NORMALIZE_TIMEOUT}s normalizing {os.path.basename(input_path)}"
+                )
+
+            time.sleep(0.5)
+
+        if proc.returncode != 0:
+            stderr = proc.stderr.read().decode("utf-8", errors="replace")
+            raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
+
+        # Swap normalized file over the original
         os.remove(input_path)
         os.rename(output_path, input_path)
         return input_path
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg error: {e.stderr}")
+
+    except Exception:
+        # Clean up partial output on any failure
         if os.path.exists(output_path):
-            os.remove(output_path)
-        raise e
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+        raise
 
 def compress_audio_for_whisper(input_path: str) -> str:
     """
