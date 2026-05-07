@@ -3,8 +3,10 @@ import yt_dlp
 import traceback
 import os
 import threading
+import time
+import glob
 
-def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3) -> list:
+def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3, errors: list = None) -> list:
     """
     Uses yt-dlp to search for a single keyword and returns a mix of shorts and long videos.
     Returns a list of dicts: [{'title': str, 'url': str, 'is_short': bool}, ...]
@@ -60,11 +62,14 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3)
                         
             results = shorts_found + longs_found
     except Exception as e:
-        print(f"Error searching YouTube for '{keyword}': {e}")
-        
+        msg = f"YouTube search failed for '{keyword}': {e}"
+        print(msg)
+        if errors is not None:
+            errors.append(msg)
+
     return results
 
-def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, max_workers: int = 5, progress_callback=None) -> list:
+def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, max_workers: int = 5, progress_callback=None, errors: list = None) -> list:
     """
     For each slot, takes the FIRST keyword in 'keywords' and searches YouTube for it.
     Updates each slot with a 'youtube_results' list.
@@ -84,10 +89,10 @@ def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, 
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {
-            executor.submit(search_youtube_single, kw, num_shorts, num_longs): idx 
+            executor.submit(search_youtube_single, kw, num_shorts, num_longs, errors): idx
             for idx, kw in queries
         }
-        
+
         for future in concurrent.futures.as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
@@ -95,6 +100,10 @@ def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, 
                 slots[idx]['youtube_results'] = results
             except Exception as e:
                 slots[idx]['youtube_results'] = []
+                msg = f"YouTube search thread failed: {e}"
+                print(msg)
+                if errors is not None:
+                    errors.append(msg)
                 
             completed_queries += 1
             if progress_callback:
@@ -142,19 +151,21 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
     def my_hook(d):
         if task_state.get('status') == 'cancelled':
             raise DownloadInterrupt("Download cancelled by user")
-            
+
         while task_state.get('status') == 'paused':
-            if task_state.get('status') == 'cancelled':
-                raise DownloadInterrupt("Download cancelled by user")
-            threading.Event().wait(1.0) # sleep 1s
-            
+            time.sleep(0.5)
+        # Re-check cancel after unpausing (user may have cancelled while paused)
+        if task_state.get('status') == 'cancelled':
+            raise DownloadInterrupt("Download cancelled by user")
+
         if d['status'] == 'downloading':
             total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
             if total_bytes:
                 downloaded_bytes = d.get('downloaded_bytes', 0)
                 task_state['progress'] = downloaded_bytes / total_bytes
-                
-                # Check size during download if not caught early
+                task_state['speed'] = d.get('speed') or 0
+                task_state['eta'] = d.get('eta')
+
                 if max_size_mb:
                     size_mb = total_bytes / (1024 * 1024)
                     if size_mb > max_size_mb:
@@ -196,19 +207,28 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             
         if normalize:
             task_state['status'] = 'processing'
+            task_state['speed'] = None
             normalize_video(output_path)
-            
+
         task_state['status'] = 'completed'
         task_state['progress'] = 1.0
+        task_state['speed'] = None
     except DownloadInterrupt:
         task_state['status'] = 'cancelled'
-        part_file = output_path + '.part'
-        if os.path.exists(part_file):
-            try: os.remove(part_file)
-            except: pass
-        if os.path.exists(output_path):
-            try: os.remove(output_path)
-            except: pass
+        base = os.path.splitext(output_path)[0]
+        for path in [output_path, output_path + '.part', output_path + '.ytdl']:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+        # Clean up yt-dlp fragment files (e.g. video.f140.mp4, video.f248.webm)
+        for pattern in [f"{base}.f[0-9]*.mp4", f"{base}.f[0-9]*.webm", f"{base}.f[0-9]*.m4a"]:
+            for f in glob.glob(pattern):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
     except Exception as e:
         task_state['status'] = 'error'
         task_state['error_msg'] = str(e)

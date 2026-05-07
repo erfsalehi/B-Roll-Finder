@@ -3,6 +3,7 @@ import os
 import json
 import zipfile
 import io
+import socket
 from dotenv import load_dotenv, set_key
 
 from core.timing import get_audio_duration, parse_script_to_slots, calculate_wps
@@ -24,6 +25,29 @@ if not os.path.exists(".cache"):
 
 load_dotenv(ENV_FILE)
 
+def _check_network() -> bool:
+    try:
+        socket.setdefaulttimeout(3)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("8.8.8.8", 53))
+        return True
+    except Exception:
+        return False
+
+def _format_speed(bps) -> str:
+    if not bps:
+        return ""
+    if bps >= 1_048_576:
+        return f"{bps / 1_048_576:.1f} MB/s"
+    return f"{bps / 1024:.0f} KB/s"
+
+def _format_eta(seconds) -> str:
+    if seconds is None:
+        return ""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    return f"{seconds // 60}m {seconds % 60}s"
+
 # Initialize Session State
 if "slots" not in st.session_state:
     st.session_state.slots = []
@@ -37,6 +61,8 @@ if "global_themes" not in st.session_state:
     st.session_state.global_themes = []
 if "dm" not in st.session_state:
     st.session_state.dm = DownloadManager()
+if "is_fetching" not in st.session_state:
+    st.session_state.is_fetching = False
 
 # Attempt to load from cache
 def load_cache():
@@ -311,52 +337,98 @@ def render_classic_mode():
         st.write("**Pixabay**")
         pixabay_count = st.number_input("Pixabay Videos", value=1, min_value=0, max_value=5)
 
-    if st.button("Fetch Links"):
+    fetch_btn = st.button("Fetch Links", disabled=st.session_state.is_fetching)
+
+    if fetch_btn:
         if not st.session_state.slots:
             st.error("Please generate keywords first.")
+        elif st.session_state.is_fetching:
+            st.warning("A fetch is already in progress. Please wait.")
         else:
-            progress_bar_yt = st.progress(0)
-            status_text_yt = st.empty()
+            if not _check_network():
+                st.error("No network connection detected. Please check your internet and try again.")
+            else:
+                st.session_state.is_fetching = True
+                fetch_errors = []
+                try:
+                    progress_bar_yt = st.progress(0)
+                    status_text_yt = st.empty()
 
-            # First YouTube
-            if yt_shorts > 0 or yt_longs > 0:
-                status_text_yt.text("Searching YouTube...")
-                st.session_state.slots = fetch_youtube_results(
-                    st.session_state.slots, 
-                    num_shorts=yt_shorts, 
-                    num_longs=yt_longs, 
-                    progress_callback=lambda p: progress_bar_yt.progress(p * 0.3)
-                )
+                    # First YouTube
+                    if yt_shorts > 0 or yt_longs > 0:
+                        status_text_yt.text("Searching YouTube...")
+                        st.session_state.slots = fetch_youtube_results(
+                            st.session_state.slots,
+                            num_shorts=yt_shorts,
+                            num_longs=yt_longs,
+                            progress_callback=lambda p: progress_bar_yt.progress(p * 0.3),
+                            errors=fetch_errors
+                        )
 
-            # Then Pexels & Pixabay
-            total_slots = len(st.session_state.slots)
-            for idx, slot in enumerate(st.session_state.slots):
-                keywords = slot.get('keywords', [])
-                primary_kw = keywords[0] if keywords else None
+                    # Then Pexels & Pixabay
+                    total_slots = len(st.session_state.slots)
+                    pexels_failures = 0
+                    pixabay_failures = 0
+                    _CIRCUIT_LIMIT = 3
+                    for idx, slot in enumerate(st.session_state.slots):
+                        keywords = slot.get('keywords', [])
+                        primary_kw = keywords[0] if keywords else None
 
-                # CLEAR existing video results so we respect exactly what the user currently asked for
-                slot['video_results'] = []
+                        slot['video_results'] = []
 
-                # Migrate fresh youtube_results from the above fetch
-                if 'youtube_results' in slot:
-                    slot['video_results'].extend(slot['youtube_results'])
-                    del slot['youtube_results']
+                        if 'youtube_results' in slot:
+                            slot['video_results'].extend(slot['youtube_results'])
+                            del slot['youtube_results']
 
-                if primary_kw:
-                    if pexels_count > 0 and os.getenv("PEXELS_API_KEY"):
-                        pexels_res = search_pexels(primary_kw, os.getenv("PEXELS_API_KEY"), pexels_count)
-                        slot['video_results'].extend(pexels_res)
+                        if primary_kw:
+                            if pexels_count > 0 and os.getenv("PEXELS_API_KEY") and pexels_failures < _CIRCUIT_LIMIT:
+                                prev_err_count = len(fetch_errors)
+                                pexels_res = search_pexels(primary_kw, os.getenv("PEXELS_API_KEY"), pexels_count, errors=fetch_errors)
+                                if len(fetch_errors) > prev_err_count:
+                                    pexels_failures += 1
+                                    if pexels_failures >= _CIRCUIT_LIMIT:
+                                        fetch_errors.append("Pexels: 3 consecutive failures — skipping remaining Pexels searches.")
+                                else:
+                                    pexels_failures = 0
+                                slot['video_results'].extend(pexels_res)
 
-                    if pixabay_count > 0 and os.getenv("PIXABAY_API_KEY"):
-                        pixabay_res = search_pixabay(primary_kw, os.getenv("PIXABAY_API_KEY"), pixabay_count)
-                        slot['video_results'].extend(pixabay_res)
+                            if pixabay_count > 0 and os.getenv("PIXABAY_API_KEY") and pixabay_failures < _CIRCUIT_LIMIT:
+                                prev_err_count = len(fetch_errors)
+                                pixabay_res = search_pixabay(primary_kw, os.getenv("PIXABAY_API_KEY"), pixabay_count, errors=fetch_errors)
+                                if len(fetch_errors) > prev_err_count:
+                                    pixabay_failures += 1
+                                    if pixabay_failures >= _CIRCUIT_LIMIT:
+                                        fetch_errors.append("Pixabay: 3 consecutive failures — skipping remaining Pixabay searches.")
+                                else:
+                                    pixabay_failures = 0
+                                slot['video_results'].extend(pixabay_res)
 
-                progress_bar_yt.progress(0.3 + (0.7 * (idx + 1) / total_slots))
+                        status_text_yt.text(f"Fetching stock video links... ({idx + 1}/{total_slots})")
+                        progress_bar_yt.progress(0.3 + (0.7 * (idx + 1) / total_slots))
 
-            progress_bar_yt.progress(1.0)
-            status_text_yt.text("All video links fetched!")
-            save_cache()
-            st.success("Video results fetched!")
+                    progress_bar_yt.progress(1.0)
+                    status_text_yt.text("Done.")
+                    save_cache()
+
+                    total_results = sum(len(s.get('video_results', [])) for s in st.session_state.slots)
+                    if total_results == 0 and fetch_errors:
+                        st.error(f"Fetch completed but 0 results were found. All {len(fetch_errors)} searches failed.")
+                    elif total_results > 0:
+                        st.success(f"Fetched {total_results} video candidates across {total_slots} slots.")
+
+                    if fetch_errors:
+                        # Deduplicate by error type (strip the per-keyword prefix for grouping)
+                        unique_errors = list(dict.fromkeys(fetch_errors))
+                        with st.expander(f"⚠️ {len(unique_errors)} search error(s) — click to see details"):
+                            for err in unique_errors[:20]:
+                                st.write(f"• {err}")
+                            if len(unique_errors) > 20:
+                                st.write(f"... and {len(unique_errors) - 20} more.")
+                        ssl_keywords = ("ssl", "certificate", "eof occurred", "handshake", "tlsv1")
+                        if any(kw in e.lower() for e in unique_errors for kw in ssl_keywords):
+                            st.warning("YouTube SSL errors detected. Try running `yt-dlp -U` in your terminal to update yt-dlp, then restart the app.")
+                finally:
+                    st.session_state.is_fetching = False
 
     # Step 6: Download Videos (Local)
     col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
@@ -375,12 +447,15 @@ def render_classic_mode():
     if c1.button("Start Downloading Videos"):
         if not st.session_state.slots:
             st.error("Please generate keywords and fetch video links first.")
+        elif not _check_network():
+            st.error("No network connection detected. Please check your internet and try again.")
         else:
             if st.session_state.dm.max_workers != max_workers:
                 st.session_state.dm = DownloadManager(max_workers=max_workers)
             
             st.session_state.dm.clear_and_reset()
-            
+
+
             added_count = 0
             for i, slot in enumerate(st.session_state.slots):
                 results = slot.get('video_results', slot.get('youtube_results', []))
@@ -388,6 +463,9 @@ def render_classic_mode():
                 safe_kw = "".join([c if c.isalnum() or c in " -_" else "_" for c in primary_kw]).strip()
 
                 for j, res in enumerate(results):
+                    url = res.get('url')
+                    if not url:
+                        continue
                     source = res.get('source', 'youtube')
                     filename = f"{i+1}-{j+1}-{source}-{safe_kw[:20]}.mp4"
                     output_path = os.path.join("downloads", filename)
@@ -395,9 +473,9 @@ def render_classic_mode():
                     dm_source = 'direct' if source in ['pexels', 'pixabay'] else 'youtube'
                     try:
                         task_id = st.session_state.dm.add_download(
-                            res['url'], 
-                            output_path, 
-                            video_quality, 
+                            url,
+                            output_path,
+                            video_quality,
                             source=dm_source,
                             max_size_mb=max_size_mb,
                             strict_quality=strict_quality,
@@ -407,11 +485,11 @@ def render_classic_mode():
                         added_count += 1
                     except Exception as e:
                         st.error(f"Error adding {filename}: {e}")
-            
+
             if added_count > 0:
                 st.success(f"Added {added_count} downloads to the queue! View progress below.")
             else:
-                st.warning("No video results found to download. Did you click 'Fetch Links' first?")
+                st.warning("No video links found to download. Please run **Fetch Links** (Step 5) first to search for footage.")
 
     if c2.button("Cancel All Downloads"):
         st.session_state.dm.cancel_all()
@@ -442,18 +520,24 @@ def render_classic_mode():
         if active_tasks:
             st.subheader("Currently Downloading")
             for t in active_tasks:
-                st.write(f"**{os.path.basename(t['output_path'])}** - {t['status'].title()} ({t['progress']*100:.1f}%)")
+                is_processing = t['status'] == 'processing'
+                speed_str = _format_speed(t.get('speed'))
+                eta_str = _format_eta(t.get('eta'))
+                meta = " | ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
+                label = "Normalizing…" if is_processing else f"{t['status'].title()} ({t['progress']*100:.1f}%){(' — ' + meta) if meta else ''}"
+                st.write(f"**{os.path.basename(t['output_path'])}** — {label}")
                 st.progress(t['progress'])
 
-                b1, b2, b3 = st.columns(3)
-                if t['status'] == 'downloading':
-                    if b1.button("Pause", key=f"p_{t['id']}"):
-                        st.session_state.dm.pause_download(t['id'])
-                        st.rerun()
-                elif t['status'] == 'paused':
-                    if b1.button("Resume", key=f"r_{t['id']}"):
-                        st.session_state.dm.resume_download(t['id'])
-                        st.rerun()
+                b1, b2, _ = st.columns(3)
+                if not is_processing:
+                    if t['status'] == 'downloading':
+                        if b1.button("Pause", key=f"p_{t['id']}"):
+                            st.session_state.dm.pause_download(t['id'])
+                            st.rerun()
+                    elif t['status'] == 'paused':
+                        if b1.button("Resume", key=f"r_{t['id']}"):
+                            st.session_state.dm.resume_download(t['id'])
+                            st.rerun()
 
                 if b2.button("Cancel", key=f"c_{t['id']}"):
                     st.session_state.dm.cancel_download(t['id'])

@@ -18,6 +18,12 @@ class DownloadManager:
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
         
+        # Deduplicate: return existing task if same URL+path is already active
+        for existing in self.tasks.values():
+            if (existing['url'] == url and existing['output_path'] == output_path
+                    and existing['status'] not in ('cancelled', 'error', 'completed')):
+                return existing['id']
+
         state = {
             'id': task_id,
             'url': url,
@@ -29,7 +35,9 @@ class DownloadManager:
             'error_msg': None,
             'max_size_mb': max_size_mb,
             'strict_quality': strict_quality,
-            'normalize': normalize
+            'normalize': normalize,
+            'speed': None,
+            'eta': None,
         }
         self.tasks[task_id] = state
         return task_id
@@ -67,7 +75,7 @@ class DownloadManager:
         return list(self.tasks.values())
         
     def get_active_tasks(self):
-        return [t for t in self.tasks.values() if t['status'] in ['downloading', 'paused']]
+        return [t for t in self.tasks.values() if t['status'] in ['downloading', 'paused', 'processing']]
         
     def get_failed_tasks(self):
         return [t for t in self.tasks.values() if t['status'] == 'error']

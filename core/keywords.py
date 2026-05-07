@@ -117,43 +117,49 @@ def load_json_prompt() -> str:
     with open(prompt_path, 'r', encoding='utf-8') as f:
         return f.read()
 
-def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "", start_offset: float = 0.0) -> list:
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type(Exception)
+)
+def _call_groq_json(client: Groq, system_prompt: str, block: str) -> dict:
     import json
+    response = client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": block}
+        ],
+        model="llama-3.3-70b-versatile",
+        temperature=0.7,
+        max_tokens=2000,
+        response_format={"type": "json_object"}
+    )
+    return json.loads(response.choices[0].message.content)
+
+def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "", start_offset: float = 0.0) -> list:
     if not api_key:
         raise ValueError("Groq API key is missing.")
-        
+
     client = Groq(api_key=api_key)
     system_prompt_template = load_json_prompt()
     system_prompt = system_prompt_template.replace("{num_alternatives}", str(num_alternatives))
-    
+
     custom_block = ""
     if custom_instructions and custom_instructions.strip():
         custom_block = f"USER CUSTOM INSTRUCTIONS: {custom_instructions.strip()}\nPlease ensure the generated keywords strictly adhere to these specific style or content guidelines."
     system_prompt = system_prompt.replace("{custom_instructions_block}", custom_block)
-    
+
     # Split text into blocks that respect sentence boundaries (~150 words per block)
     from core.timing import split_script_into_smart_blocks
     blocks = split_script_into_smart_blocks(script_text, max_words=150)
-    
+
     total_blocks = len(blocks)
     all_slots = []
     current_time = start_offset
-    
+
     for i, block in enumerate(blocks):
         try:
-            response = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": block}
-                ],
-                model="llama-3.3-70b-versatile",
-                temperature=0.7,
-                max_tokens=2000,
-                response_format={"type": "json_object"}
-            )
-            
-            response_text = response.choices[0].message.content
-            data = json.loads(response_text)
+            data = _call_groq_json(client, system_prompt, block)
             chunks = data.get("chunks", [])
             
             for chunk in chunks:
