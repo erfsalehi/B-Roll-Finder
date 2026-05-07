@@ -782,44 +782,95 @@ elif app_mode == "Director (v0.2)":
     from core.director_search import fetch_director_footage
     from core.director_rank import rank_shot_candidates
     from core.output import generate_fcpxml, generate_shot_list_txt
-    st.title("🎬 B-Roll Director (v0.2)")
-    
-    with st.expander("Step 1: Setup (API Keys)", expanded=not bool(os.getenv("GROQ_API_KEY"))):
-        # We can reuse the keys from .env
-        groq_input = st.text_input("Groq API Key (Required)", value=os.getenv("GROQ_API_KEY", ""), type="password", key="d_groq")
-        pexels_input = st.text_input("Pexels API Key (Optional)", value=os.getenv("PEXELS_API_KEY", ""), type="password", key="d_pex")
-        pixabay_input = st.text_input("Pixabay API Key (Optional)", value=os.getenv("PIXABAY_API_KEY", ""), type="password", key="d_pix")
-        if st.button("Save API Keys", key="d_save_keys"):
+    st.title("🎬 B-Roll Director")
+
+    # ── Setup: API keys (collapsible, auto-collapses once Groq key is present) ──
+    _key_status = {
+        "Groq":       bool(os.getenv("GROQ_API_KEY")),
+        "Pexels":     bool(os.getenv("PEXELS_API_KEY")),
+        "Pixabay":    bool(os.getenv("PIXABAY_API_KEY")),
+        "YouTube":    bool(os.getenv("YOUTUBE_API_KEY")),
+        "OpenRouter": bool(os.getenv("OPENROUTER_API_KEY")),
+    }
+    _pill = " · ".join(f"{'✅' if v else '○'} {k}" for k, v in _key_status.items())
+    with st.expander(f"⚙️ Setup — API keys  ·  {_pill}",
+                     expanded=not _key_status["Groq"]):
+        st.caption(
+            "Groq is required (script analysis & ranking). Pexels/Pixabay/YouTube are "
+            "search sources — enable at least one. OpenRouter is an automatic fallback "
+            "when Groq hits its rate limit."
+        )
+        col_k1, col_k2 = st.columns(2)
+        with col_k1:
+            groq_input    = st.text_input("Groq API Key (required)",
+                                          value=os.getenv("GROQ_API_KEY", ""),
+                                          type="password", key="d_groq")
+            pexels_input  = st.text_input("Pexels API Key",
+                                          value=os.getenv("PEXELS_API_KEY", ""),
+                                          type="password", key="d_pex")
+            pixabay_input = st.text_input("Pixabay API Key",
+                                          value=os.getenv("PIXABAY_API_KEY", ""),
+                                          type="password", key="d_pix")
+        with col_k2:
+            youtube_input    = st.text_input("YouTube Data API Key",
+                                             value=os.getenv("YOUTUBE_API_KEY", ""),
+                                             type="password", key="d_yt",
+                                             help="Optional. 10,000 quota units/day; each search costs 100.")
+            openrouter_input = st.text_input("OpenRouter API Key",
+                                             value=os.getenv("OPENROUTER_API_KEY", ""),
+                                             type="password", key="d_or",
+                                             help="Optional fallback when Groq returns rate-limit errors.")
+            st.markdown("&nbsp;")  # vertical spacer to align rows
+        if st.button("Save API Keys", key="d_save_keys", type="primary"):
             if groq_input:
                 set_key(ENV_FILE, "GROQ_API_KEY", groq_input)
-                if pexels_input: set_key(ENV_FILE, "PEXELS_API_KEY", pexels_input)
-                if pixabay_input: set_key(ENV_FILE, "PIXABAY_API_KEY", pixabay_input)
+                if pexels_input:     set_key(ENV_FILE, "PEXELS_API_KEY",     pexels_input)
+                if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
+                if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
+                if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
                 load_dotenv(ENV_FILE, override=True)
-                st.success("API Keys saved to .env!")
-    
-    st.header("Step 2: Upload Files")
-    col1, col2 = st.columns(2)
-    with col1:
-        script_file = st.file_uploader("Upload Script (.txt)", type=["txt"], key="d_script")
-    with col2:
-        audio_file = st.file_uploader("Upload Voiceover (to extract duration)", type=["mp3", "wav", "m4a"], key="d_audio")
+                st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
+            else:
+                st.warning("Groq API key is required.")
+
+    st.header("Step 1: Upload Files")
+    with st.container(border=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            script_file = st.file_uploader("Script (.txt)", type=["txt"], key="d_script",
+                                           help="Plain-text voiceover script.")
+        with col2:
+            audio_file = st.file_uploader("Voiceover audio", type=["mp3", "wav", "m4a"], key="d_audio",
+                                          help="Used to compute speaking rate (words per second).")
+
+        if script_file and audio_file:
+            script_content = script_file.read().decode("utf-8")
+
+            audio_path = os.path.join(".cache", "temp_audio_director" + os.path.splitext(audio_file.name)[1])
+            with open(audio_path, "wb") as f:
+                f.write(audio_file.read())
+
+            st.session_state.script_text = script_content
+            st.session_state.audio_duration = get_audio_duration(audio_path)
+
+            # Compact metric row instead of a wide info banner.
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Words", f"{len(st.session_state.script_text.split()):,}")
+            with m2:
+                st.metric("Duration", f"{st.session_state.audio_duration:.1f}s")
+            with m3:
+                wps = calculate_wps(st.session_state.script_text, st.session_state.audio_duration)
+                st.metric("Speaking rate", f"{wps:.2f} wps")
+
+            st.audio(audio_path)
+            with st.expander("View uploaded script"):
+                st.text_area("Full script", value=st.session_state.script_text, height=200,
+                             disabled=True, key="d_full_script", label_visibility="collapsed")
+        else:
+            st.caption("Upload both files to continue.")
         
-    if script_file and audio_file:
-        script_content = script_file.read().decode("utf-8")
-        
-        audio_path = os.path.join(".cache", "temp_audio_director" + os.path.splitext(audio_file.name)[1])
-        with open(audio_path, "wb") as f:
-            f.write(audio_file.read())
-            
-        st.session_state.script_text = script_content
-        st.session_state.audio_duration = get_audio_duration(audio_path)
-        
-        st.info(f"Script words: {len(st.session_state.script_text.split())} | Audio Duration: {st.session_state.audio_duration:.2f}s")
-        st.audio(audio_path)
-        with st.expander("View Uploaded Script"):
-            st.text_area("Full Script", value=st.session_state.script_text, height=200, disabled=True, key="d_full_script")
-        
-    st.header("Step 3: Director's Vision (Stage 1)")
+    st.header("Step 2: Generate Shot List")
     
     with st.expander("Range Selection", expanded=False):
         d_use_portion = st.checkbox("Process Specific Portion", value=False, key="d_use_p")
@@ -829,8 +880,8 @@ elif app_mode == "Director (v0.2)":
         with col_dp2:
             d_end_time = st.number_input("End Time (seconds)", value=min(st.session_state.audio_duration, 300.0) if st.session_state.audio_duration > 0 else 60.0, step=1.0, key="d_end")
 
-    # Video topic — single source of truth shared with Stage 3 ranking.
-    # Editing it here updates Stage 3, and vice versa, because Streamlit
+    # Video topic — single source of truth shared with Step 4 (ranking).
+    # Editing it here updates Step 4, and vice versa, because Streamlit
     # binds widgets with the same `key` to one session_state slot.
     d_video_topic = st.text_input(
         "What is this video about? (sharpens both query generation and ranking)",
@@ -890,25 +941,87 @@ elif app_mode == "Director (v0.2)":
     if "director_shots" not in st.session_state:
         st.session_state.director_shots = []
 
-    # ── Stage 1 shot list table ──────────────────────────────────────────────
+    # ── Generated shot list (editable) ──────────────────────────────────────
     if st.session_state.director_shots:
         st.subheader("Shot List")
-        table_data = []
+        st.caption(
+            "Edit **Intent**, **Priority**, or **Queries** inline. After editing queries, "
+            "re-click *Fetch Candidates* in Step 3 to refresh results. Time, candidate count, "
+            "and pick count are read-only."
+        )
+
+        # Build rows from current state.
+        rows = []
         for shot in st.session_state.director_shots:
             sel = shot.get("selected_results", [])
-            table_data.append({
+            rows.append({
+                "#":          shot.get("slot_id", 0),
                 "Time":       f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}",
                 "Intent":     shot.get("shot_intent", ""),
-                "Priority":   shot.get("priority", ""),
+                "Priority":   shot.get("priority", "medium"),
                 "Queries":    " | ".join(shot.get("search_queries", [])),
-                "Candidates": len(shot.get("video_results", [])),
-                "Selected":   f"✅ {len(sel)}" if sel else ("⏭ Skipped" if shot.get("skipped") else "—"),
+                "Cand":       len(shot.get("video_results", [])),
+                "Picked":     f"✅ {len(sel)}" if sel else ("⏭ skip" if shot.get("skipped") else "—"),
             })
-        st.dataframe(table_data, use_container_width=True)
+        df_shots = pd.DataFrame(rows)
 
-    # ── Stage 2 — Fetch Candidates ───────────────────────────────────────────
+        edited_shots = st.data_editor(
+            df_shots,
+            column_config={
+                "#":        st.column_config.NumberColumn("#", width="small", help="Slot ID"),
+                "Time":     st.column_config.TextColumn("Time", width="small"),
+                "Intent":   st.column_config.TextColumn("Intent", width="medium",
+                              help="Short phrase describing what this moment must convey visually."),
+                "Priority": st.column_config.SelectboxColumn("Priority",
+                              options=["high", "medium", "low", "none"],
+                              required=True, width="small",
+                              help="'none' means talking-head — no B-roll is fetched for this shot."),
+                "Queries":  st.column_config.TextColumn("Queries (use ' | ' to separate)", width="large",
+                              help="Used by Step 3 to fetch candidates. Edit and re-fetch to update results."),
+                "Cand":     st.column_config.NumberColumn("Cand", width="small",
+                              help="Number of candidates fetched for this shot."),
+                "Picked":   st.column_config.TextColumn("Picked", width="small",
+                              help="How many candidates you've ticked in Step 5."),
+            },
+            disabled=["#", "Time", "Cand", "Picked"],
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            key="d_shotlist_editor",
+        )
+
+        # Sync edits back to director_shots only when something actually changed,
+        # so we don't churn save_cache on every rerun.
+        changed = False
+        for i, shot in enumerate(st.session_state.director_shots):
+            if i >= len(edited_shots):
+                continue
+            row = edited_shots.iloc[i]
+            new_intent  = str(row["Intent"] or "").strip()
+            new_pri     = str(row["Priority"] or "medium").strip().lower()
+            if new_pri not in ("high", "medium", "low", "none"):
+                new_pri = "medium"
+            new_queries_str = str(row["Queries"] or "")
+            new_queries    = [q.strip() for q in new_queries_str.split("|") if q.strip()]
+            # 'none' shots keep search_queries empty regardless of what was typed.
+            if new_pri == "none":
+                new_queries = []
+
+            if shot.get("shot_intent", "") != new_intent:
+                shot["shot_intent"] = new_intent
+                changed = True
+            if shot.get("priority", "medium") != new_pri:
+                shot["priority"] = new_pri
+                changed = True
+            if shot.get("search_queries", []) != new_queries:
+                shot["search_queries"] = new_queries
+                changed = True
+        if changed:
+            save_cache()
+
+    # ── Step 3 — Fetch Candidates ────────────────────────────────────────────
     if st.session_state.director_shots:
-        st.header("Stage 2: Fetch Candidates")
+        st.header("Step 3: Fetch Candidates")
 
         col_s2a, col_s2b, col_s2c, col_s2d = st.columns(4)
         with col_s2a:
@@ -982,22 +1095,22 @@ elif app_mode == "Director (v0.2)":
                 finally:
                     st.session_state.is_fetching = False
 
-    # ── Stage 3 — LLM Ranking ────────────────────────────────────────────────
+    # ── Step 4 — LLM Ranking ─────────────────────────────────────────────────
     # Ranker now also flags single-candidate shots as irrelevant when needed,
     # so we offer it whenever any shot has at least one candidate.
     has_candidates = any(len(s.get("video_results", [])) >= 1 for s in st.session_state.get("director_shots", []))
     if has_candidates:
-        st.header("Stage 3: Rank & Filter Candidates")
+        st.header("Step 4: Rank & Filter Candidates")
         st.caption("AI ranks candidates by visual relevance, flags off-topic clips, and prefers horizontal videos.")
 
-        # Read-only display of the topic set at Stage 1 (the input lives there
+        # Read-only display of the topic set at Step 2 (the input lives there
         # to also benefit query generation; we cannot have a second text_input
         # with the same key).
         d_video_topic = st.session_state.get("d_video_topic", "")
         if d_video_topic:
-            st.caption(f"📌 Using video topic: **{d_video_topic}** (edit in Step 3 above to change)")
+            st.caption(f"📌 Using video topic: **{d_video_topic}** (edit in Step 2 above to change)")
         else:
-            st.warning("⚠️ No video topic set. Set one in Step 3 above for the ranker to filter off-topic clips effectively.")
+            st.warning("⚠️ No video topic set. Set one in Step 2 above for the ranker to filter off-topic clips effectively.")
 
         if st.button("Rank Candidates with AI", key="d_rank"):
             if not os.getenv("GROQ_API_KEY"):
@@ -1036,14 +1149,14 @@ elif app_mode == "Director (v0.2)":
                 except Exception as e:
                     st.error(f"Ranking error: {e}")
 
-    # ── Stage 4 — Editor Review (paginated) ─────────────────────────────────
+    # ── Step 5 — Editor Review (paginated) ──────────────────────────────────
     review_shots = [s for s in st.session_state.get("director_shots", [])
                     if s.get("video_results") and s.get("priority") != "none"]
     if review_shots:
-        st.header("Stage 4: Review & Select")
+        st.header("Step 5: Review & Select")
         st.caption(
             "Tick the clips you want for each shot. Selections persist as you navigate — "
-            "nothing downloads until you click **Download** in Stage 5."
+            "nothing downloads until you click **Download** in Step 6."
         )
 
         if "d_review_idx" not in st.session_state:
@@ -1142,8 +1255,8 @@ elif app_mode == "Director (v0.2)":
             with ba3:
                 st.caption(
                     f"**{n_picked_in_shot} of {len(candidates)}** ticked for this shot. "
-                    f"Selections persist across shots and stages — nothing downloads until you click "
-                    f"**Download** in Stage 5."
+                    f"Selections persist across shots and steps — nothing downloads until you click "
+                    f"**Download** in Step 6."
                 )
 
             # Build one row per candidate. Pick reflects current selection.
@@ -1219,12 +1332,12 @@ elif app_mode == "Director (v0.2)":
             else:
                 if st.button("✅ Finish Review", key="d_finish", type="primary", use_container_width=True):
                     save_cache()
-                    st.success("Review complete! Scroll down to Stage 5 to start downloads.")
+                    st.success("Review complete! Scroll down to Step 6 to start downloads.")
 
-    # ── Stage 5 — Download ───────────────────────────────────────────────────
+    # ── Step 6 — Download ────────────────────────────────────────────────────
     selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_results")]
     if selected_shots:
-        st.header("Stage 5: Download Selected")
+        st.header("Step 6: Download Selected")
 
         col_dv1, col_dv2, col_dv3 = st.columns(3)
         with col_dv1:
@@ -1314,9 +1427,9 @@ elif app_mode == "Director (v0.2)":
             elif stats["queued"] > 0:
                 time.sleep(1); st.rerun()
 
-    # ── Export ───────────────────────────────────────────────────────────────
+    # ── Step 7 — Export ──────────────────────────────────────────────────────
     if st.session_state.director_shots:
-        st.header("Export")
+        st.header("Step 7: Export")
         shot_list_json = json.dumps(st.session_state.director_shots, indent=2)
         shot_list_txt  = generate_shot_list_txt(st.session_state.director_shots)
         fcpxml         = generate_fcpxml(st.session_state.director_shots)
