@@ -1,7 +1,13 @@
 import os
 import re
-from groq import Groq
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+import json
+import requests
+from groq import Groq, RateLimitError as GroqRateLimitError
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type
+
+GROQ_MODEL       = "llama-3.3-70b-versatile"
+OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+OPENROUTER_BASE  = "https://openrouter.ai/api/v1/chat/completions"
 
 def load_prompt() -> str:
     prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'visual_keywords.txt')
@@ -120,21 +126,59 @@ def load_json_prompt() -> str:
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=10),
     stop=stop_after_attempt(3),
-    retry=retry_if_exception_type(Exception)
+    # Don't retry rate-limit errors — fall back to OpenRouter instead
+    retry=retry_if_not_exception_type(GroqRateLimitError)
 )
 def _call_groq_json(client: Groq, system_prompt: str, block: str) -> dict:
-    import json
     response = client.chat.completions.create(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": block}
         ],
-        model="llama-3.3-70b-versatile",
+        model=GROQ_MODEL,
         temperature=0.7,
         max_tokens=2000,
         response_format={"type": "json_object"}
     )
     return json.loads(response.choices[0].message.content)
+
+
+def _call_openrouter_json(system_prompt: str, user_content: str,
+                          temperature: float = 0.7, max_tokens: int = 2000) -> dict:
+    """Calls OpenRouter with the shared fallback model. Raises on failure."""
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise ValueError("OpenRouter API key is missing. Add it in Step 1 settings.")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type":  "application/json",
+    }
+    payload = {
+        "model":           OPENROUTER_MODEL,
+        "temperature":     temperature,
+        "max_tokens":      max_tokens,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_content},
+        ],
+    }
+    resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
+    resp.raise_for_status()
+    return json.loads(resp.json()["choices"][0]["message"]["content"])
+
+
+def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
+                   temperature: float = 0.7, max_tokens: int = 2000) -> dict:
+    """
+    Try Groq first. On rate-limit, fall back to OpenRouter automatically.
+    All other callers should use this instead of _call_groq_json directly.
+    """
+    try:
+        return _call_groq_json(client, system_prompt, user_content)
+    except GroqRateLimitError:
+        print("Groq rate limit hit — falling back to OpenRouter.")
+        return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
 
 def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "", start_offset: float = 0.0) -> list:
     if not api_key:
@@ -159,7 +203,7 @@ def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: st
 
     for i, block in enumerate(blocks):
         try:
-            data = _call_groq_json(client, system_prompt, block)
+            data = _call_llm_json(client, system_prompt, block)
             chunks = data.get("chunks", [])
             
             for chunk in chunks:
@@ -214,7 +258,7 @@ def generate_global_themes(script_text: str, api_key: str, num_themes: int = 5) 
         system_prompt = f.read().replace("{num_themes}", str(num_themes))
         
     try:
-        data = _call_groq_json(client, system_prompt, f"SCRIPT:\n{script_text}")
+        data = _call_llm_json(client, system_prompt, f"SCRIPT:\n{script_text}")
         themes = data.get("themes", [])
         for t in themes:
             t.setdefault('keywords', [])

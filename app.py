@@ -116,21 +116,28 @@ def render_classic_mode():
                     pass
         load_dotenv(ENV_FILE, override=True)
 
-        current_groq = os.getenv("GROQ_API_KEY", "")
-        current_pexels = os.getenv("PEXELS_API_KEY", "")
-        current_pixabay = os.getenv("PIXABAY_API_KEY", "")
+        current_groq       = os.getenv("GROQ_API_KEY", "")
+        current_pexels     = os.getenv("PEXELS_API_KEY", "")
+        current_pixabay    = os.getenv("PIXABAY_API_KEY", "")
+        current_openrouter = os.getenv("OPENROUTER_API_KEY", "")
 
-        groq_input = st.text_input("Groq API Key (Required)", value=current_groq, type="password")
-        pexels_input = st.text_input("Pexels API Key (Optional)", value=current_pexels, type="password")
-        pixabay_input = st.text_input("Pixabay API Key (Optional)", value=current_pixabay, type="password")
+        groq_input       = st.text_input("Groq API Key (Required)", value=current_groq, type="password")
+        openrouter_input = st.text_input(
+            "OpenRouter API Key (Optional — fallback when Groq hits rate limits)",
+            value=current_openrouter, type="password",
+            help="Uses meta-llama/llama-3.3-70b-instruct:free on OpenRouter automatically when Groq returns a rate-limit error."
+        )
+        pexels_input   = st.text_input("Pexels API Key (Optional)",   value=current_pexels,   type="password")
+        pixabay_input  = st.text_input("Pixabay API Key (Optional)",  value=current_pixabay,  type="password")
 
         if st.button("Save API Keys"):
             if groq_input:
                 if not os.path.exists(ENV_FILE):
                     open(ENV_FILE, 'w').close()
                 set_key(ENV_FILE, "GROQ_API_KEY", groq_input)
-                if pexels_input: set_key(ENV_FILE, "PEXELS_API_KEY", pexels_input)
-                if pixabay_input: set_key(ENV_FILE, "PIXABAY_API_KEY", pixabay_input)
+                if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
+                if pexels_input:     set_key(ENV_FILE, "PEXELS_API_KEY",     pexels_input)
+                if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API Keys saved to .env!")
             else:

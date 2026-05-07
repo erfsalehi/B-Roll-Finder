@@ -1,6 +1,6 @@
 import os
 from groq import Groq
-from core.keywords import _call_groq_json
+from core.keywords import _call_llm_json
 
 
 def _load_rank_prompt() -> str:
@@ -55,7 +55,7 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
         )
 
         try:
-            data = _call_groq_json(client, system_prompt, user_msg)
+            data = _call_llm_json(client, system_prompt, user_msg)
             ranked = data.get('ranked', [])
 
             if ranked:
