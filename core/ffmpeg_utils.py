@@ -44,3 +44,34 @@ def normalize_video(input_path: str, target_res: str = "1920x1080") -> str:
         if os.path.exists(output_path):
             os.remove(output_path)
         raise e
+
+def compress_audio_for_whisper(input_path: str) -> str:
+    """
+    Compresses an audio file to a low-bitrate mono MP3 (16kHz).
+    This ensures the file is under the 25MB Groq/Whisper limit while remaining 
+    perfectly legible for AI transcription.
+    """
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+        
+    base, _ = os.path.splitext(input_path)
+    output_path = f"{base}_for_whisper.mp3"
+    
+    # 16kHz mono 32k bitrate is plenty for transcription
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-ar", "16000",
+        "-ac", "1",
+        "-b:a", "32k",
+        output_path
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg compression error: {e.stderr}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        raise e

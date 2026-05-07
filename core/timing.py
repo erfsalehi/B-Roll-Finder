@@ -1,7 +1,41 @@
 import os
+import re
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from mutagen.mp4 import MP4
+
+def split_script_into_smart_blocks(script_text: str, max_words: int = 150) -> list[str]:
+    """
+    Splits a script into blocks that respect sentence boundaries.
+    Attempts to keep blocks close to max_words but won't break a sentence.
+    """
+    # Split by sentences (period, exclamation, question mark followed by space)
+    # We use lookbehind to keep the delimiter
+    sentences = re.split(r'(?<=[.!?])\s+', script_text.strip())
+    
+    blocks = []
+    current_block = []
+    current_word_count = 0
+    
+    for sentence in sentences:
+        sentence_words = sentence.split()
+        sentence_word_count = len(sentence_words)
+        
+        # If adding this sentence exceeds max_words and we already have some content,
+        # finish the current block.
+        if current_word_count + sentence_word_count > max_words and current_block:
+            blocks.append(" ".join(current_block))
+            current_block = []
+            current_word_count = 0
+            
+        current_block.append(sentence)
+        current_word_count += sentence_word_count
+        
+    # Add the final block if it exists
+    if current_block:
+        blocks.append(" ".join(current_block))
+        
+    return blocks
 
 def get_audio_duration(file_path: str) -> float:
     """
@@ -31,7 +65,34 @@ def calculate_wps(script_text: str, duration_seconds: float) -> float:
         return 0.0
     return total_words / duration_seconds
 
-def parse_script_to_slots(script_text: str, duration_seconds: float, intro_duration: float = 30.0, intro_interval: float = 1.0, body_interval: float = 2.0) -> list[dict]:
+def slice_script_by_time(script_text: str, total_duration: float, start_time: float, end_time: float) -> str:
+    """
+    Extracts the portion of the script corresponding to the given time range.
+    Uses linear WPS estimation.
+    """
+    words = script_text.split()
+    total_words = len(words)
+    if total_words == 0 or total_duration <= 0:
+        return ""
+        
+    wps = total_words / total_duration
+    
+    start_idx = int(start_time * wps)
+    end_idx = int(end_time * wps)
+    
+    # Ensure indices are within bounds
+    start_idx = max(0, min(start_idx, total_words))
+    end_idx = max(0, min(end_idx, total_words))
+    
+    if start_idx >= end_idx:
+        # If the range is too small, at least return one word if possible
+        if start_idx < total_words:
+            return words[start_idx]
+        return ""
+        
+    return " ".join(words[start_idx:end_idx])
+
+def parse_script_to_slots(script_text: str, duration_seconds: float, intro_duration: float = 30.0, intro_interval: float = 1.0, body_interval: float = 2.0, start_offset: float = 0.0) -> list[dict]:
     """
     Parses a full script into timestamped slots based on average words per second.
     """
@@ -43,11 +104,14 @@ def parse_script_to_slots(script_text: str, duration_seconds: float, intro_durat
     wps = total_words / duration_seconds
     
     slots = []
-    current_time = 0.0
+    current_time = start_offset
     current_word_idx = 0
     
-    while current_time < duration_seconds and current_word_idx < total_words:
-        interval = intro_interval if current_time < intro_duration else body_interval
+    # Absolute end time for this portion
+    max_time = start_offset + duration_seconds
+    
+    while current_time < max_time and current_word_idx < total_words:
+        interval = intro_interval if current_time < (start_offset + intro_duration) else body_interval
         
         # Determine how many words fall into this interval
         words_in_interval = int(wps * interval)
@@ -57,13 +121,13 @@ def parse_script_to_slots(script_text: str, duration_seconds: float, intro_durat
         end_idx = min(current_word_idx + words_in_interval, total_words)
         
         # Last interval should consume all remaining words
-        if current_time + interval >= duration_seconds:
+        if current_time + interval >= max_time:
             end_idx = total_words
             
         chunk = " ".join(words[current_word_idx:end_idx])
         slots.append({
             "timestamp": int(current_time),
-            "end_timestamp": int(min(current_time + interval, duration_seconds)),
+            "end_timestamp": int(min(current_time + interval, max_time)),
             "text": chunk
         })
         

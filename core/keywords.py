@@ -117,7 +117,7 @@ def load_json_prompt() -> str:
     with open(prompt_path, 'r', encoding='utf-8') as f:
         return f.read()
 
-def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "") -> list:
+def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "", start_offset: float = 0.0) -> list:
     import json
     if not api_key:
         raise ValueError("Groq API key is missing.")
@@ -131,14 +131,13 @@ def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: st
         custom_block = f"USER CUSTOM INSTRUCTIONS: {custom_instructions.strip()}\nPlease ensure the generated keywords strictly adhere to these specific style or content guidelines."
     system_prompt = system_prompt.replace("{custom_instructions_block}", custom_block)
     
-    # Split text into blocks of ~150 words to avoid overwhelming the JSON parser/context
-    words = script_text.split()
-    block_size = 150
-    blocks = [" ".join(words[i:i+block_size]) for i in range(0, len(words), block_size)]
+    # Split text into blocks that respect sentence boundaries (~150 words per block)
+    from core.timing import split_script_into_smart_blocks
+    blocks = split_script_into_smart_blocks(script_text, max_words=150)
     
     total_blocks = len(blocks)
     all_slots = []
-    current_time = 0.0
+    current_time = start_offset
     
     for i, block in enumerate(blocks):
         try:
@@ -194,5 +193,103 @@ def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: st
             
         if progress_callback:
             progress_callback(min(1.0, (i + 1) / total_blocks))
+            
+    return all_slots
+
+def generate_global_themes(script_text: str, api_key: str, num_themes: int = 5) -> list:
+    import json
+    if not api_key:
+        raise ValueError("Groq API key is missing.")
+        
+    client = Groq(api_key=api_key)
+    
+    prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'global_themes.txt')
+    with open(prompt_path, 'r', encoding='utf-8') as f:
+        system_prompt = f.read().replace("{num_themes}", str(num_themes))
+        
+    try:
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"SCRIPT:\n{script_text}"}
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
+            max_tokens=1500,
+            response_format={"type": "json_object"}
+        )
+        
+        data = json.loads(response.choices[0].message.content)
+        themes = data.get("themes", [])
+        for t in themes:
+            t['video_results'] = []
+        return themes
+    except Exception as e:
+        print(f"Error generating global themes: {e}")
+        return []
+
+def generate_keywords_from_transcription(segments: list, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "") -> list:
+    """
+    Groups transcription segments into meaningful visual beats and generates keywords.
+    """
+    import json
+    if not api_key:
+        raise ValueError("Groq API key is missing.")
+        
+    client = Groq(api_key=api_key)
+    
+    # We use a specialized prompt for this that understands [start-end] segments
+    system_prompt = f"""You are an expert video editor. You will receive a list of timestamped transcription segments.
+Your task is to group these segments into "visual beats" (meaningful shots) and generate {num_alternatives} B-roll search keywords for each.
+
+CRITICAL RULES:
+1. Output MUST be valid JSON with a "chunks" array.
+2. Each chunk must have:
+   - "text": The combined text of the segments in this beat.
+   - "start": The start timestamp of the first segment in the beat.
+   - "end": The end timestamp of the last segment in the beat.
+   - "keywords": Exactly {num_alternatives} search phrases.
+3. NEVER break a sentence across two chunks. 
+4. DO NOT change the text of the segments.
+5. If a segment is very short, combine it with the next one to make a meaningful shot (typically 3-8 seconds).
+
+{custom_instructions}
+"""
+    
+    # Group segments into blocks of ~20 segments to avoid context limits
+    block_size = 20
+    all_slots = []
+    
+    for i in range(0, len(segments), block_size):
+        block = segments[i : i + block_size]
+        user_content = "\n".join([f"[{s['start']:.2f} - {s['end']:.2f}]: {s['text']}" for s in block])
+        
+        try:
+            response = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                model="llama-3.3-70b-versatile",
+                temperature=0.3,
+                max_tokens=2500,
+                response_format={"type": "json_object"}
+            )
+            
+            data = json.loads(response.choices[0].message.content)
+            chunks = data.get("chunks", [])
+            
+            for chunk in chunks:
+                all_slots.append({
+                    "timestamp": int(chunk.get("start", 0)),
+                    "end_timestamp": int(chunk.get("end", 0)),
+                    "text": chunk.get("text", ""),
+                    "keywords": chunk.get("keywords", [])[:num_alternatives]
+                })
+        except Exception as e:
+            print(f"Error processing transcription block {i}: {e}")
+            
+        if progress_callback:
+            progress_callback((i + len(block)) / len(segments))
             
     return all_slots

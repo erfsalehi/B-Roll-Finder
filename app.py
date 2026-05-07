@@ -31,6 +31,10 @@ if "script_text" not in st.session_state:
     st.session_state.script_text = ""
 if "audio_duration" not in st.session_state:
     st.session_state.audio_duration = 0.0
+if "transcription_segments" not in st.session_state:
+    st.session_state.transcription_segments = []
+if "global_themes" not in st.session_state:
+    st.session_state.global_themes = []
 if "dm" not in st.session_state:
     st.session_state.dm = DownloadManager()
 
@@ -44,6 +48,7 @@ def load_cache():
                 st.session_state.director_shots = data.get("director_shots", [])
                 st.session_state.script_text = data.get("script_text", "")
                 st.session_state.audio_duration = data.get("audio_duration", 0.0)
+                st.session_state.global_themes = data.get("global_themes", [])
         except Exception as e:
             st.error(f"Error loading cache: {e}")
 
@@ -54,7 +59,8 @@ def save_cache():
                 "slots": st.session_state.slots,
                 "director_shots": st.session_state.get("director_shots", []),
                 "script_text": st.session_state.script_text,
-                "audio_duration": st.session_state.audio_duration
+                "audio_duration": st.session_state.audio_duration,
+                "global_themes": st.session_state.get("global_themes", [])
             }, f)
     except Exception as e:
         st.error(f"Error saving cache: {e}")
@@ -125,12 +131,53 @@ def render_classic_mode():
         word_count = len(script_content.split())
 
         st.info(f"Detected Audio Duration: {duration:.2f} seconds | Script Word Count: {word_count}")
+        
+        st.audio(audio_path)
+        with st.expander("View Uploaded Script"):
+            st.text_area("Full Script", value=script_content, height=200, disabled=True)
 
         st.session_state.script_text = script_content
         st.session_state.audio_duration = duration
 
+    # Step 2.5: AI Transcription (Optional for Precise Timing)
+    st.header("Step 2.5: AI Transcription (Optional)")
+    if audio_file and st.button("Transcribe Audio for Precise Timing"):
+        if not os.getenv("GROQ_API_KEY"):
+            st.error("Please set Groq API key in Step 1.")
+        else:
+            from core.transcription import transcribe_audio
+            with st.spinner("Transcribing with Whisper..."):
+                try:
+                    # Save audio temporarily if not already saved
+                    audio_ext = os.path.splitext(audio_file.name)[1]
+                    audio_path = os.path.join(".cache", f"audio_to_transcribe{audio_ext}")
+                    with open(audio_path, "wb") as f:
+                        f.write(audio_file.getvalue())
+                        
+                    segments = transcribe_audio(audio_path, os.getenv("GROQ_API_KEY"))
+                    st.session_state.transcription_segments = segments
+                    
+                    # Also update script_text with transcription if it's better
+                    full_text = " ".join([s['text'] for s in segments])
+                    st.session_state.script_text = full_text
+                    st.success("Transcription complete! Precise timestamps will now be used.")
+                except Exception as e:
+                    st.error(f"Transcription failed: {e}")
+
+    if st.session_state.transcription_segments:
+        st.info(f"✨ Using {len(st.session_state.transcription_segments)} transcription segments for precise timing.")
+
     # Step 3: Settings
     st.header("Step 3: Settings")
+    
+    with st.expander("Range Selection", expanded=False):
+        use_portion = st.checkbox("Process Specific Portion", value=False)
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            start_time_s = st.number_input("Start Time (seconds)", value=0.0, step=1.0)
+        with col_p2:
+            end_time_s = st.number_input("End Time (seconds)", value=min(st.session_state.audio_duration, 300.0) if st.session_state.audio_duration > 0 else 60.0, step=1.0)
+
     chunking_method = st.radio("Script Chunking Method", ["AI Meaningful Chunks (Recommended)", "Strict Fixed Intervals (Legacy)"])
 
     col1, col2, col3, col4 = st.columns(4)
@@ -163,24 +210,49 @@ def render_classic_mode():
                 status_text.text(f"Generating keywords: {int(p * 100)}% complete")
 
             try:
-                if chunking_method == "AI Meaningful Chunks (Recommended)":
-                    wps = calculate_wps(st.session_state.script_text, st.session_state.audio_duration)
-                    st.session_state.slots = generate_keywords_with_ai_chunking(
-                        st.session_state.script_text,
-                        wps=wps,
+                # Prepare script and duration based on portion
+                target_script = st.session_state.script_text
+                target_duration = st.session_state.audio_duration
+                start_offset = 0.0
+                
+                full_wps = calculate_wps(st.session_state.script_text, st.session_state.audio_duration)
+                
+                if use_portion:
+                    from core.timing import slice_script_by_time
+                    target_script = slice_script_by_time(st.session_state.script_text, st.session_state.audio_duration, start_time_s, end_time_s)
+                    target_duration = end_time_s - start_time_s
+                    start_offset = start_time_s
+                    st.info(f"Processing portion: {start_time_s}s to {end_time_s}s ({target_duration:.2f}s)")
+
+                if st.session_state.transcription_segments and not use_portion:
+                    # Use precise transcription segments
+                    from core.keywords import generate_keywords_from_transcription
+                    st.session_state.slots = generate_keywords_from_transcription(
+                        st.session_state.transcription_segments,
                         api_key=os.getenv("GROQ_API_KEY"),
                         num_alternatives=num_alt,
                         progress_callback=update_progress,
                         custom_instructions=custom_instructions
                     )
+                elif chunking_method == "AI Meaningful Chunks (Recommended)":
+                    st.session_state.slots = generate_keywords_with_ai_chunking(
+                        target_script,
+                        wps=full_wps,
+                        api_key=os.getenv("GROQ_API_KEY"),
+                        num_alternatives=num_alt,
+                        progress_callback=update_progress,
+                        custom_instructions=custom_instructions,
+                        start_offset=start_offset
+                    )
                 else:
                     # 1. Parse slots mathematically
                     slots = parse_script_to_slots(
-                        st.session_state.script_text, 
-                        st.session_state.audio_duration, 
+                        target_script, 
+                        target_duration, 
                         intro_duration=intro_dur, 
                         intro_interval=intro_int, 
-                        body_interval=body_int
+                        body_interval=body_int,
+                        start_offset=start_offset
                     )
                     # 2. Call Groq
                     st.session_state.slots = generate_keywords_for_slots(
@@ -306,33 +378,40 @@ def render_classic_mode():
         else:
             if st.session_state.dm.max_workers != max_workers:
                 st.session_state.dm = DownloadManager(max_workers=max_workers)
-
-            # Safely cancel all in-flight tasks and reset the executor
+            
             st.session_state.dm.clear_and_reset()
-
+            
+            added_count = 0
             for i, slot in enumerate(st.session_state.slots):
                 results = slot.get('video_results', slot.get('youtube_results', []))
                 primary_kw = slot.get('keywords', ['Unknown'])[0]
                 safe_kw = "".join([c if c.isalnum() or c in " -_" else "_" for c in primary_kw]).strip()
 
-                # In Classic Mode, we might want to download all or just the top one. 
-                # Current behavior seems to download all candidates.
                 for j, res in enumerate(results):
                     source = res.get('source', 'youtube')
-                    filename = f"{i+1}-{j+1}-{source}-{safe_kw}.mp4"
+                    filename = f"{i+1}-{j+1}-{source}-{safe_kw[:20]}.mp4"
                     output_path = os.path.join("downloads", filename)
 
                     dm_source = 'direct' if source in ['pexels', 'pixabay'] else 'youtube'
-                    task_id = st.session_state.dm.add_download(
-                        res['url'], 
-                        output_path, 
-                        video_quality, 
-                        source=dm_source,
-                        max_size_mb=max_size_mb,
-                        strict_quality=strict_quality,
-                        normalize=normalize_res
-                    )
-                    st.session_state.dm.start_download(task_id)
+                    try:
+                        task_id = st.session_state.dm.add_download(
+                            res['url'], 
+                            output_path, 
+                            video_quality, 
+                            source=dm_source,
+                            max_size_mb=max_size_mb,
+                            strict_quality=strict_quality,
+                            normalize=normalize_res
+                        )
+                        st.session_state.dm.start_download(task_id)
+                        added_count += 1
+                    except Exception as e:
+                        st.error(f"Error adding {filename}: {e}")
+            
+            if added_count > 0:
+                st.success(f"Added {added_count} downloads to the queue! View progress below.")
+            else:
+                st.warning("No video results found to download. Did you click 'Fetch Links' first?")
 
     if c2.button("Cancel All Downloads"):
         st.session_state.dm.cancel_all()
@@ -418,6 +497,156 @@ def render_classic_mode():
                 mime="application/zip"
             )
 
+    # Step 8: Global B-Roll Library (Advanced)
+    st.header("Step 8: Global B-Roll Library (Optional)")
+    st.write("Generate overarching visual themes for the entire script and gather general-purpose footage.")
+    
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        num_themes = st.number_input("Number of Themes", value=5, min_value=1, max_value=10, key="g_num_themes")
+    with col_g2:
+        if st.button("Analyze Global Themes"):
+            if not st.session_state.script_text:
+                st.error("Please upload a script first.")
+            else:
+                from core.keywords import generate_global_themes
+                with st.spinner("Analyzing themes..."):
+                    st.session_state.global_themes = generate_global_themes(st.session_state.script_text, os.getenv("GROQ_API_KEY"), num_themes=num_themes)
+                    st.success(f"Generated {len(st.session_state.global_themes)} global themes!")
+
+    if st.session_state.global_themes:
+        st.subheader("Global Themes & Keywords")
+        
+        # Flatten for table
+        g_table = []
+        for theme in st.session_state.global_themes:
+            g_table.append({
+                "Theme": theme['name'],
+                "Keywords": ", ".join(theme['keywords'])
+            })
+        
+        edited_g_df = st.data_editor(g_table, num_rows="dynamic", width="stretch", key="g_editor_v2")
+        
+        st.subheader("Global Fetch Settings")
+        col_gsrc1, col_gsrc2, col_gsrc3 = st.columns(3)
+        with col_gsrc1:
+            st.write("**YouTube**")
+            g_yt_shorts = st.number_input("YT Shorts", value=0, min_value=0, max_value=5, key="g_yt_s")
+            g_yt_longs = st.number_input("YT Longs", value=2, min_value=0, max_value=5, key="g_yt_l")
+        with col_gsrc2:
+            st.write("**Stock**")
+            g_pexels = st.number_input("Pexels", value=2, min_value=0, max_value=5, key="g_pex")
+            g_pixabay = st.number_input("Pixabay", value=2, min_value=0, max_value=5, key="g_pix")
+        with col_gsrc3:
+            st.write("**Quality**")
+            g_vq = st.selectbox("Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0, key="g_vq")
+            g_strict = st.checkbox("Strict Quality", value=False, key="g_strict")
+            g_max_size = st.number_input("Max Size (MB)", value=100, min_value=1, key="g_size")
+
+        c_gf1, c_gf2 = st.columns(2)
+        
+        if c_gf1.button("Fetch Global Video Links"):
+            # Update state from editor while preserving video_results if the keywords haven't changed
+            new_themes = []
+            for row in edited_g_df:
+                kws = [k.strip() for k in row["Keywords"].split(",") if k.strip()]
+                
+                # Try to find existing theme to preserve results if keywords are the same
+                existing = next((t for t in st.session_state.global_themes if t['name'] == row['Theme']), None)
+                results = []
+                # If we have existing results and the keywords are identical, we could preserve, 
+                # but it's safer to just re-fetch if the user explicitly clicked Fetch.
+                
+                new_themes.append({"name": row["Theme"], "keywords": kws, "video_results": []})
+            
+            st.session_state.global_themes = new_themes
+            
+            pbar_g = st.progress(0)
+            status_g = st.empty()
+            
+            from core.youtube import search_youtube_single
+            
+            total_g = len(st.session_state.global_themes)
+            found_total = 0
+            for idx, theme in enumerate(st.session_state.global_themes):
+                status_g.text(f"Fetching links for Theme: {theme['name']}...")
+                primary_kw = theme['keywords'][0] if theme['keywords'] else None
+                if not primary_kw: 
+                    pbar_g.progress((idx + 1) / total_g)
+                    continue
+                
+                results = []
+                # YouTube
+                if g_yt_shorts > 0 or g_yt_longs > 0:
+                    yt_res = search_youtube_single(primary_kw, num_shorts=g_yt_shorts, num_longs=g_yt_longs)
+                    for r in yt_res: r['source'] = 'youtube'
+                    results.extend(yt_res)
+                
+                # Pexels
+                if g_pexels > 0 and os.getenv("PEXELS_API_KEY"):
+                    pex_res = search_pexels(primary_kw, os.getenv("PEXELS_API_KEY"), g_pexels)
+                    results.extend(pex_res)
+                
+                # Pixabay
+                if g_pixabay > 0 and os.getenv("PIXABAY_API_KEY"):
+                    pix_res = search_pixabay(primary_kw, os.getenv("PIXABAY_API_KEY"), g_pixabay)
+                    results.extend(pix_res)
+                
+                theme['video_results'] = results
+                found_total += len(results)
+                pbar_g.progress((idx + 1) / total_g)
+            
+            if found_total > 0:
+                st.success(f"Successfully fetched {found_total} global video links!")
+            else:
+                st.warning("No video links found. Try different keywords or check your API keys.")
+            save_cache()
+
+        if c_gf2.button("Start Downloading Global Footage"):
+            # Update state from editor just in case keywords were changed, but DON'T clear results
+            # if we have them. This is tricky. Let's just use what's in session state.
+            
+            added_count = 0
+            has_any_results = any(len(t.get('video_results', [])) > 0 for t in st.session_state.global_themes)
+            
+            if not has_any_results:
+                st.error("No links have been fetched yet. Please click 'Fetch Global Video Links' first.")
+            else:
+                for theme in st.session_state.global_themes:
+                    results = theme.get('video_results', [])
+                    if not results: continue
+                    
+                    for j, res in enumerate(results):
+                        url = res.get('url')
+                        if not url: continue
+                        
+                        source = res.get('source', 'stock')
+                        safe_theme = "".join([c if c.isalnum() or c in " -_" else "_" for c in theme['name']]).strip()
+                        # Shorten name for file safety
+                        filename = f"Global-{safe_theme[:15]}-{source}-{j+1}.mp4"
+                        output_path = os.path.join("downloads", "global", filename)
+                        
+                        dm_source = 'direct' if source in ['pexels', 'pixabay'] else 'youtube'
+                        try:
+                            st.session_state.dm.add_download(
+                                url, 
+                                output_path, 
+                                g_vq, 
+                                source=dm_source,
+                                max_size_mb=g_max_size,
+                                strict_quality=g_strict,
+                                normalize=True
+                            )
+                            st.session_state.dm.start_download(st.session_state.dm.get_all_tasks()[-1]['id'])
+                            added_count += 1
+                        except Exception as e:
+                            st.error(f"Error adding {filename}: {e}")
+                
+                if added_count > 0:
+                    st.success(f"Added {added_count} global downloads to the queue!")
+                else:
+                    st.warning("No footage was added. All links might have been filtered by quality/size settings.")
+
 if app_mode == "Classic Finder":
     render_classic_mode()
 elif app_mode == "Director (v0.2)":
@@ -457,8 +686,20 @@ elif app_mode == "Director (v0.2)":
         st.session_state.audio_duration = get_audio_duration(audio_path)
         
         st.info(f"Script words: {len(st.session_state.script_text.split())} | Audio Duration: {st.session_state.audio_duration:.2f}s")
+        st.audio(audio_path)
+        with st.expander("View Uploaded Script"):
+            st.text_area("Full Script", value=st.session_state.script_text, height=200, disabled=True, key="d_full_script")
         
     st.header("Step 3: Director's Vision (Stage 1)")
+    
+    with st.expander("Range Selection", expanded=False):
+        d_use_portion = st.checkbox("Process Specific Portion", value=False, key="d_use_p")
+        col_dp1, col_dp2 = st.columns(2)
+        with col_dp1:
+            d_start_time = st.number_input("Start Time (seconds)", value=0.0, step=1.0, key="d_start")
+        with col_dp2:
+            d_end_time = st.number_input("End Time (seconds)", value=min(st.session_state.audio_duration, 300.0) if st.session_state.audio_duration > 0 else 60.0, step=1.0, key="d_end")
+
     custom_instructions = st.text_area("Style Hints (Optional)", placeholder="e.g. cinematic, slow motion, no talking heads", key="d_style")
     
     if "director_shots" not in st.session_state:
@@ -474,13 +715,31 @@ elif app_mode == "Director (v0.2)":
             pbar = st.progress(0)
             status = st.empty()
             try:
-                st.session_state.director_shots = generate_shot_list(
-                    st.session_state.script_text,
-                    wps,
-                    os.getenv("GROQ_API_KEY"),
-                    progress_callback=lambda p: pbar.progress(p),
-                    custom_instructions=custom_instructions
-                )
+                target_script = st.session_state.script_text
+                start_offset = 0.0
+                if d_use_portion:
+                    from core.timing import slice_script_by_time
+                    target_script = slice_script_by_time(st.session_state.script_text, st.session_state.audio_duration, d_start_time, d_end_time)
+                    start_offset = d_start_time
+                    status.info(f"Processing portion: {d_start_time}s to {d_end_time}s")
+
+                if st.session_state.transcription_segments and not d_use_portion:
+                    from core.director import generate_shot_list_from_transcription
+                    st.session_state.director_shots = generate_shot_list_from_transcription(
+                        st.session_state.transcription_segments,
+                        os.getenv("GROQ_API_KEY"),
+                        progress_callback=lambda p: pbar.progress(p),
+                        custom_instructions=custom_instructions
+                    )
+                else:
+                    st.session_state.director_shots = generate_shot_list(
+                        target_script,
+                        wps,
+                        os.getenv("GROQ_API_KEY"),
+                        progress_callback=lambda p: pbar.progress(p),
+                        custom_instructions=custom_instructions,
+                        start_offset=start_offset
+                    )
                 pbar.progress(1.0)
                 st.success("Shot list generated successfully!")
             except Exception as e:
@@ -502,6 +761,20 @@ elif app_mode == "Director (v0.2)":
         st.dataframe(table_data, width="stretch")
         
         st.header("Step 4: Fetch Footage (Stage 2)")
+
+        # --- Settings for Filtering and Downloading ---
+        col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
+        with col_vid1:
+            video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0, key="d_vq")
+        with col_vid2:
+            strict_quality = st.checkbox("Strict Quality", value=False, key="d_strict")
+        with col_vid3:
+            normalize_res = st.checkbox("Normalize (1080p)", value=True, key="d_norm")
+        with col_vid4:
+            max_size_mb = st.number_input("Max Size (MB)", value=100, min_value=1, key="d_size")
+        with col_vid5:
+            max_workers = st.slider("Max Concurrent", 1, 10, 3, key="d_workers")
+
         col_src1, col_src2, col_src3 = st.columns(3)
         with col_src1:
             use_youtube = st.checkbox("Include YouTube (yt-dlp)", value=True, key="d_yt")
@@ -556,18 +829,6 @@ elif app_mode == "Director (v0.2)":
             st.rerun()
             
         # --- Download Manager UI for Director Mode ---
-        col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
-        with col_vid1:
-            video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0, key="d_vq")
-        with col_vid2:
-            strict_quality = st.checkbox("Strict Quality", value=False, key="d_strict")
-        with col_vid3:
-            normalize_res = st.checkbox("Normalize (1080p)", value=True, key="d_norm")
-        with col_vid4:
-            max_size_mb = st.number_input("Max Size (MB)", value=100, min_value=1, key="d_max_size")
-        with col_vid5:
-            max_workers = st.slider("Max Concurrent", 1, 10, 3, key="d_mw")
-            
         c_dl1, c_dl2 = st.columns(2)
         if c_dl1.button("Start Downloading Top Candidates"):
             if st.session_state.dm.max_workers != max_workers:

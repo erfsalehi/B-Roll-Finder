@@ -11,6 +11,8 @@ CRITICAL RULES:
 5. Avoid visual repetition across adjacent shots.
 6. If a segment should stay on the "talking head" (the presenter) instead of showing B-roll, set priority to "none" and queries to [].
 7. Priority should be "high" for emotional/key moments, "medium" for standard B-roll, "low" for filler, and "none" for talking head.
+8. **NEVER break a shot (script_chunk) in the middle of a sentence.** Each shot must correspond to a complete thought, phrase, or sentence.
+9. **Ensure each shot is a visually coherent segment.** Do not end a script_chunk with articles or prepositions (the, of, a, in, etc.).
 
 {custom_instructions_block}
 
