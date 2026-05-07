@@ -214,21 +214,11 @@ def generate_global_themes(script_text: str, api_key: str, num_themes: int = 5) 
         system_prompt = f.read().replace("{num_themes}", str(num_themes))
         
     try:
-        response = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"SCRIPT:\n{script_text}"}
-            ],
-            model="llama-3.3-70b-versatile",
-            temperature=0.7,
-            max_tokens=1500,
-            response_format={"type": "json_object"}
-        )
-        
-        data = json.loads(response.choices[0].message.content)
+        data = _call_groq_json(client, system_prompt, f"SCRIPT:\n{script_text}")
         themes = data.get("themes", [])
         for t in themes:
-            t['video_results'] = []
+            t.setdefault('keywords', [])
+            t.setdefault('video_results', [])
         return themes
     except Exception as e:
         print(f"Error generating global themes: {e}")

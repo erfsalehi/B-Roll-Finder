@@ -592,11 +592,19 @@ def render_classic_mode():
         if st.button("Analyze Global Themes"):
             if not st.session_state.script_text:
                 st.error("Please upload a script first.")
+            elif not os.getenv("GROQ_API_KEY"):
+                st.error("Please set your Groq API Key in Step 1.")
             else:
                 from core.keywords import generate_global_themes
                 with st.spinner("Analyzing themes..."):
-                    st.session_state.global_themes = generate_global_themes(st.session_state.script_text, os.getenv("GROQ_API_KEY"), num_themes=num_themes)
-                    st.success(f"Generated {len(st.session_state.global_themes)} global themes!")
+                    try:
+                        st.session_state.global_themes = generate_global_themes(st.session_state.script_text, os.getenv("GROQ_API_KEY"), num_themes=num_themes)
+                        if st.session_state.global_themes:
+                            st.success(f"Generated {len(st.session_state.global_themes)} global themes!")
+                        else:
+                            st.warning("No themes returned. Try again or check your Groq API key.")
+                    except Exception as e:
+                        st.error(f"Error analyzing themes: {e}")
 
     if st.session_state.global_themes:
         st.subheader("Global Themes & Keywords")
@@ -605,8 +613,8 @@ def render_classic_mode():
         g_table = []
         for theme in st.session_state.global_themes:
             g_table.append({
-                "Theme": theme['name'],
-                "Keywords": ", ".join(theme['keywords'])
+                "Theme": theme.get('name', ''),
+                "Keywords": ", ".join(theme.get('keywords', []))
             })
         
         edited_g_df = st.data_editor(g_table, num_rows="dynamic", width="stretch", key="g_editor_v2")
@@ -629,62 +637,90 @@ def render_classic_mode():
 
         c_gf1, c_gf2 = st.columns(2)
         
-        if c_gf1.button("Fetch Global Video Links"):
-            # Update state from editor while preserving video_results if the keywords haven't changed
-            new_themes = []
-            for row in edited_g_df:
-                kws = [k.strip() for k in row["Keywords"].split(",") if k.strip()]
-                
-                # Try to find existing theme to preserve results if keywords are the same
-                existing = next((t for t in st.session_state.global_themes if t['name'] == row['Theme']), None)
-                results = []
-                # If we have existing results and the keywords are identical, we could preserve, 
-                # but it's safer to just re-fetch if the user explicitly clicked Fetch.
-                
-                new_themes.append({"name": row["Theme"], "keywords": kws, "video_results": []})
-            
-            st.session_state.global_themes = new_themes
-            
-            pbar_g = st.progress(0)
-            status_g = st.empty()
-            
-            from core.youtube import search_youtube_single
-            
-            total_g = len(st.session_state.global_themes)
-            found_total = 0
-            for idx, theme in enumerate(st.session_state.global_themes):
-                status_g.text(f"Fetching links for Theme: {theme['name']}...")
-                primary_kw = theme['keywords'][0] if theme['keywords'] else None
-                if not primary_kw: 
-                    pbar_g.progress((idx + 1) / total_g)
-                    continue
-                
-                results = []
-                # YouTube
-                if g_yt_shorts > 0 or g_yt_longs > 0:
-                    yt_res = search_youtube_single(primary_kw, num_shorts=g_yt_shorts, num_longs=g_yt_longs)
-                    for r in yt_res: r['source'] = 'youtube'
-                    results.extend(yt_res)
-                
-                # Pexels
-                if g_pexels > 0 and os.getenv("PEXELS_API_KEY"):
-                    pex_res = search_pexels(primary_kw, os.getenv("PEXELS_API_KEY"), g_pexels)
-                    results.extend(pex_res)
-                
-                # Pixabay
-                if g_pixabay > 0 and os.getenv("PIXABAY_API_KEY"):
-                    pix_res = search_pixabay(primary_kw, os.getenv("PIXABAY_API_KEY"), g_pixabay)
-                    results.extend(pix_res)
-                
-                theme['video_results'] = results
-                found_total += len(results)
-                pbar_g.progress((idx + 1) / total_g)
-            
-            if found_total > 0:
-                st.success(f"Successfully fetched {found_total} global video links!")
+        if c_gf1.button("Fetch Global Video Links", disabled=st.session_state.is_fetching):
+            if st.session_state.is_fetching:
+                st.warning("A fetch is already in progress. Please wait.")
+            elif not _check_network():
+                st.error("No network connection detected. Please check your internet and try again.")
             else:
-                st.warning("No video links found. Try different keywords or check your API keys.")
-            save_cache()
+                st.session_state.is_fetching = True
+                fetch_errors_g = []
+                try:
+                    new_themes = []
+                    for row in edited_g_df:
+                        kws = [k.strip() for k in row["Keywords"].split(",") if k.strip()]
+                        new_themes.append({"name": row["Theme"], "keywords": kws, "video_results": []})
+                    st.session_state.global_themes = new_themes
+
+                    pbar_g = st.progress(0)
+                    status_g = st.empty()
+
+                    from core.youtube import search_youtube_single
+
+                    total_g = len(st.session_state.global_themes)
+                    found_total = 0
+                    pexels_failures = 0
+                    pixabay_failures = 0
+                    _CIRCUIT_LIMIT = 3
+
+                    for idx, theme in enumerate(st.session_state.global_themes):
+                        status_g.text(f"Fetching links for Theme: {theme['name']}...")
+                        primary_kw = theme['keywords'][0] if theme.get('keywords') else None
+                        if not primary_kw:
+                            pbar_g.progress((idx + 1) / total_g)
+                            continue
+
+                        results = []
+                        if g_yt_shorts > 0 or g_yt_longs > 0:
+                            yt_res = search_youtube_single(primary_kw, num_shorts=g_yt_shorts, num_longs=g_yt_longs, errors=fetch_errors_g)
+                            for r in yt_res:
+                                r['source'] = 'youtube'
+                            results.extend(yt_res)
+
+                        if g_pexels > 0 and os.getenv("PEXELS_API_KEY") and pexels_failures < _CIRCUIT_LIMIT:
+                            prev = len(fetch_errors_g)
+                            pex_res = search_pexels(primary_kw, os.getenv("PEXELS_API_KEY"), g_pexels, errors=fetch_errors_g)
+                            if len(fetch_errors_g) > prev:
+                                pexels_failures += 1
+                                if pexels_failures >= _CIRCUIT_LIMIT:
+                                    fetch_errors_g.append("Pexels: 3 consecutive failures — skipping remaining Pexels searches.")
+                            else:
+                                pexels_failures = 0
+                            results.extend(pex_res)
+
+                        if g_pixabay > 0 and os.getenv("PIXABAY_API_KEY") and pixabay_failures < _CIRCUIT_LIMIT:
+                            prev = len(fetch_errors_g)
+                            pix_res = search_pixabay(primary_kw, os.getenv("PIXABAY_API_KEY"), g_pixabay, errors=fetch_errors_g)
+                            if len(fetch_errors_g) > prev:
+                                pixabay_failures += 1
+                                if pixabay_failures >= _CIRCUIT_LIMIT:
+                                    fetch_errors_g.append("Pixabay: 3 consecutive failures — skipping remaining Pixabay searches.")
+                            else:
+                                pixabay_failures = 0
+                            results.extend(pix_res)
+
+                        theme['video_results'] = results
+                        found_total += len(results)
+                        pbar_g.progress((idx + 1) / total_g)
+
+                    status_g.text("Done.")
+                    if found_total > 0:
+                        st.success(f"Fetched {found_total} global video links across {total_g} themes.")
+                    else:
+                        st.warning("No video links found. Try different keywords or check your API keys.")
+
+                    if fetch_errors_g:
+                        unique_g_errors = list(dict.fromkeys(fetch_errors_g))
+                        with st.expander(f"⚠️ {len(unique_g_errors)} search error(s)"):
+                            for err in unique_g_errors[:20]:
+                                st.write(f"• {err}")
+                        ssl_keywords = ("ssl", "certificate", "eof occurred", "handshake", "tlsv1")
+                        if any(kw in e.lower() for e in unique_g_errors for kw in ssl_keywords):
+                            st.warning("YouTube SSL errors detected. Try running `yt-dlp -U` in your terminal to update yt-dlp, then restart the app.")
+
+                    save_cache()
+                finally:
+                    st.session_state.is_fetching = False
 
         if c_gf2.button("Start Downloading Global Footage"):
             # Update state from editor just in case keywords were changed, but DON'T clear results
@@ -712,16 +748,16 @@ def render_classic_mode():
                         
                         dm_source = 'direct' if source in ['pexels', 'pixabay'] else 'youtube'
                         try:
-                            st.session_state.dm.add_download(
-                                url, 
-                                output_path, 
-                                g_vq, 
+                            task_id = st.session_state.dm.add_download(
+                                url,
+                                output_path,
+                                g_vq,
                                 source=dm_source,
                                 max_size_mb=g_max_size,
                                 strict_quality=g_strict,
                                 normalize=True
                             )
-                            st.session_state.dm.start_download(st.session_state.dm.get_all_tasks()[-1]['id'])
+                            st.session_state.dm.start_download(task_id)
                             added_count += 1
                         except Exception as e:
                             st.error(f"Error adding {filename}: {e}")
