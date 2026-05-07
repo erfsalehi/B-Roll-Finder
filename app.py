@@ -943,10 +943,12 @@ elif app_mode == "Director (v0.2)":
                     st.session_state.is_fetching = False
 
     # ── Stage 3 — LLM Ranking ────────────────────────────────────────────────
-    has_candidates = any(len(s.get("video_results", [])) > 1 for s in st.session_state.get("director_shots", []))
+    # Ranker now also flags single-candidate shots as irrelevant when needed,
+    # so we offer it whenever any shot has at least one candidate.
+    has_candidates = any(len(s.get("video_results", [])) >= 1 for s in st.session_state.get("director_shots", []))
     if has_candidates:
-        st.header("Stage 3: Rank Candidates")
-        st.caption("AI reorders candidates by visual relevance and flags off-topic results.")
+        st.header("Stage 3: Rank & Filter Candidates")
+        st.caption("AI ranks candidates by visual relevance, flags off-topic clips, and prefers horizontal videos.")
         d_video_topic = st.text_input(
             "What is this video about? (helps reject off-topic candidates)",
             placeholder="e.g. car mechanics and engine repair",
@@ -959,6 +961,7 @@ elif app_mode == "Director (v0.2)":
                 pbar3 = st.progress(0)
                 status3 = st.empty()
                 status3.text("Ranking…")
+                d_rank_errors = []
                 try:
                     st.session_state.director_shots = rank_shot_candidates(
                         st.session_state.director_shots,
@@ -966,10 +969,24 @@ elif app_mode == "Director (v0.2)":
                         custom_instructions=custom_instructions,
                         video_topic=d_video_topic,
                         progress_callback=lambda p: pbar3.progress(p),
+                        errors=d_rank_errors,
                     )
                     pbar3.progress(1.0)
                     status3.text("Done.")
-                    st.success("Candidates ranked! Irrelevant clips are hidden in the review.")
+                    failed = sum(1 for s in st.session_state.director_shots if s.get("rank_error"))
+                    total  = sum(1 for s in st.session_state.director_shots
+                                 if s.get("video_results") and s.get("priority") != "none")
+                    if failed == 0:
+                        st.success("Candidates ranked! Irrelevant clips are hidden in the review.")
+                    elif failed < total:
+                        st.warning(f"Ranked {total - failed}/{total} shots. {failed} shot(s) failed — see details below and check those shots in the review.")
+                    else:
+                        st.error("Ranking failed for all shots. Showing original order. Check API key and rate limits.")
+                    if d_rank_errors:
+                        unique_re = list(dict.fromkeys(d_rank_errors))
+                        with st.expander(f"⚠️ {len(unique_re)} ranking error(s)"):
+                            for e in unique_re[:20]:
+                                st.write(f"• {e}")
                     save_cache()
                 except Exception as e:
                     st.error(f"Ranking error: {e}")
@@ -1007,6 +1024,7 @@ elif app_mode == "Director (v0.2)":
         slot_id  = shot.get("slot_id", "?")
         ts       = f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}"
         reason   = shot.get("rank_reason", "")
+        rank_err = shot.get("rank_error", "")
         sel_urls = {r.get("url") for r in shot.get("selected_results", [])}
         skipped  = shot.get("skipped", False)
 
@@ -1015,6 +1033,8 @@ elif app_mode == "Director (v0.2)":
         st.markdown(f"**Narration:** _{shot.get('text', '')}_")
         if reason:
             st.info(f"🤖 {reason}")
+        if rank_err:
+            st.warning(f"⚠️ AI ranking failed for this shot ({rank_err}). Showing unranked candidates — review carefully.")
         if skipped:
             st.warning("⏭ This shot is marked as skipped.")
 

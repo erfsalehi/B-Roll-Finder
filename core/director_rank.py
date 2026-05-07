@@ -1,4 +1,6 @@
 import os
+import concurrent.futures
+import threading
 from groq import Groq
 from core.keywords import _call_llm_json
 
@@ -38,16 +40,111 @@ def _format_candidate(i: int, c: dict) -> str:
     return " ".join(parts)
 
 
+def _rank_one_shot(shot: dict, system_prompt: str, client: Groq,
+                   errors: list, errors_lock: threading.Lock) -> None:
+    """Rank a single shot in-place. Designed to run in a worker thread."""
+    candidates = shot['video_results']
+    if not candidates:
+        shot.setdefault('rank_reason', '')
+        return
+
+    # Always run the judge — even for a single candidate. With one
+    # candidate the relevance check (irrelevant flag) is the whole
+    # point: an editor wastes time on a single off-topic clip too.
+    candidate_lines = [_format_candidate(i, c) for i, c in enumerate(candidates)]
+
+    user_msg = (
+        f"NARRATION: \"{shot.get('text', '')}\"\n"
+        f"SHOT INTENT: {shot.get('shot_intent', '')}\n\n"
+        f"CANDIDATES:\n" + "\n".join(candidate_lines)
+    )
+
+    try:
+        # Judging is a deterministic task; low temperature + the JSON
+        # response_format keep ranking stable across re-runs.
+        data = _call_llm_json(client, system_prompt, user_msg,
+                              temperature=0.1, max_tokens=2000)
+        ranked = data.get('ranked', [])
+
+        if ranked:
+            # Validate each entry: must be a non-negative int within
+            # range, and only the first occurrence of any given index
+            # is honored. Duplicates / out-of-range / non-int entries
+            # are dropped with a counter, so a noisy LLM cannot
+            # silently duplicate or drop candidates from the output.
+            clean_order = []
+            seen = set()
+            malformed = 0
+            for r in ranked:
+                idx = r.get('index')
+                if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+                    malformed += 1
+                    continue
+                if idx in seen:
+                    malformed += 1
+                    continue
+                seen.add(idx)
+                clean_order.append(idx)
+                if r.get('irrelevant'):
+                    candidates[idx]['irrelevant'] = True
+                else:
+                    candidates[idx].pop('irrelevant', None)
+
+            # Safety net: any candidate the LLM omitted gets appended
+            # at the end so we never lose a clip.
+            for i in range(len(candidates)):
+                if i not in seen:
+                    clean_order.append(i)
+
+            shot['video_results'] = [candidates[i] for i in clean_order]
+
+            # The top pick is whatever index now leads clean_order.
+            # Walk `ranked` (in its original order) for the matching
+            # entry's reason — that way reordering during dedup never
+            # mismatches the reason to a different candidate.
+            top_reason = ''
+            if clean_order:
+                top_idx = clean_order[0]
+                for r in ranked:
+                    if r.get('index') == top_idx:
+                        top_reason = r.get('reason', '') or ''
+                        break
+            shot['rank_reason'] = top_reason
+
+            if malformed:
+                print(f"Shot {shot.get('slot_id')}: dropped {malformed} malformed/duplicate index(es) from LLM output (recovered).")
+        # Successful ranking — clear any error from a previous run.
+        shot.pop('rank_error', None)
+    except Exception as e:
+        msg = f"Shot {shot.get('slot_id')}: {e}"
+        print(f"Ranking failed for {msg}")
+        with errors_lock:
+            errors.append(msg)
+        shot['rank_error'] = str(e)
+        shot.setdefault('rank_reason', '')
+
+
 def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "",
-                         video_topic: str = "", progress_callback=None) -> list:
+                         video_topic: str = "", progress_callback=None,
+                         errors: list = None, max_workers: int = 4) -> list:
     """
     Stage 3: Ranks and filters each shot's video_results by relevance.
     - Reorders shot['video_results'] best → worst
     - Sets shot['rank_reason'] with the top pick's one-line reason
     - Marks irrelevant candidates with candidate['irrelevant'] = True
+    - On per-shot failure, sets shot['rank_error'] and appends a string
+      to ``errors`` (when provided) so the UI can surface it.
+
+    Per-shot LLM calls are dispatched in parallel (default 4 workers).
+    The Groq client and the requests-based OpenRouter fallback are both
+    thread-safe; each shot mutates only its own dict, so no per-shot
+    locking is needed beyond the shared ``errors`` list.
     """
     if not api_key:
         raise ValueError("Groq API key is missing.")
+
+    if errors is None:
+        errors = []
 
     client = Groq(api_key=api_key)
 
@@ -61,53 +158,31 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
 
     rankable = [s for s in shots if s.get('video_results') and s.get('priority') != 'none']
     total = len(rankable)
+    if total == 0:
+        if progress_callback:
+            progress_callback(1.0)
+        return shots
+
+    errors_lock = threading.Lock()
     done = 0
 
-    for shot in rankable:
-        candidates = shot['video_results']
-        if len(candidates) <= 1:
-            shot.setdefault('rank_reason', '')
+    # Cap workers at the number of shots so we don't spin up idle threads.
+    workers = max(1, min(max_workers, total))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [
+            ex.submit(_rank_one_shot, shot, system_prompt, client, errors, errors_lock)
+            for shot in rankable
+        ]
+        for fut in concurrent.futures.as_completed(futures):
+            # _rank_one_shot already records per-shot errors on the shot
+            # itself; surface anything truly unexpected here.
+            try:
+                fut.result()
+            except Exception as e:
+                with errors_lock:
+                    errors.append(f"Worker exception: {e}")
             done += 1
             if progress_callback:
                 progress_callback(done / total)
-            continue
-
-        candidate_lines = [_format_candidate(i, c) for i, c in enumerate(candidates)]
-
-        user_msg = (
-            f"NARRATION: \"{shot.get('text', '')}\"\n"
-            f"SHOT INTENT: {shot.get('shot_intent', '')}\n\n"
-            f"CANDIDATES:\n" + "\n".join(candidate_lines)
-        )
-
-        try:
-            data = _call_llm_json(client, system_prompt, user_msg)
-            ranked = data.get('ranked', [])
-
-            if ranked:
-                # Apply irrelevant flag to original candidates before reordering
-                for r in ranked:
-                    idx = r.get('index')
-                    if isinstance(idx, int) and idx < len(candidates):
-                        if r.get('irrelevant'):
-                            candidates[idx]['irrelevant'] = True
-                        else:
-                            candidates[idx].pop('irrelevant', None)
-
-                index_order = [r['index'] for r in ranked if isinstance(r.get('index'), int)]
-                # Append any indices the LLM omitted (safety net)
-                for i in range(len(candidates)):
-                    if i not in index_order:
-                        index_order.append(i)
-
-                shot['video_results'] = [candidates[i] for i in index_order if i < len(candidates)]
-                shot['rank_reason'] = ranked[0].get('reason', '')
-        except Exception as e:
-            print(f"Ranking failed for shot {shot.get('slot_id')}: {e}")
-            shot.setdefault('rank_reason', '')
-
-        done += 1
-        if progress_callback:
-            progress_callback(done / total)
 
     return shots

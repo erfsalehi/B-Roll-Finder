@@ -129,15 +129,16 @@ def load_json_prompt() -> str:
     # Don't retry rate-limit errors — fall back to OpenRouter instead
     retry=retry_if_not_exception_type(GroqRateLimitError)
 )
-def _call_groq_json(client: Groq, system_prompt: str, block: str) -> dict:
+def _call_groq_json(client: Groq, system_prompt: str, block: str,
+                    temperature: float = 0.7, max_tokens: int = 2000) -> dict:
     response = client.chat.completions.create(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": block}
         ],
         model=GROQ_MODEL,
-        temperature=0.7,
-        max_tokens=2000,
+        temperature=temperature,
+        max_tokens=max_tokens,
         response_format={"type": "json_object"}
     )
     return json.loads(response.choices[0].message.content)
@@ -175,7 +176,8 @@ def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
     All other callers should use this instead of _call_groq_json directly.
     """
     try:
-        return _call_groq_json(client, system_prompt, user_content)
+        return _call_groq_json(client, system_prompt, user_content,
+                               temperature=temperature, max_tokens=max_tokens)
     except GroqRateLimitError:
         print("Groq rate limit hit — falling back to OpenRouter.")
         return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
