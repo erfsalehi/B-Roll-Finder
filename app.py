@@ -4,6 +4,7 @@ import json
 import zipfile
 import io
 import socket
+import pandas as pd
 from dotenv import load_dotenv, set_key
 
 from core.timing import get_audio_duration, parse_script_to_slots, calculate_wps
@@ -1040,6 +1041,10 @@ elif app_mode == "Director (v0.2)":
                     if s.get("video_results") and s.get("priority") != "none"]
     if review_shots:
         st.header("Stage 4: Review & Select")
+        st.caption(
+            "Tick the clips you want for each shot. Selections persist as you navigate — "
+            "nothing downloads until you click **Download** in Stage 5."
+        )
 
         if "d_review_idx" not in st.session_state:
             st.session_state.d_review_idx = 0
@@ -1047,24 +1052,35 @@ elif app_mode == "Director (v0.2)":
         idx = st.session_state.d_review_idx
         shot = review_shots[idx]
 
-        # Progress / navigation bar
+        # Compact navigation strip: Prev / position / Next on one row.
         n_selected = sum(1 for s in review_shots if s.get("selected_results"))
         n_skipped  = sum(1 for s in review_shots if s.get("skipped"))
         n_pending  = len(review_shots) - n_selected - n_skipped
-        st.caption(f"Shot {idx + 1} of {len(review_shots)}  ·  ✅ {n_selected} selected · ⏭ {n_skipped} skipped · ⏳ {n_pending} pending")
-        st.progress((idx + 1) / len(review_shots))
 
-        nav1, nav2, nav3 = st.columns([1, 6, 1])
+        nav1, nav2, nav3 = st.columns([1, 4, 1])
         with nav1:
-            if st.button("◀ Prev", key="d_prev", disabled=idx == 0):
+            if st.button("◀ Prev", key="d_prev", disabled=idx == 0, use_container_width=True):
+                save_cache()
                 st.session_state.d_review_idx -= 1
                 st.rerun()
+        with nav2:
+            st.markdown(
+                f"<div style='text-align:center; padding-top:0.4em;'>"
+                f"<strong>Shot {idx + 1} of {len(review_shots)}</strong>"
+                f" &nbsp;·&nbsp; ✅ {n_selected} selected"
+                f" &nbsp;·&nbsp; ⏭ {n_skipped} skipped"
+                f" &nbsp;·&nbsp; ⏳ {n_pending} pending"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
         with nav3:
-            if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1):
+            if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1, use_container_width=True):
+                save_cache()
                 st.session_state.d_review_idx += 1
                 st.rerun()
+        st.progress((idx + 1) / len(review_shots))
 
-        # Shot details
+        # Shot details — gather data first.
         slot_id  = shot.get("slot_id", "?")
         ts       = f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}"
         reason   = shot.get("rank_reason", "")
@@ -1072,67 +1088,138 @@ elif app_mode == "Director (v0.2)":
         sel_urls = {r.get("url") for r in shot.get("selected_results", [])}
         skipped  = shot.get("skipped", False)
 
-        st.markdown(f"**Shot {slot_id}** · {ts}")
-        st.markdown(f"**Intent:** {shot.get('shot_intent', '')}")
-        st.markdown(f"**Narration:** _{shot.get('text', '')}_")
-        if reason:
-            st.info(f"🤖 {reason}")
+        # Shot brief — bordered container groups the metadata visually.
+        with st.container(border=True):
+            st.markdown(
+                f"**Shot {slot_id}** &nbsp;·&nbsp; ⏱ {ts} &nbsp;·&nbsp; "
+                f"🎬 {shot.get('shot_intent', '—')}"
+            )
+            st.markdown(f"💬 _{shot.get('text', '')}_")
+            if reason:
+                st.markdown(f"🤖 _{reason}_")
+
         if rank_err:
             st.warning(f"⚠️ AI ranking failed for this shot ({rank_err}). Showing unranked candidates — review carefully.")
         if skipped:
-            st.warning("⏭ This shot is marked as skipped.")
+            st.warning("⏭ This shot is marked as skipped. Selecting any clip will unskip it.")
 
-        # Candidate cards — filter out irrelevant ones if ranked
+        # ── Candidate table ──────────────────────────────────────────────
         candidates = [c for c in shot["video_results"] if not c.get("irrelevant")]
         hidden     = len(shot["video_results"]) - len(candidates)
         if hidden:
             st.caption(f"🚫 {hidden} off-topic candidate(s) hidden by AI ranking.")
+
         if not candidates:
             st.warning("No relevant candidates found for this shot.")
         else:
-            cols = st.columns(min(len(candidates), 3))
-            for j, res in enumerate(candidates):
-                with cols[j % 3]:
-                    thumb = res.get("thumbnail", "")
-                    if thumb:
-                        st.image(thumb, use_container_width=True)
-                    src = res.get("source", "?").upper()
-                    w   = res.get("width", "?")
-                    h   = res.get("height", "?")
-                    dur = res.get("duration", "?")
-                    st.markdown(f"**{res.get('title', '?')}**")
-                    st.caption(f"{src} · {w}×{h} · {dur}s")
-                    if res.get("description"):
-                        st.caption(res["description"])
+            n_picked_in_shot = sum(1 for c in candidates if c.get("url") in sel_urls)
+            all_picked       = n_picked_in_shot == len(candidates)
+            none_picked      = n_picked_in_shot == 0
 
-                    is_sel = res.get("url") in sel_urls
-                    label  = "✅ Deselect" if is_sel else "Select"
-                    if st.button(label, key=f"sel_{slot_id}_{j}", use_container_width=True):
-                        current = shot.get("selected_results", [])
-                        if is_sel:
-                            shot["selected_results"] = [r for r in current if r.get("url") != res.get("url")]
-                        else:
-                            shot["selected_results"] = current + [res]
-                        shot["skipped"] = False
-                        # Stay on current shot — no rerun jump
+            # Bulk-action row above the table.
+            ba1, ba2, ba3 = st.columns([2, 2, 6])
+            with ba1:
+                if st.button(
+                    f"☑ Select all ({len(candidates)})",
+                    key=f"sel_all_{slot_id}",
+                    disabled=all_picked,
+                    use_container_width=True,
+                ):
+                    shot["selected_results"] = list(candidates)
+                    shot["skipped"] = False
+                    save_cache()
+                    st.rerun()
+            with ba2:
+                if st.button(
+                    f"☐ Clear ({n_picked_in_shot})",
+                    key=f"sel_none_{slot_id}",
+                    disabled=none_picked,
+                    use_container_width=True,
+                ):
+                    shot["selected_results"] = []
+                    save_cache()
+                    st.rerun()
+            with ba3:
+                st.caption(
+                    f"**{n_picked_in_shot} of {len(candidates)}** ticked for this shot. "
+                    f"Selections persist across shots and stages — nothing downloads until you click "
+                    f"**Download** in Stage 5."
+                )
 
-        # Skip / next controls
-        sk1, sk2 = st.columns(2)
+            # Build one row per candidate. Pick reflects current selection.
+            rows = []
+            for c in candidates:
+                w, h = c.get("width"), c.get("height")
+                size = f"{w}×{h}" if (w and h) else "—"
+                dur  = c.get("duration")
+                rows.append({
+                    "Pick":        c.get("url") in sel_urls,
+                    "Preview":     c.get("thumbnail") or "",
+                    "Title":       c.get("title") or "—",
+                    "Source":      (c.get("source") or "?").upper(),
+                    "Size":        size,
+                    "Dur":         f"{dur}s" if dur else "—",
+                    "Description": c.get("description") or "",
+                    "Query":       c.get("matched_query") or "",
+                    "Open":        c.get("page_url") or c.get("url") or "",
+                    "_url":        c.get("url") or "",
+                })
+            df = pd.DataFrame(rows)
+
+            edited = st.data_editor(
+                df,
+                column_config={
+                    "Pick": st.column_config.CheckboxColumn(
+                        "✓", help="Tick to add this clip to the download queue", default=False, width="small"
+                    ),
+                    "Preview":     st.column_config.ImageColumn("Preview", width="medium"),
+                    "Title":       st.column_config.TextColumn("Title", width="large"),
+                    "Source":      st.column_config.TextColumn("Source", width="small"),
+                    "Size":        st.column_config.TextColumn("Size", width="small"),
+                    "Dur":         st.column_config.TextColumn("Dur", width="small"),
+                    "Description": st.column_config.TextColumn("Description", width="medium"),
+                    "Query":       st.column_config.TextColumn("Matched query", width="medium"),
+                    "Open":        st.column_config.LinkColumn("Open", display_text="↗", width="small"),
+                    "_url":        None,
+                },
+                disabled=["Preview", "Title", "Source", "Size", "Dur", "Description", "Query", "Open"],
+                hide_index=True,
+                use_container_width=True,
+                key=f"d_table_{slot_id}",
+            )
+
+            # Sync edited Pick column back to shot["selected_results"].
+            # We read the edited Pick state, build the new URL set, and only
+            # mutate the shot when something actually changed — avoids
+            # spurious save_cache calls on every rerun.
+            new_picked_urls = {row["_url"] for _, row in edited.iterrows() if bool(row["Pick"])}
+            if new_picked_urls != sel_urls:
+                shot["selected_results"] = [c for c in candidates if c.get("url") in new_picked_urls]
+                if shot["selected_results"]:
+                    shot["skipped"] = False
+                save_cache()
+
+        # Footer actions: skip / advance. Skip is a secondary action so we
+        # give it less prominence; advance is the primary path.
+        st.divider()
+        sk1, sk2 = st.columns([1, 2])
         with sk1:
             skip_label = "↩ Unskip" if skipped else "⏭ Skip this shot"
-            if st.button(skip_label, key=f"skip_{slot_id}"):
+            if st.button(skip_label, key=f"skip_{slot_id}", use_container_width=True):
                 shot["skipped"] = not skipped
                 shot["selected_results"] = []
+                save_cache()
+                st.rerun()
         with sk2:
             if idx < len(review_shots) - 1:
-                if st.button("Save & Next ▶", key="d_save_next"):
+                if st.button("Save & Next ▶", key="d_save_next", type="primary", use_container_width=True):
                     save_cache()
                     st.session_state.d_review_idx += 1
                     st.rerun()
             else:
-                if st.button("✅ Finish Review", key="d_finish"):
+                if st.button("✅ Finish Review", key="d_finish", type="primary", use_container_width=True):
                     save_cache()
-                    st.success("Review complete! Scroll down to download.")
+                    st.success("Review complete! Scroll down to Stage 5 to start downloads.")
 
     # ── Stage 5 — Download ───────────────────────────────────────────────────
     selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_results")]
