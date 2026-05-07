@@ -305,18 +305,7 @@ CRITICAL RULES:
         user_content = "\n".join([f"[{s['start']:.2f} - {s['end']:.2f}]: {s['text']}" for s in block])
         
         try:
-            response = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
-                model="llama-3.3-70b-versatile",
-                temperature=0.3,
-                max_tokens=2500,
-                response_format={"type": "json_object"}
-            )
-            
-            data = json.loads(response.choices[0].message.content)
+            data = _call_llm_json(client, system_prompt, user_content, temperature=0.3, max_tokens=2500)
             chunks = data.get("chunks", [])
             
             for chunk in chunks:

@@ -1,6 +1,7 @@
 import os
 import json
 from groq import Groq
+from core.keywords import _call_llm_json
 
 def load_director_prompt() -> str:
     prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'director.txt')
@@ -34,19 +35,7 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
             # but we will definitively calculate timestamps here anyway.
             user_msg = f"WPS: {wps:.2f}\\nSCRIPT CHUNK:\\n{block}"
             
-            response = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_msg}
-                ],
-                model="llama-3.3-70b-versatile",
-                temperature=0.4, # Lower temp for strict JSON adherence and structure
-                max_tokens=3000,
-                response_format={"type": "json_object"}
-            )
-            
-            response_text = response.choices[0].message.content
-            data = json.loads(response_text)
+            data = _call_llm_json(client, system_prompt, user_msg, temperature=0.4, max_tokens=3000)
             shots = data.get("shots", [])
             
             for shot in shots:
@@ -135,18 +124,7 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
         user_msg = "\n".join([f"[{s['start']:.2f} - {s['end']:.2f}]: {s['text']}" for s in block])
         
         try:
-            response = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_msg}
-                ],
-                model="llama-3.3-70b-versatile",
-                temperature=0.4,
-                max_tokens=3000,
-                response_format={"type": "json_object"}
-            )
-            
-            data = json.loads(response.choices[0].message.content)
+            data = _call_llm_json(client, system_prompt, user_msg, temperature=0.4, max_tokens=3000)
             shots = data.get("shots", [])
             
             for shot in shots:
