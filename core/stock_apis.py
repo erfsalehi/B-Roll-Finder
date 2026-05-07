@@ -85,7 +85,7 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
                 'title': f"Pixabay: {hit.get('tags', 'video')}",
                 'url': v_data.get('url'),
                 'source': 'pixabay',
-                'thumbnail': hit.get('userImageURL', ''),
+                'thumbnail': v_data.get('thumbnail', ''),
                 'description': f"Tags: {hit.get('tags', '')} — {hit.get('duration', '?')}s",
                 'duration': hit.get('duration'),
                 'is_short': False,
