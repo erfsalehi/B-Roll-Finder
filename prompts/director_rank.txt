@@ -3,26 +3,31 @@ You are an expert video editor ranking B-roll candidates for a documentary or ex
 You will receive:
 - The narration text for a specific moment in the video
 - The shot intent (what this moment should convey visually)
-- The shot type (wide, close-up, abstract, etc.)
-- A list of candidate videos with their title and description
+- The overall video topic/style (if provided)
+- A list of candidate videos with their title and description/tags
 
-Your task: rank the candidates from best to worst fit for this shot.
+Your task: rank the candidates from best to worst fit for this shot, and flag any that are completely irrelevant.
 
-RULES:
+CRITICAL RULES:
 1. Output ONLY valid JSON. No markdown, no extra text.
-2. Return a "ranked" array where each item has:
-   - "index": the original 0-based index of the candidate
-   - "reason": one short sentence explaining why this is the best/worst fit (only required for index 0)
-3. Prioritize visual relevance to the shot_intent over generic matches.
-4. Penalize candidates that are clearly off-topic or low quality based on description.
+2. A candidate is RELEVANT only if its PRIMARY visual content directly matches the shot intent.
+3. DO NOT rank a candidate highly just because it shares one incidental keyword.
+   Example: a "woodworking tool close-up" is NOT relevant for a "car mechanic repairs engine" shot,
+   even though both involve tools. The primary subject must match.
+4. Example: "carpenter, wood, planer" tags are irrelevant for anything car/automotive related.
+5. If a candidate is completely off-topic, set "irrelevant": true. The editor will hide it.
+6. Return a "ranked" array ordered best → worst. Each item:
+   - "index": the original 0-based index of the candidate (required)
+   - "reason": one short sentence for the top pick only (required for index 0)
+   - "irrelevant": true if the candidate does not match the shot at all (optional, omit if relevant)
 
 {custom_instructions_block}
 
 EXPECTED OUTPUT:
 {
   "ranked": [
-    {"index": 2, "reason": "Aerial city view directly matches the 'urban growth' intent."},
+    {"index": 2, "reason": "Mechanic hands under car hood directly matches the repair intent."},
     {"index": 0},
-    {"index": 1}
+    {"index": 1, "irrelevant": true}
   ]
 }

@@ -1,5 +1,4 @@
 import os
-import json
 from groq import Groq
 from core.keywords import _call_groq_json
 
@@ -11,11 +10,12 @@ def _load_rank_prompt() -> str:
 
 
 def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "",
-                         progress_callback=None) -> list:
+                         video_topic: str = "", progress_callback=None) -> list:
     """
-    Stage 3: For each shot that has video_results, asks the LLM to rank candidates
-    by relevance to the shot_intent. Reorders shot['video_results'] in place.
-    Adds shot['rank_reason'] with the top pick's reasoning.
+    Stage 3: Ranks and filters each shot's video_results by relevance.
+    - Reorders shot['video_results'] best → worst
+    - Sets shot['rank_reason'] with the top pick's one-line reason
+    - Marks irrelevant candidates with candidate['irrelevant'] = True
     """
     if not api_key:
         raise ValueError("Groq API key is missing.")
@@ -24,8 +24,10 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
 
     system_prompt = _load_rank_prompt()
     custom_block = ""
+    if video_topic and video_topic.strip():
+        custom_block += f"OVERALL VIDEO TOPIC: {video_topic.strip()}\n"
     if custom_instructions and custom_instructions.strip():
-        custom_block = f"USER STYLE NOTES: {custom_instructions.strip()}"
+        custom_block += f"USER STYLE NOTES: {custom_instructions.strip()}"
     system_prompt = system_prompt.replace("{custom_instructions_block}", custom_block)
 
     rankable = [s for s in shots if s.get('video_results') and s.get('priority') != 'none']
@@ -35,23 +37,20 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
     for shot in rankable:
         candidates = shot['video_results']
         if len(candidates) <= 1:
-            shot['rank_reason'] = ""
+            shot.setdefault('rank_reason', '')
             done += 1
             if progress_callback:
                 progress_callback(done / total)
             continue
 
-        # Build candidate list for the LLM
-        candidate_lines = []
-        for i, c in enumerate(candidates):
-            candidate_lines.append(
-                f"{i}. [{c.get('source','?').upper()}] {c.get('title','?')} — {c.get('description','')}"
-            )
+        candidate_lines = [
+            f"{i}. [{c.get('source','?').upper()}] {c.get('title','?')} — {c.get('description','')}"
+            for i, c in enumerate(candidates)
+        ]
 
         user_msg = (
             f"NARRATION: \"{shot.get('text', '')}\"\n"
-            f"SHOT INTENT: {shot.get('shot_intent', '')}\n"
-            f"SHOT TYPE: {shot.get('shot_type', '')}\n\n"
+            f"SHOT INTENT: {shot.get('shot_intent', '')}\n\n"
             f"CANDIDATES:\n" + "\n".join(candidate_lines)
         )
 
@@ -60,19 +59,26 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
             ranked = data.get('ranked', [])
 
             if ranked:
-                # Reorder candidates according to LLM ranking
+                # Apply irrelevant flag to original candidates before reordering
+                for r in ranked:
+                    idx = r.get('index')
+                    if isinstance(idx, int) and idx < len(candidates):
+                        if r.get('irrelevant'):
+                            candidates[idx]['irrelevant'] = True
+                        else:
+                            candidates[idx].pop('irrelevant', None)
+
                 index_order = [r['index'] for r in ranked if isinstance(r.get('index'), int)]
-                # Include any missing indices at the end (safety net)
-                all_indices = list(range(len(candidates)))
-                for i in all_indices:
+                # Append any indices the LLM omitted (safety net)
+                for i in range(len(candidates)):
                     if i not in index_order:
                         index_order.append(i)
 
                 shot['video_results'] = [candidates[i] for i in index_order if i < len(candidates)]
-                shot['rank_reason'] = ranked[0].get('reason', '') if ranked else ''
+                shot['rank_reason'] = ranked[0].get('reason', '')
         except Exception as e:
             print(f"Ranking failed for shot {shot.get('slot_id')}: {e}")
-            shot['rank_reason'] = ''
+            shot.setdefault('rank_reason', '')
 
         done += 1
         if progress_callback:

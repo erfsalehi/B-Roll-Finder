@@ -875,14 +875,14 @@ elif app_mode == "Director (v0.2)":
         st.subheader("Shot List")
         table_data = []
         for shot in st.session_state.director_shots:
+            sel = shot.get("selected_results", [])
             table_data.append({
-                "Time": f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}",
-                "Intent": shot.get("shot_intent", ""),
-                "Type": shot.get("shot_type", ""),
-                "Priority": shot.get("priority", ""),
-                "Queries": " | ".join(shot.get("search_queries", [])),
+                "Time":       f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}",
+                "Intent":     shot.get("shot_intent", ""),
+                "Priority":   shot.get("priority", ""),
+                "Queries":    " | ".join(shot.get("search_queries", [])),
                 "Candidates": len(shot.get("video_results", [])),
-                "Selected": "✅" if shot.get("selected_result") else ("⏭ Skipped" if shot.get("skipped") else "—"),
+                "Selected":   f"✅ {len(sel)}" if sel else ("⏭ Skipped" if shot.get("skipped") else "—"),
             })
         st.dataframe(table_data, use_container_width=True)
 
@@ -939,7 +939,12 @@ elif app_mode == "Director (v0.2)":
     has_candidates = any(len(s.get("video_results", [])) > 1 for s in st.session_state.get("director_shots", []))
     if has_candidates:
         st.header("Stage 3: Rank Candidates")
-        st.caption("The LLM reorders each shot's candidates by relevance to the shot intent.")
+        st.caption("AI reorders candidates by visual relevance and flags off-topic results.")
+        d_video_topic = st.text_input(
+            "What is this video about? (helps reject off-topic candidates)",
+            placeholder="e.g. car mechanics and engine repair",
+            key="d_video_topic"
+        )
         if st.button("Rank Candidates with AI", key="d_rank"):
             if not os.getenv("GROQ_API_KEY"):
                 st.error("Groq API key required for ranking.")
@@ -951,76 +956,115 @@ elif app_mode == "Director (v0.2)":
                     st.session_state.director_shots = rank_shot_candidates(
                         st.session_state.director_shots,
                         api_key=os.getenv("GROQ_API_KEY"),
-                        custom_instructions=st.session_state.get("d_custom_instructions", ""),
+                        custom_instructions=custom_instructions,
+                        video_topic=d_video_topic,
                         progress_callback=lambda p: pbar3.progress(p),
                     )
                     pbar3.progress(1.0)
                     status3.text("Done.")
-                    st.success("Candidates ranked!")
+                    st.success("Candidates ranked! Irrelevant clips are hidden in the review.")
                     save_cache()
                 except Exception as e:
                     st.error(f"Ranking error: {e}")
 
-    # ── Stage 4 — Editor Review ──────────────────────────────────────────────
+    # ── Stage 4 — Editor Review (paginated) ─────────────────────────────────
     review_shots = [s for s in st.session_state.get("director_shots", [])
                     if s.get("video_results") and s.get("priority") != "none"]
     if review_shots:
         st.header("Stage 4: Review & Select")
-        st.caption("Click a card to select it for download. Hit Skip if none fit.")
 
-        for shot in review_shots:
-            slot_id  = shot.get("slot_id", "?")
-            ts       = f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}"
-            intent   = shot.get("shot_intent", "")
-            reason   = shot.get("rank_reason", "")
-            selected = shot.get("selected_result")
-            skipped  = shot.get("skipped", False)
+        if "d_review_idx" not in st.session_state:
+            st.session_state.d_review_idx = 0
+        st.session_state.d_review_idx = min(st.session_state.d_review_idx, len(review_shots) - 1)
+        idx = st.session_state.d_review_idx
+        shot = review_shots[idx]
 
-            badge = "✅ Selected" if selected else ("⏭ Skipped" if skipped else "")
-            with st.expander(f"Shot {slot_id} — {ts}  {badge}", expanded=not (selected or skipped)):
-                st.markdown(f"**Narration:** _{shot.get('text', '')}_")
-                st.markdown(f"**Intent:** {intent}  |  **Type:** {shot.get('shot_type', '')}")
-                if reason:
-                    st.info(f"🤖 Top pick reason: {reason}")
-
-                candidates = shot["video_results"]
-                cols = st.columns(min(len(candidates), 3))
-
-                for j, res in enumerate(candidates):
-                    col = cols[j % 3]
-                    with col:
-                        thumb = res.get("thumbnail", "")
-                        if thumb:
-                            st.image(thumb, use_container_width=True)
-                        st.markdown(f"**{res.get('title','?')}**")
-                        src = res.get("source", "?").upper()
-                        w   = res.get("width", "?")
-                        h   = res.get("height", "?")
-                        dur = res.get("duration", "?")
-                        st.caption(f"{src} · {w}×{h} · {dur}s")
-                        if res.get("description"):
-                            st.caption(res["description"])
-
-                        is_selected = selected and selected.get("url") == res.get("url")
-                        btn_label = "✅ Selected" if is_selected else f"Select #{j+1}"
-                        if st.button(btn_label, key=f"sel_{slot_id}_{j}", use_container_width=True):
-                            shot["selected_result"] = res
-                            shot["skipped"] = False
-                            st.rerun()
-
-                if st.button("⏭ Skip this shot", key=f"skip_{slot_id}"):
-                    shot["selected_result"] = None
-                    shot["skipped"] = True
-                    st.rerun()
-
-        # Review summary
-        n_selected = sum(1 for s in st.session_state.director_shots if s.get("selected_result"))
-        n_skipped  = sum(1 for s in st.session_state.director_shots if s.get("skipped"))
+        # Progress / navigation bar
+        n_selected = sum(1 for s in review_shots if s.get("selected_results"))
+        n_skipped  = sum(1 for s in review_shots if s.get("skipped"))
         n_pending  = len(review_shots) - n_selected - n_skipped
-        st.info(f"**{n_selected}** selected · **{n_skipped}** skipped · **{n_pending}** pending")
+        st.caption(f"Shot {idx + 1} of {len(review_shots)}  ·  ✅ {n_selected} selected · ⏭ {n_skipped} skipped · ⏳ {n_pending} pending")
+        st.progress((idx + 1) / len(review_shots))
+
+        nav1, nav2, nav3 = st.columns([1, 6, 1])
+        with nav1:
+            if st.button("◀ Prev", key="d_prev", disabled=idx == 0):
+                st.session_state.d_review_idx -= 1
+                st.rerun()
+        with nav3:
+            if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1):
+                st.session_state.d_review_idx += 1
+                st.rerun()
+
+        # Shot details
+        slot_id  = shot.get("slot_id", "?")
+        ts       = f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}"
+        reason   = shot.get("rank_reason", "")
+        sel_urls = {r.get("url") for r in shot.get("selected_results", [])}
+        skipped  = shot.get("skipped", False)
+
+        st.markdown(f"**Shot {slot_id}** · {ts}")
+        st.markdown(f"**Intent:** {shot.get('shot_intent', '')}")
+        st.markdown(f"**Narration:** _{shot.get('text', '')}_")
+        if reason:
+            st.info(f"🤖 {reason}")
+        if skipped:
+            st.warning("⏭ This shot is marked as skipped.")
+
+        # Candidate cards — filter out irrelevant ones if ranked
+        candidates = [c for c in shot["video_results"] if not c.get("irrelevant")]
+        hidden     = len(shot["video_results"]) - len(candidates)
+        if hidden:
+            st.caption(f"🚫 {hidden} off-topic candidate(s) hidden by AI ranking.")
+        if not candidates:
+            st.warning("No relevant candidates found for this shot.")
+        else:
+            cols = st.columns(min(len(candidates), 3))
+            for j, res in enumerate(candidates):
+                with cols[j % 3]:
+                    thumb = res.get("thumbnail", "")
+                    if thumb:
+                        st.image(thumb, use_container_width=True)
+                    src = res.get("source", "?").upper()
+                    w   = res.get("width", "?")
+                    h   = res.get("height", "?")
+                    dur = res.get("duration", "?")
+                    st.markdown(f"**{res.get('title', '?')}**")
+                    st.caption(f"{src} · {w}×{h} · {dur}s")
+                    if res.get("description"):
+                        st.caption(res["description"])
+
+                    is_sel = res.get("url") in sel_urls
+                    label  = "✅ Deselect" if is_sel else "Select"
+                    if st.button(label, key=f"sel_{slot_id}_{j}", use_container_width=True):
+                        current = shot.get("selected_results", [])
+                        if is_sel:
+                            shot["selected_results"] = [r for r in current if r.get("url") != res.get("url")]
+                        else:
+                            shot["selected_results"] = current + [res]
+                        shot["skipped"] = False
+                        # Stay on current shot — no rerun jump
+
+        # Skip / next controls
+        sk1, sk2 = st.columns(2)
+        with sk1:
+            skip_label = "↩ Unskip" if skipped else "⏭ Skip this shot"
+            if st.button(skip_label, key=f"skip_{slot_id}"):
+                shot["skipped"] = not skipped
+                shot["selected_results"] = []
+        with sk2:
+            if idx < len(review_shots) - 1:
+                if st.button("Save & Next ▶", key="d_save_next"):
+                    save_cache()
+                    st.session_state.d_review_idx += 1
+                    st.rerun()
+            else:
+                if st.button("✅ Finish Review", key="d_finish"):
+                    save_cache()
+                    st.success("Review complete! Scroll down to download.")
 
     # ── Stage 5 — Download ───────────────────────────────────────────────────
-    selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_result")]
+    selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_results")]
     if selected_shots:
         st.header("Stage 5: Download Selected")
 
@@ -1032,8 +1076,9 @@ elif app_mode == "Director (v0.2)":
         with col_dv3:
             d_workers  = st.slider("Concurrent", 1, 10, 3, key="d_workers")
 
+        total_selected_files = sum(len(s.get("selected_results", [])) for s in selected_shots)
         c_dl1, c_dl2 = st.columns(2)
-        if c_dl1.button(f"Download {len(selected_shots)} Selected Videos", key="d_dl_start"):
+        if c_dl1.button(f"Download {total_selected_files} Selected Videos", key="d_dl_start"):
             if not _check_network():
                 st.error("No network connection detected.")
             else:
@@ -1043,26 +1088,26 @@ elif app_mode == "Director (v0.2)":
 
                 added = 0
                 for shot in selected_shots:
-                    res      = shot["selected_result"]
-                    url      = res.get("url")
-                    if not url:
-                        continue
-                    source   = res.get("source", "stock")
                     slot_id  = shot.get("slot_id", "X")
                     safe_int = "".join(c if c.isalnum() or c in " -_" else "_"
                                        for c in shot.get("shot_intent", "shot")).strip()
-                    filename    = f"Shot{slot_id}-{source}-{safe_int[:30]}.mp4"
-                    output_path = os.path.join("downloads", "director", filename)
-                    dm_source   = "direct" if source in ("pexels", "pixabay") else "youtube"
-                    try:
-                        task_id = st.session_state.dm.add_download(
-                            url, output_path, d_quality,
-                            source=dm_source, max_size_mb=d_max_size, normalize=False,
-                        )
-                        st.session_state.dm.start_download(task_id)
-                        added += 1
-                    except Exception as e:
-                        st.error(f"Shot {slot_id}: {e}")
+                    for k, res in enumerate(shot.get("selected_results", [])):
+                        url = res.get("url")
+                        if not url:
+                            continue
+                        source      = res.get("source", "stock")
+                        filename    = f"Shot{slot_id}-{source}-{safe_int[:25]}-{k+1}.mp4"
+                        output_path = os.path.join("downloads", "director", filename)
+                        dm_source   = "direct" if source in ("pexels", "pixabay") else "youtube"
+                        try:
+                            task_id = st.session_state.dm.add_download(
+                                url, output_path, d_quality,
+                                source=dm_source, max_size_mb=d_max_size, normalize=False,
+                            )
+                            st.session_state.dm.start_download(task_id)
+                            added += 1
+                        except Exception as e:
+                            st.error(f"Shot {slot_id}: {e}")
 
                 if added:
                     st.success(f"Queued {added} downloads.")
