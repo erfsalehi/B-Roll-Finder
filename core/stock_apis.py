@@ -29,16 +29,18 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
                     elif best_file.get('quality') not in ['hd', 'uhd']:
                         best_file = vf
 
-            title = f"Pexels Video {video.get('id')}"
             results.append({
-                'title': title,
+                'title': f"Pexels Video {video.get('id')}",
                 'url': best_file.get('link'),
                 'source': 'pexels',
+                'thumbnail': video.get('image', ''),
+                'description': f"By {video.get('user', {}).get('name', 'Unknown')} — {video.get('duration', '?')}s",
+                'duration': video.get('duration'),
                 'is_short': False,
                 'width': best_file.get('width'),
                 'height': best_file.get('height'),
                 'quality': best_file.get('quality'),
-                'file_size': None
+                'file_size': None,
             })
     except Exception as e:
         msg = f"Pexels search failed for '{keyword}': {e}"
@@ -79,16 +81,18 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
 
             v_data = videos[best_quality]
 
-            title = f"Pixabay: {hit.get('tags', 'video')}"
             results.append({
-                'title': title,
+                'title': f"Pixabay: {hit.get('tags', 'video')}",
                 'url': v_data.get('url'),
                 'source': 'pixabay',
+                'thumbnail': hit.get('userImageURL', ''),
+                'description': f"Tags: {hit.get('tags', '')} — {hit.get('duration', '?')}s",
+                'duration': hit.get('duration'),
                 'is_short': False,
                 'width': v_data.get('width'),
                 'height': v_data.get('height'),
                 'quality': best_quality,
-                'file_size': v_data.get('size')
+                'file_size': v_data.get('size'),
             })
 
         return results[:num_results]

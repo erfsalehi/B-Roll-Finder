@@ -772,6 +772,7 @@ if app_mode == "Classic Finder":
 elif app_mode == "Director (v0.2)":
     from core.director import generate_shot_list
     from core.director_search import fetch_director_footage
+    from core.director_rank import rank_shot_candidates
     from core.output import generate_fcpxml, generate_shot_list_txt
     st.title("🎬 B-Roll Director (v0.2)")
     
@@ -865,235 +866,258 @@ elif app_mode == "Director (v0.2)":
             except Exception as e:
                 st.error(f"Error generating shot list: {e}")
                 
+    # ── Session state for director ──────────────────────────────────────────
+    if "director_shots" not in st.session_state:
+        st.session_state.director_shots = []
+
+    # ── Stage 1 shot list table ──────────────────────────────────────────────
     if st.session_state.director_shots:
-        st.subheader("Generated Shot List")
-        # Display as a table
+        st.subheader("Shot List")
         table_data = []
         for shot in st.session_state.director_shots:
             table_data.append({
-                "Time": f"{shot.get('timestamp_start_str')} - {shot.get('timestamp_end_str')}",
-                "Intent": shot.get("shot_intent"),
-                "Type": shot.get("shot_type"),
-                "Priority": shot.get("priority"),
-                "Queries": ", ".join(shot.get("search_queries", [])),
-                "Candidate Specs": f"{shot['video_results'][0].get('width', '?')}x{shot['video_results'][0].get('height', '?')} | {round(shot['video_results'][0].get('file_size', 0)/(1024*1024), 1) if shot['video_results'][0].get('file_size') else '?'}MB" if shot.get('video_results') else "No candidates"
+                "Time": f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}",
+                "Intent": shot.get("shot_intent", ""),
+                "Type": shot.get("shot_type", ""),
+                "Priority": shot.get("priority", ""),
+                "Queries": " | ".join(shot.get("search_queries", [])),
+                "Candidates": len(shot.get("video_results", [])),
+                "Selected": "✅" if shot.get("selected_result") else ("⏭ Skipped" if shot.get("skipped") else "—"),
             })
-        st.dataframe(table_data, width="stretch")
-        
-        st.header("Step 4: Fetch Footage (Stage 2)")
+        st.dataframe(table_data, use_container_width=True)
 
-        # --- Settings for Filtering and Downloading ---
-        col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
-        with col_vid1:
-            video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0, key="d_vq")
-        with col_vid2:
-            strict_quality = st.checkbox("Strict Quality", value=False, key="d_strict")
-        with col_vid3:
-            normalize_res = st.checkbox("Normalize (1080p)", value=True, key="d_norm")
-        with col_vid4:
-            max_size_mb = st.number_input("Max Size (MB)", value=100, min_value=1, key="d_size")
-        with col_vid5:
-            max_workers = st.slider("Max Concurrent", 1, 10, 3, key="d_workers")
+    # ── Stage 2 — Fetch Candidates ───────────────────────────────────────────
+    if st.session_state.director_shots:
+        st.header("Stage 2: Fetch Candidates")
 
-        col_src1, col_src2, col_src3 = st.columns(3)
-        with col_src1:
-            use_youtube = st.checkbox("Include YouTube (yt-dlp)", value=True, key="d_yt")
-        with col_src2:
-            use_pexels = st.checkbox("Include Pexels", value=True, key="d_pex_cb")
-        with col_src3:
-            use_pixabay = st.checkbox("Include Pixabay", value=True, key="d_pix_cb")
-            
-        if st.button("Find Footage"):
-            pbar2 = st.progress(0)
-            st.session_state.director_shots = fetch_director_footage(
-                st.session_state.director_shots,
-                use_youtube=use_youtube,
-                use_pexels=use_pexels,
-                use_pixabay=use_pixabay,
-                progress_callback=lambda p: pbar2.progress(p)
-            )
-            pbar2.progress(1.0)
-            save_cache()
-            st.success("Footage candidates found!")
-            
-        if st.button("Apply Filters to Candidates"):
-            filtered_count = 0
-            for shot in st.session_state.director_shots:
-                results = shot.get('video_results', [])
-                if not results:
-                    continue
-                
-                res_map = {'1080p': 1080, '720p': 720, '480p': 480}
-                min_h = res_map.get(video_quality, 0)
-                
-                new_results = []
-                for res in results:
-                    # Filter by resolution if strict
-                    if strict_quality:
-                        if res.get('height') and res.get('height') < min_h:
-                            continue
-                    
-                    # Filter by size if known
-                    if max_size_mb:
-                        if res.get('file_size') and res.get('file_size') / (1024*1024) > max_size_mb:
-                            continue
-                            
-                    new_results.append(res)
-                
-                if len(new_results) != len(results):
-                    filtered_count += (len(results) - len(new_results))
-                    shot['video_results'] = new_results
-            
-            st.success(f"Filtered out {filtered_count} candidates that didn't meet criteria.")
-            save_cache()
-            st.rerun()
-            
-        # --- Download Manager UI for Director Mode ---
-        c_dl1, c_dl2 = st.columns(2)
-        if c_dl1.button("Start Downloading Top Candidates"):
-            if st.session_state.dm.max_workers != max_workers:
-                st.session_state.dm = DownloadManager(max_workers=max_workers)
-            
-            st.session_state.dm.clear_and_reset()
-            
-            added_count = 0
-            for shot in st.session_state.director_shots:
-                results = shot.get('video_results', [])
-                if not results:
-                    continue
-                
-                # Logic to find the first candidate that fits size/resolution
-                # Since size check is async in DM, we'll just add the top candidate
-                # but we'll improve this to at least filter by resolution locally if possible
-                
-                res = results[0]
-                # If strict quality is on, we can filter locally for stock APIs
-                if strict_quality and res.get('source') in ['pexels', 'pixabay']:
-                    # Simple resolution check: 1080p -> height >= 1080
-                    res_map = {'1080p': 1080, '720p': 720, '480p': 480}
-                    min_h = res_map.get(video_quality, 0)
-                    if res.get('height') and res.get('height') < min_h:
-                        # Try to find another candidate in results
-                        found = False
-                        for alt_res in results[1:]:
-                            if alt_res.get('height') and alt_res.get('height') >= min_h:
-                                res = alt_res
-                                found = True
-                                break
-                        if not found:
-                            continue # Skip this shot if no candidates meet resolution
+        col_s2a, col_s2b, col_s2c = st.columns(3)
+        with col_s2a:
+            use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb")
+        with col_s2b:
+            use_pixabay = st.checkbox("Pixabay", value=bool(os.getenv("PIXABAY_API_KEY")), key="d_pix_cb")
+        with col_s2c:
+            d_num_results = st.number_input("Results per query", value=3, min_value=1, max_value=10, key="d_nr")
 
-                url = res.get('url')
-                if not url:
-                    continue
-                    
-                source = res.get('source', 'unknown')
-                slot_id = shot.get('slot_id', 'X')
-                
-                # Sanitize intent for filename
-                intent_raw = shot.get('shot_intent', 'shot')
-                safe_intent = "".join([c if c.isalnum() or c in " -_" else "_" for c in intent_raw]).strip()
-                
-                filename = f"Shot{slot_id}-{source}-{safe_intent[:30]}.mp4"
-                output_path = os.path.join("downloads", "director", filename)
-                
-                dm_source = 'direct' if source in ['pexels', 'pixabay'] else 'youtube'
-                try:
-                    task_id = st.session_state.dm.add_download(
-                        url, 
-                        output_path, 
-                        video_quality, 
-                        source=dm_source,
-                        max_size_mb=max_size_mb,
-                        strict_quality=strict_quality,
-                        normalize=normalize_res
-                    )
-                    st.session_state.dm.start_download(task_id)
-                    added_count += 1
-                except Exception as e:
-                    st.error(f"Failed to add download for Shot {slot_id}: {e}")
-            
-            if added_count > 0:
-                st.success(f"Added {added_count} downloads to the queue!")
+        if st.button("Fetch Candidates", disabled=st.session_state.is_fetching, key="d_fetch"):
+            if not _check_network():
+                st.error("No network connection detected.")
+            elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
+                 not (use_pixabay and os.getenv("PIXABAY_API_KEY")):
+                st.error("No stock API keys configured. Add Pexels and/or Pixabay keys in Step 1.")
             else:
-                st.warning("No downloadable videos found in the top candidates.")
+                st.session_state.is_fetching = True
+                d_fetch_errors = []
+                try:
+                    pbar2 = st.progress(0)
+                    status2 = st.empty()
+                    status2.text("Fetching candidates…")
+                    st.session_state.director_shots = fetch_director_footage(
+                        st.session_state.director_shots,
+                        use_pexels=use_pexels,
+                        use_pixabay=use_pixabay,
+                        num_results=d_num_results,
+                        progress_callback=lambda p: pbar2.progress(p),
+                        errors=d_fetch_errors,
+                    )
+                    pbar2.progress(1.0)
+                    total_found = sum(len(s.get("video_results", [])) for s in st.session_state.director_shots)
+                    status2.text("Done.")
+                    if total_found > 0:
+                        st.success(f"Found {total_found} candidates across {len(st.session_state.director_shots)} shots.")
+                    else:
+                        st.warning("No candidates found. Check your API keys or try different style hints.")
+                    if d_fetch_errors:
+                        unique_fe = list(dict.fromkeys(d_fetch_errors))
+                        with st.expander(f"⚠️ {len(unique_fe)} fetch error(s)"):
+                            for e in unique_fe[:20]:
+                                st.write(f"• {e}")
+                    save_cache()
+                finally:
+                    st.session_state.is_fetching = False
 
-        if c_dl2.button("Cancel All Downloads", key="d_cancel"):
+    # ── Stage 3 — LLM Ranking ────────────────────────────────────────────────
+    has_candidates = any(len(s.get("video_results", [])) > 1 for s in st.session_state.get("director_shots", []))
+    if has_candidates:
+        st.header("Stage 3: Rank Candidates")
+        st.caption("The LLM reorders each shot's candidates by relevance to the shot intent.")
+        if st.button("Rank Candidates with AI", key="d_rank"):
+            if not os.getenv("GROQ_API_KEY"):
+                st.error("Groq API key required for ranking.")
+            else:
+                pbar3 = st.progress(0)
+                status3 = st.empty()
+                status3.text("Ranking…")
+                try:
+                    st.session_state.director_shots = rank_shot_candidates(
+                        st.session_state.director_shots,
+                        api_key=os.getenv("GROQ_API_KEY"),
+                        custom_instructions=st.session_state.get("d_custom_instructions", ""),
+                        progress_callback=lambda p: pbar3.progress(p),
+                    )
+                    pbar3.progress(1.0)
+                    status3.text("Done.")
+                    st.success("Candidates ranked!")
+                    save_cache()
+                except Exception as e:
+                    st.error(f"Ranking error: {e}")
+
+    # ── Stage 4 — Editor Review ──────────────────────────────────────────────
+    review_shots = [s for s in st.session_state.get("director_shots", [])
+                    if s.get("video_results") and s.get("priority") != "none"]
+    if review_shots:
+        st.header("Stage 4: Review & Select")
+        st.caption("Click a card to select it for download. Hit Skip if none fit.")
+
+        for shot in review_shots:
+            slot_id  = shot.get("slot_id", "?")
+            ts       = f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}"
+            intent   = shot.get("shot_intent", "")
+            reason   = shot.get("rank_reason", "")
+            selected = shot.get("selected_result")
+            skipped  = shot.get("skipped", False)
+
+            badge = "✅ Selected" if selected else ("⏭ Skipped" if skipped else "")
+            with st.expander(f"Shot {slot_id} — {ts}  {badge}", expanded=not (selected or skipped)):
+                st.markdown(f"**Narration:** _{shot.get('text', '')}_")
+                st.markdown(f"**Intent:** {intent}  |  **Type:** {shot.get('shot_type', '')}")
+                if reason:
+                    st.info(f"🤖 Top pick reason: {reason}")
+
+                candidates = shot["video_results"]
+                cols = st.columns(min(len(candidates), 3))
+
+                for j, res in enumerate(candidates):
+                    col = cols[j % 3]
+                    with col:
+                        thumb = res.get("thumbnail", "")
+                        if thumb:
+                            st.image(thumb, use_container_width=True)
+                        st.markdown(f"**{res.get('title','?')}**")
+                        src = res.get("source", "?").upper()
+                        w   = res.get("width", "?")
+                        h   = res.get("height", "?")
+                        dur = res.get("duration", "?")
+                        st.caption(f"{src} · {w}×{h} · {dur}s")
+                        if res.get("description"):
+                            st.caption(res["description"])
+
+                        is_selected = selected and selected.get("url") == res.get("url")
+                        btn_label = "✅ Selected" if is_selected else f"Select #{j+1}"
+                        if st.button(btn_label, key=f"sel_{slot_id}_{j}", use_container_width=True):
+                            shot["selected_result"] = res
+                            shot["skipped"] = False
+                            st.rerun()
+
+                if st.button("⏭ Skip this shot", key=f"skip_{slot_id}"):
+                    shot["selected_result"] = None
+                    shot["skipped"] = True
+                    st.rerun()
+
+        # Review summary
+        n_selected = sum(1 for s in st.session_state.director_shots if s.get("selected_result"))
+        n_skipped  = sum(1 for s in st.session_state.director_shots if s.get("skipped"))
+        n_pending  = len(review_shots) - n_selected - n_skipped
+        st.info(f"**{n_selected}** selected · **{n_skipped}** skipped · **{n_pending}** pending")
+
+    # ── Stage 5 — Download ───────────────────────────────────────────────────
+    selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_result")]
+    if selected_shots:
+        st.header("Stage 5: Download Selected")
+
+        col_dv1, col_dv2, col_dv3 = st.columns(3)
+        with col_dv1:
+            d_quality  = st.selectbox("Quality", ["1080p", "720p", "480p", "Best", "Worst"], key="d_vq")
+        with col_dv2:
+            d_max_size = st.number_input("Max Size (MB)", value=200, min_value=1, key="d_maxsize")
+        with col_dv3:
+            d_workers  = st.slider("Concurrent", 1, 10, 3, key="d_workers")
+
+        c_dl1, c_dl2 = st.columns(2)
+        if c_dl1.button(f"Download {len(selected_shots)} Selected Videos", key="d_dl_start"):
+            if not _check_network():
+                st.error("No network connection detected.")
+            else:
+                if st.session_state.dm.max_workers != d_workers:
+                    st.session_state.dm = DownloadManager(max_workers=d_workers)
+                st.session_state.dm.clear_and_reset()
+
+                added = 0
+                for shot in selected_shots:
+                    res      = shot["selected_result"]
+                    url      = res.get("url")
+                    if not url:
+                        continue
+                    source   = res.get("source", "stock")
+                    slot_id  = shot.get("slot_id", "X")
+                    safe_int = "".join(c if c.isalnum() or c in " -_" else "_"
+                                       for c in shot.get("shot_intent", "shot")).strip()
+                    filename    = f"Shot{slot_id}-{source}-{safe_int[:30]}.mp4"
+                    output_path = os.path.join("downloads", "director", filename)
+                    dm_source   = "direct" if source in ("pexels", "pixabay") else "youtube"
+                    try:
+                        task_id = st.session_state.dm.add_download(
+                            url, output_path, d_quality,
+                            source=dm_source, max_size_mb=d_max_size, normalize=False,
+                        )
+                        st.session_state.dm.start_download(task_id)
+                        added += 1
+                    except Exception as e:
+                        st.error(f"Shot {slot_id}: {e}")
+
+                if added:
+                    st.success(f"Queued {added} downloads.")
+                else:
+                    st.warning("Nothing was queued — check URLs.")
+
+        if c_dl2.button("Cancel All", key="d_cancel"):
             st.session_state.dm.cancel_all()
-            
-        # Render Download Tasks (Dashboard View)
+
+        # Download dashboard
         tasks = st.session_state.dm.get_all_tasks()
         if tasks:
-            stats = st.session_state.dm.get_stats()
-            total = stats['total']
-            completed = stats['completed']
-            
-            st.progress(completed / total if total > 0 else 0.0)
-            st.write(f"**Overall Progress:** {completed} / {total} Completed | Active: {stats['downloading']} | Queued: {stats['queued']} | Failed: {stats['error']}")
-            
-            failed_tasks = st.session_state.dm.get_failed_tasks()
-            if failed_tasks:
-                with st.expander(f"⚠️ {len(failed_tasks)} Failed Downloads"):
+            stats     = st.session_state.dm.get_stats()
+            total_t   = stats["total"]
+            completed = stats["completed"]
+            st.progress(completed / total_t if total_t else 0.0)
+            st.write(f"**{completed}/{total_t}** done · Active: {stats['downloading']} · Queued: {stats['queued']} · Failed: {stats['error']}")
+
+            failed = st.session_state.dm.get_failed_tasks()
+            if failed:
+                with st.expander(f"⚠️ {len(failed)} failed"):
                     if st.button("Retry All Failed", key="d_retry"):
-                        st.session_state.dm.retry_all_failed()
-                        st.rerun()
-                    for ft in failed_tasks:
-                        st.write(f"❌ {os.path.basename(ft['output_path'])} - {ft.get('error_msg', 'Unknown Error')}")
-                        
-            active_tasks = st.session_state.dm.get_active_tasks()
-            if active_tasks:
-                st.subheader("Currently Downloading")
-                for t in active_tasks:
-                    st.write(f"**{os.path.basename(t['output_path'])}** - {t['status'].title()} ({t['progress']*100:.1f}%)")
-                    st.progress(t['progress'])
-                    
-                    b1, b2, b3 = st.columns(3)
-                    if t['status'] == 'downloading':
-                        if b1.button("Pause", key=f"pd_{t['id']}"):
-                            st.session_state.dm.pause_download(t['id'])
-                            st.rerun()
-                    elif t['status'] == 'paused':
-                        if b1.button("Resume", key=f"rd_{t['id']}"):
-                            st.session_state.dm.resume_download(t['id'])
-                            st.rerun()
-                            
-                    if b2.button("Cancel", key=f"cd_{t['id']}"):
-                        st.session_state.dm.cancel_download(t['id'])
-                        st.rerun()
-                        
-                import time
-                time.sleep(1)
-                st.rerun()
-            elif stats['queued'] > 0:
-                import time
-                time.sleep(1)
-                st.rerun()
-            
-        st.header("Step 5: Output & Download")
-        c1, c2, c3 = st.columns(3)
-        
-        shot_list_txt = generate_shot_list_txt(st.session_state.director_shots)
+                        st.session_state.dm.retry_all_failed(); st.rerun()
+                    for ft in failed:
+                        st.write(f"❌ {os.path.basename(ft['output_path'])} — {ft.get('error_msg','?')}")
+
+            active = st.session_state.dm.get_active_tasks()
+            if active:
+                st.subheader("Downloading")
+                for t in active:
+                    is_proc    = t["status"] == "processing"
+                    speed_str  = _format_speed(t.get("speed"))
+                    eta_str    = _format_eta(t.get("eta"))
+                    meta       = " | ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
+                    label      = "Normalizing…" if is_proc else f"{t['status'].title()} ({t['progress']*100:.1f}%){(' — ' + meta) if meta else ''}"
+                    st.write(f"**{os.path.basename(t['output_path'])}** — {label}")
+                    st.progress(t["progress"])
+                    b1, b2, _ = st.columns(3)
+                    if not is_proc:
+                        if t["status"] == "downloading":
+                            if b1.button("Pause",  key=f"pd_{t['id']}"): st.session_state.dm.pause_download(t["id"]);  st.rerun()
+                        elif t["status"] == "paused":
+                            if b1.button("Resume", key=f"rd_{t['id']}"): st.session_state.dm.resume_download(t["id"]); st.rerun()
+                    if b2.button("Cancel", key=f"cd_{t['id']}"): st.session_state.dm.cancel_download(t["id"]); st.rerun()
+                time.sleep(1); st.rerun()
+            elif stats["queued"] > 0:
+                time.sleep(1); st.rerun()
+
+    # ── Export ───────────────────────────────────────────────────────────────
+    if st.session_state.director_shots:
+        st.header("Export")
         shot_list_json = json.dumps(st.session_state.director_shots, indent=2)
-        fcpxml = generate_fcpxml(st.session_state.director_shots)
-        srt_txt = generate_srt(st.session_state.director_shots) # reuse standard srt
-        
-        with c1:
-            st.download_button("Download shot_list.json", data=shot_list_json, file_name="shot_list.json", mime="application/json")
-        with c2:
-            st.download_button("Download shot_list.txt", data=shot_list_txt, file_name="shot_list.txt", mime="text/plain")
-        with c3:
-            st.download_button("Download markers.fcpxml", data=fcpxml, file_name="markers.fcpxml", mime="text/xml")
-            
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            zip_file.writestr("shot_list.json", shot_list_json)
-            zip_file.writestr("shot_list.txt", shot_list_txt)
-            zip_file.writestr("markers.fcpxml", fcpxml)
-            zip_file.writestr("timing.srt", srt_txt)
-            
-        st.download_button(
-            label="Download All (.zip)",
-            data=zip_buffer.getvalue(),
-            file_name="director_outputs.zip",
-            mime="application/zip"
-        )
+        shot_list_txt  = generate_shot_list_txt(st.session_state.director_shots)
+        fcpxml         = generate_fcpxml(st.session_state.director_shots)
+        c1, c2, c3     = st.columns(3)
+        with c1: st.download_button("shot_list.json", data=shot_list_json, file_name="shot_list.json", mime="application/json")
+        with c2: st.download_button("shot_list.txt",  data=shot_list_txt,  file_name="shot_list.txt",  mime="text/plain")
+        with c3: st.download_button("markers.fcpxml", data=fcpxml,         file_name="markers.fcpxml", mime="text/xml")
