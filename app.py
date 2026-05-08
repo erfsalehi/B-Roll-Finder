@@ -71,6 +71,10 @@ if "audio_duration" not in st.session_state:
     st.session_state.audio_duration = 0.0
 if "transcription_segments" not in st.session_state:
     st.session_state.transcription_segments = []
+if "transcription_chunks" not in st.session_state:
+    st.session_state.transcription_chunks = []
+if "active_chunk_idx" not in st.session_state:
+    st.session_state.active_chunk_idx = 0
 if "global_themes" not in st.session_state:
     st.session_state.global_themes = []
 if "dm" not in st.session_state:
@@ -89,6 +93,9 @@ def load_cache():
                 st.session_state.script_text = data.get("script_text", "")
                 st.session_state.audio_duration = data.get("audio_duration", 0.0)
                 st.session_state.global_themes = data.get("global_themes", [])
+                st.session_state.transcription_segments = data.get("transcription_segments", [])
+                st.session_state.transcription_chunks = data.get("transcription_chunks", [])
+                st.session_state.active_chunk_idx = data.get("active_chunk_idx", 0)
         except Exception as e:
             st.error(f"Error loading cache: {e}")
 
@@ -100,7 +107,10 @@ def save_cache():
                 "director_shots": st.session_state.get("director_shots", []),
                 "script_text": st.session_state.script_text,
                 "audio_duration": st.session_state.audio_duration,
-                "global_themes": st.session_state.get("global_themes", [])
+                "global_themes": st.session_state.get("global_themes", []),
+                "transcription_segments": st.session_state.get("transcription_segments", []),
+                "transcription_chunks": st.session_state.get("transcription_chunks", []),
+                "active_chunk_idx": st.session_state.get("active_chunk_idx", 0),
             }, f)
     except Exception as e:
         st.error(f"Error saving cache: {e}")
@@ -110,7 +120,16 @@ if not st.session_state.slots and os.path.exists(CACHE_FILE):
 
 # --- UI Components ---
 st.sidebar.title("App Mode")
-app_mode = st.sidebar.radio("Select Mode", ["Classic Finder", "Director (v0.2)"])
+app_mode = st.sidebar.radio(
+    "Select Mode",
+    ["Director", "Classic Finder"],
+    help=(
+        "**Director** is the recommended workflow — upload a voiceover, "
+        "auto-transcribe, generate shot lists, fetch + rank candidates, "
+        "review with checkboxes, download. **Classic Finder** is the older "
+        "keyword-based path; kept for compatibility."
+    ),
+)
 
 def render_classic_mode():
     st.title("🎬 B-Roll Finder")
@@ -819,8 +838,7 @@ def render_classic_mode():
 
 if app_mode == "Classic Finder":
     render_classic_mode()
-elif app_mode == "Director (v0.2)":
-    from core.director import generate_shot_list
+elif app_mode == "Director":
     from core.director_search import fetch_director_footage
     from core.director_rank import rank_shot_candidates
     from core.output import generate_fcpxml, generate_shot_list_txt
@@ -875,52 +893,129 @@ elif app_mode == "Director (v0.2)":
             else:
                 st.warning("Groq API key is required.")
 
-    st.header("Step 1: Upload Files")
+    st.header("Step 1: Upload & Transcribe")
     with st.container(border=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            script_file = st.file_uploader("Script (.txt)", type=["txt"], key="d_script",
-                                           help="Plain-text voiceover script.")
-        with col2:
-            audio_file = st.file_uploader("Voiceover audio", type=["mp3", "wav", "m4a"], key="d_audio",
-                                          help="Used to compute speaking rate (words per second).")
+        audio_file = st.file_uploader(
+            "Voiceover audio (.mp3 / .wav / .m4a)",
+            type=["mp3", "wav", "m4a"],
+            key="d_audio",
+            help=(
+                "We'll transcribe this with Groq Whisper, then split it into "
+                "~2-minute chunks at sentence boundaries. You'll then pick "
+                "which chunk to work on — keeps each batch within Groq's "
+                "rate limits and lets you iterate one section at a time."
+            ),
+        )
 
-        if script_file and audio_file:
-            script_content = script_file.read().decode("utf-8")
-
-            audio_path = os.path.join(".cache", "temp_audio_director" + os.path.splitext(audio_file.name)[1])
+        if audio_file:
+            audio_path = os.path.join(
+                ".cache", "temp_audio_director" + os.path.splitext(audio_file.name)[1]
+            )
             with open(audio_path, "wb") as f:
                 f.write(audio_file.read())
-
-            st.session_state.script_text = script_content
             st.session_state.audio_duration = get_audio_duration(audio_path)
 
-            # Compact metric row instead of a wide info banner.
-            m1, m2, m3 = st.columns(3)
-            with m1:
-                st.metric("Words", f"{len(st.session_state.script_text.split()):,}")
-            with m2:
-                st.metric("Duration", f"{st.session_state.audio_duration:.1f}s")
-            with m3:
-                wps = calculate_wps(st.session_state.script_text, st.session_state.audio_duration)
-                st.metric("Speaking rate", f"{wps:.2f} wps")
+            top_a, top_b, top_c = st.columns([2, 2, 3])
+            with top_a:
+                st.metric("Duration", f"{st.session_state.audio_duration / 60:.1f} min")
+            with top_b:
+                st.metric("Chunks", str(len(st.session_state.get("transcription_chunks", []))) or "—")
+            with top_c:
+                st.audio(audio_path)
 
-            st.audio(audio_path)
-            with st.expander("View uploaded script"):
-                st.text_area("Full script", value=st.session_state.script_text, height=200,
-                             disabled=True, key="d_full_script", label_visibility="collapsed")
+            cta_a, cta_b = st.columns([3, 1])
+            with cta_a:
+                if st.button("🎙 Transcribe & chunk", key="d_transcribe", type="primary",
+                             use_container_width=True):
+                    if not os.getenv("GROQ_API_KEY"):
+                        st.error("Set Groq API Key in Setup above.")
+                    else:
+                        from core.transcription import transcribe_audio
+                        from core.timing import chunk_segments_by_duration
+                        with st.spinner("Transcribing with Whisper…"):
+                            try:
+                                segments = transcribe_audio(audio_path, os.getenv("GROQ_API_KEY"))
+                                st.session_state.transcription_segments = segments
+                                # Reconstruct script_text from segments so the rest
+                                # of the pipeline (WPS calc, shot generation) works.
+                                st.session_state.script_text = " ".join(
+                                    s["text"].strip() for s in segments
+                                ).strip()
+                                chunks = chunk_segments_by_duration(
+                                    segments, target_duration=120.0, max_duration=180.0
+                                )
+                                st.session_state.transcription_chunks = chunks
+                                st.session_state.active_chunk_idx = 0
+                                save_cache()
+                                st.success(
+                                    f"Transcribed and split into {len(chunks)} chunk(s). "
+                                    f"Pick one below and continue to Step 2."
+                                )
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Transcription failed: {e}")
+            with cta_b:
+                if st.session_state.get("transcription_chunks"):
+                    if st.button("Reset", key="d_reset_transcription",
+                                 use_container_width=True,
+                                 help="Discard the current transcription and chunks."):
+                        st.session_state.transcription_segments = []
+                        st.session_state.transcription_chunks   = []
+                        st.session_state.active_chunk_idx       = 0
+                        st.session_state.script_text            = ""
+                        save_cache()
+                        st.rerun()
         else:
-            st.caption("Upload both files to continue.")
-        
+            st.caption("Upload your voiceover to begin.")
+
+    # ── Chunk picker ─────────────────────────────────────────────────────
+    chunks = st.session_state.get("transcription_chunks", [])
+    if chunks:
+        st.subheader("Pick a chunk to work on")
+        st.caption(
+            "Each chunk is ~2 minutes, ending on a sentence boundary. "
+            "The shot list, candidate fetch, ranking, and download in the "
+            "later steps all act on the **active chunk only** — let you "
+            "iterate one section at a time within Groq's rate limits."
+        )
+
+        def _format_chunk(i: int) -> str:
+            c = chunks[i]
+            ms_s = f"{int(c['start']//60)}:{int(c['start']%60):02d}"
+            ms_e = f"{int(c['end']//60)}:{int(c['end']%60):02d}"
+            wc   = len(c['text'].split())
+            preview = c['text'][:60].replace("\n", " ")
+            if len(c['text']) > 60:
+                preview += "…"
+            return f"Chunk {i+1} · {ms_s}–{ms_e} · {wc} words · \"{preview}\""
+
+        # selectbox stores the index directly via the format_func pattern
+        active_idx = st.selectbox(
+            "Active chunk",
+            options=list(range(len(chunks))),
+            format_func=_format_chunk,
+            index=min(st.session_state.get("active_chunk_idx", 0), len(chunks) - 1),
+            key="active_chunk_idx",
+        )
+
+        active = chunks[active_idx]
+        # Compact stats for the active chunk
+        c_dur = active['end'] - active['start']
+        c_words = len(active['text'].split())
+        c_wps = c_words / c_dur if c_dur > 0 else 0
+        s1, s2, s3 = st.columns(3)
+        with s1: st.metric("Length", f"{c_dur/60:.1f} min")
+        with s2: st.metric("Words", f"{c_words:,}")
+        with s3: st.metric("Speaking rate", f"{c_wps:.2f} wps")
+
+        with st.expander(f"📝 Read Chunk {active_idx + 1} text", expanded=False):
+            st.text_area(
+                "Chunk text", value=active["text"], height=200,
+                disabled=True, key=f"chunk_text_{active_idx}",
+                label_visibility="collapsed",
+            )
+
     st.header("Step 2: Generate Shot List")
-    
-    with st.expander("Range Selection", expanded=False):
-        d_use_portion = st.checkbox("Process Specific Portion", value=False, key="d_use_p")
-        col_dp1, col_dp2 = st.columns(2)
-        with col_dp1:
-            d_start_time = st.number_input("Start Time (seconds)", value=0.0, step=1.0, key="d_start")
-        with col_dp2:
-            d_end_time = st.number_input("End Time (seconds)", value=min(st.session_state.audio_duration, 300.0) if st.session_state.audio_duration > 0 else 60.0, step=1.0, key="d_end")
 
     # Video topic — single source of truth shared with Step 4 (ranking).
     # Editing it here updates Step 4, and vice versa, because Streamlit
@@ -937,51 +1032,43 @@ elif app_mode == "Director (v0.2)":
     if "director_shots" not in st.session_state:
         st.session_state.director_shots = []
 
-    if st.button("Generate Shot List"):
+    if st.button("Generate Shot List", type="primary"):
         if not os.getenv("GROQ_API_KEY"):
-            st.error("Please set Groq API key.")
-        elif not st.session_state.script_text or st.session_state.audio_duration <= 0:
-            st.error("Please upload script and audio.")
+            st.error("Set Groq API Key in Setup at the top.")
+        elif not st.session_state.get("transcription_chunks"):
+            st.error("Upload audio and click *Transcribe & chunk* in Step 1 first.")
         else:
-            wps = calculate_wps(st.session_state.script_text, st.session_state.audio_duration)
+            chunks = st.session_state.transcription_chunks
+            chunk_idx = min(st.session_state.get("active_chunk_idx", 0), len(chunks) - 1)
+            active_chunk = chunks[chunk_idx]
+            chunk_segments = active_chunk.get("segments", [])
+
             pbar = st.progress(0)
             status = st.empty()
-            try:
-                target_script = st.session_state.script_text
-                start_offset = 0.0
-                if d_use_portion:
-                    from core.timing import slice_script_by_time
-                    target_script = slice_script_by_time(st.session_state.script_text, st.session_state.audio_duration, d_start_time, d_end_time)
-                    start_offset = d_start_time
-                    status.info(f"Processing portion: {d_start_time}s to {d_end_time}s")
+            status.info(
+                f"Generating shot list for **Chunk {chunk_idx + 1}** "
+                f"({len(chunk_segments)} segments, "
+                f"{(active_chunk['end'] - active_chunk['start']) / 60:.1f} min)…"
+            )
 
-                if st.session_state.transcription_segments and not d_use_portion:
-                    from core.director import generate_shot_list_from_transcription
-                    st.session_state.director_shots = generate_shot_list_from_transcription(
-                        st.session_state.transcription_segments,
-                        os.getenv("GROQ_API_KEY"),
-                        progress_callback=lambda p: pbar.progress(p),
-                        custom_instructions=custom_instructions,
-                        video_topic=d_video_topic,
-                    )
-                else:
-                    st.session_state.director_shots = generate_shot_list(
-                        target_script,
-                        wps,
-                        os.getenv("GROQ_API_KEY"),
-                        progress_callback=lambda p: pbar.progress(p),
-                        custom_instructions=custom_instructions,
-                        start_offset=start_offset,
-                        video_topic=d_video_topic,
-                    )
+            try:
+                from core.director import generate_shot_list_from_transcription
+                st.session_state.director_shots = generate_shot_list_from_transcription(
+                    chunk_segments,
+                    os.getenv("GROQ_API_KEY"),
+                    progress_callback=lambda p: pbar.progress(p),
+                    custom_instructions=custom_instructions,
+                    video_topic=d_video_topic,
+                )
                 pbar.progress(1.0)
-                st.success("Shot list generated successfully!")
+                status.empty()
+                st.success(
+                    f"Shot list generated for Chunk {chunk_idx + 1} — "
+                    f"{len(st.session_state.director_shots)} shot(s). Continue to Step 3."
+                )
+                save_cache()
             except Exception as e:
                 st.error(f"Error generating shot list: {e}")
-                
-    # ── Session state for director ──────────────────────────────────────────
-    if "director_shots" not in st.session_state:
-        st.session_state.director_shots = []
 
     # ── Generated shot list (editable) ──────────────────────────────────────
     if st.session_state.director_shots:
