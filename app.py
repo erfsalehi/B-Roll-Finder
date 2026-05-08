@@ -26,6 +26,18 @@ if not os.path.exists(".cache"):
 
 load_dotenv(ENV_FILE)
 
+# When the user runs a TUN-mode VPN (e.g. V2RayN, Hiddify), the OS
+# captures all traffic at the network layer, so app-level HTTP_PROXY /
+# HTTPS_PROXY env vars become stale — they point at an HTTP proxy
+# listener that may not be running, and every request fails with
+# WinError 10061 ("connection refused"). Set BROLL_BYPASS_HTTP_PROXY=1
+# in .env to strip these vars on startup. Default off so users whose
+# proxy *is* running keep working.
+if os.getenv("BROLL_BYPASS_HTTP_PROXY", "").strip().lower() in ("1", "true", "yes"):
+    for _var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                 "ALL_PROXY", "all_proxy"):
+        os.environ.pop(_var, None)
+
 def _check_network() -> bool:
     try:
         socket.setdefaulttimeout(3)
