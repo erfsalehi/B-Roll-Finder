@@ -1284,6 +1284,21 @@ elif app_mode == "Director (v0.2)":
             all_picked       = n_picked_in_shot == len(candidates)
             none_picked      = n_picked_in_shot == 0
 
+            # Cache key for both the input df and Streamlit's stored edits.
+            # Includes a hash of the candidate URLs so re-ranking (which
+            # changes candidate order) invalidates the cache and starts
+            # fresh — but normal click interactions hit a stable cache.
+            _cand_sig = hash(tuple(c.get("url", "") for c in candidates))
+            df_cache_key = f"d_table_df_{slot_id}_{_cand_sig}"
+            table_key    = f"d_table_{slot_id}_{_cand_sig}"
+
+            def _invalidate_table_state():
+                """Drop the cached input df AND Streamlit's stored edits
+                so the next render rebuilds from the current selected_results.
+                Used by bulk actions to force a clean state without race."""
+                for k in (df_cache_key, table_key):
+                    st.session_state.pop(k, None)
+
             # Bulk-action row above the table.
             ba1, ba2, ba3 = st.columns([2, 2, 6])
             with ba1:
@@ -1295,6 +1310,7 @@ elif app_mode == "Director (v0.2)":
                 ):
                     shot["selected_results"] = list(candidates)
                     shot["skipped"] = False
+                    _invalidate_table_state()
                     save_cache()
                     st.rerun()
             with ba2:
@@ -1305,6 +1321,7 @@ elif app_mode == "Director (v0.2)":
                     use_container_width=True,
                 ):
                     shot["selected_results"] = []
+                    _invalidate_table_state()
                     save_cache()
                     st.rerun()
             with ba3:
@@ -1314,36 +1331,38 @@ elif app_mode == "Director (v0.2)":
                     f"**Download** in Step 6."
                 )
 
-            # Build one row per candidate. Pick reflects current selection.
-            # Row order matches `candidates` exactly — we identify rows on
-            # sync by their position, not by a hidden URL column. Hidden
-            # columns in st.data_editor have inconsistent state semantics
-            # (a column that's in the df but missing from column_config
-            # AND missing from `disabled` was making single-click selects
-            # non-deterministic — sometimes the click failed to commit).
-            rows = []
-            for c in candidates:
-                w, h = c.get("width"), c.get("height")
-                size = f"{w}×{h}" if (w and h) else "—"
-                dur  = c.get("duration")
-                # Multi-pick hint: which OTHER shots have already picked this clip?
-                other_shots = [s for s in global_pick_map.get(c.get("url"), [])
-                               if s != slot_id]
-                also_lbl = (f"↗ also: {', '.join(str(x) for x in other_shots)}"
-                            if other_shots else "")
-                rows.append({
-                    "Pick":        c.get("url") in sel_urls,
-                    "Preview":     c.get("thumbnail") or "",
-                    "Title":       c.get("title") or "—",
-                    "Source":      (c.get("source") or "?").upper(),
-                    "Size":        size,
-                    "Dur":         f"{dur}s" if dur else "—",
-                    "Also":        also_lbl,
-                    "Description": c.get("description") or "",
-                    "Query":       c.get("matched_query") or "",
-                    "Open":        c.get("page_url") or c.get("url") or "",
-                })
-            df = pd.DataFrame(rows)
+            # Build the input df ONCE per shot visit (per candidate signature)
+            # and cache it. Rebuilding it from `sel_urls` every render races
+            # with Streamlit's data_editor stored edits — symptom: a click
+            # appears to register, then the checkbox flips back to its
+            # rebuilt-from-sel_urls value. With the cache, data_editor owns
+            # state for the whole visit; we just read the edited result.
+            if df_cache_key not in st.session_state:
+                rows = []
+                for c in candidates:
+                    w, h = c.get("width"), c.get("height")
+                    size = f"{w}×{h}" if (w and h) else "—"
+                    dur  = c.get("duration")
+                    # Multi-pick hint: which OTHER shots have already picked this clip?
+                    other_shots = [s for s in global_pick_map.get(c.get("url"), [])
+                                   if s != slot_id]
+                    also_lbl = (f"↗ also: {', '.join(str(x) for x in other_shots)}"
+                                if other_shots else "")
+                    rows.append({
+                        "Pick":        c.get("url") in sel_urls,
+                        "Preview":     c.get("thumbnail") or "",
+                        "Title":       c.get("title") or "—",
+                        "Source":      (c.get("source") or "?").upper(),
+                        "Size":        size,
+                        "Dur":         f"{dur}s" if dur else "—",
+                        "Also":        also_lbl,
+                        "Description": c.get("description") or "",
+                        "Query":       c.get("matched_query") or "",
+                        "Open":        c.get("page_url") or c.get("url") or "",
+                    })
+                st.session_state[df_cache_key] = pd.DataFrame(rows)
+
+            df = st.session_state[df_cache_key]
 
             edited = st.data_editor(
                 df,
@@ -1368,13 +1387,13 @@ elif app_mode == "Director (v0.2)":
                 hide_index=True,
                 use_container_width=True,
                 num_rows="fixed",
-                key=f"d_table_{slot_id}",
+                key=table_key,
             )
 
             # Sync the edited Pick column back to shot["selected_results"].
-            # We map row index → candidate (stable for this render) and
-            # only mutate the shot dict when the URL set actually changes
-            # so every keystroke doesn't churn save_cache.
+            # Row order matches `candidates` exactly. We only mutate the
+            # shot dict (and call save_cache) when the URL set actually
+            # changes so every render doesn't churn the cache file.
             new_picked_urls = set()
             for i, row in edited.iterrows():
                 if bool(row["Pick"]) and 0 <= i < len(candidates):
