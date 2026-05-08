@@ -1,6 +1,7 @@
 import concurrent.futures
 import os
 import re
+import shutil
 import uuid
 from typing import Optional
 
@@ -12,6 +13,34 @@ from core.direct_downloader import download_direct_video
 # have their own internal retries). After this, the user must change
 # settings or the URL or wait — preventing accidental infinite loops.
 MAX_RETRIES = 3
+
+
+def _materialize_extras(state: dict) -> None:
+    """After a canonical download completes, materialize each extra_path.
+
+    Hardlinks are tried first (free — same inode, same data); if the
+    target filesystem doesn't support hardlinks (cross-drive, FAT32,
+    ReFS, etc.) we fall back to copy2. Errors are swallowed so a
+    materialization failure doesn't poison an otherwise-successful task.
+    """
+    src   = state.get('output_path', '')
+    extras = state.get('extra_paths', []) or []
+    if not src or not extras or not os.path.exists(src):
+        return
+    for dst in extras:
+        if not dst or dst == src:
+            continue
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.exists(dst):
+                continue  # already materialized from a previous run
+            try:
+                os.link(src, dst)
+            except (OSError, NotImplementedError, AttributeError):
+                shutil.copy2(src, dst)
+        except Exception as e:
+            # Best-effort: log but don't fail the parent task.
+            print(f"Could not materialize mirror {dst}: {e}")
 
 
 def _summarize_error(msg: str) -> str:
@@ -58,7 +87,16 @@ class DownloadManager:
     # ── Adding & launching tasks ────────────────────────────────────────
     def add_download(self, url: str, output_path: str, quality: str,
                      source: str = 'youtube', max_size_mb: float = None,
-                     strict_quality: bool = False, normalize: bool = False) -> str:
+                     strict_quality: bool = False, normalize: bool = False,
+                     extra_paths: Optional[list] = None) -> str:
+        """Queue a download.
+
+        ``extra_paths`` is a list of additional output paths the same file
+        should appear at. The download runs once (saving to ``output_path``);
+        on success the file is hardlinked (or copied) to each extra path.
+        Used by the director flow to avoid downloading the same clip
+        multiple times when it was selected for several shots.
+        """
         task_id = str(uuid.uuid4())
 
         out_dir = os.path.dirname(output_path)
@@ -71,6 +109,12 @@ class DownloadManager:
         for existing in self.tasks.values():
             if (existing['url'] == url and existing['output_path'] == output_path
                     and existing['status'] not in ('cancelled', 'error', 'completed')):
+                # Merge any new extra_paths into the existing task so a
+                # second add for the same URL doesn't lose mirror requests.
+                if extra_paths:
+                    have = set(existing.get('extra_paths') or [])
+                    have.update(p for p in extra_paths if p)
+                    existing['extra_paths'] = sorted(have)
                 return existing['id']
 
         state = {
@@ -89,6 +133,7 @@ class DownloadManager:
             'speed':           None,
             'eta':             None,
             'attempts':        0,
+            'extra_paths':     list(extra_paths) if extra_paths else [],
         }
         self.tasks[task_id] = state
         return task_id
@@ -135,6 +180,8 @@ class DownloadManager:
 
         if state['status'] == 'error' and state.get('error_msg'):
             state['error_summary'] = _summarize_error(state['error_msg'])
+        elif state['status'] == 'completed' and state.get('extra_paths'):
+            _materialize_extras(state)
 
     # ── Pause / resume / cancel ─────────────────────────────────────────
     def pause_download(self, task_id: str) -> None:

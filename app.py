@@ -1405,7 +1405,12 @@ elif app_mode == "Director (v0.2)":
                     st.session_state.dm = DownloadManager(max_workers=d_workers)
                 st.session_state.dm.clear_and_reset()
 
-                added = 0
+                # ── Group selected clips by URL across all shots ─────────
+                # When the same clip is picked for multiple shots we want to
+                # download it once and hardlink it into the other per-shot
+                # filenames. Without this grouping we'd transfer the same
+                # MP4 multiple times through the user's network.
+                url_groups = {}  # url -> {"primary": (path, dm_source), "extras": [path], "shots": [slot_id]}
                 for shot in selected_shots:
                     slot_id  = shot.get("slot_id", "X")
                     safe_int = "".join(c if c.isalnum() or c in " -_" else "_"
@@ -1418,18 +1423,37 @@ elif app_mode == "Director (v0.2)":
                         filename    = f"Shot{slot_id}-{source}-{safe_int[:25]}-{k+1}.mp4"
                         output_path = os.path.join("downloads", "director", filename)
                         dm_source   = "direct" if source in ("pexels", "pixabay") else "youtube"
-                        try:
-                            task_id = st.session_state.dm.add_download(
-                                url, output_path, d_quality,
-                                source=dm_source, max_size_mb=d_max_size, normalize=False,
-                            )
-                            st.session_state.dm.start_download(task_id)
-                            added += 1
-                        except Exception as e:
-                            st.error(f"Shot {slot_id}: {e}")
+                        if url not in url_groups:
+                            url_groups[url] = {
+                                "primary":    (output_path, dm_source),
+                                "extras":     [],
+                                "shots":      [slot_id],
+                            }
+                        else:
+                            url_groups[url]["extras"].append(output_path)
+                            url_groups[url]["shots"].append(slot_id)
+
+                duplicate_count = sum(len(g["extras"]) for g in url_groups.values())
+                added = 0
+                for url, group in url_groups.items():
+                    primary_path, primary_source = group["primary"]
+                    try:
+                        task_id = st.session_state.dm.add_download(
+                            url, primary_path, d_quality,
+                            source=primary_source, max_size_mb=d_max_size, normalize=False,
+                            extra_paths=group["extras"] or None,
+                        )
+                        st.session_state.dm.start_download(task_id)
+                        added += 1
+                    except Exception as e:
+                        st.error(f"Shot {group['shots'][0]}: {e}")
 
                 if added:
-                    st.success(f"Queued {added} downloads.")
+                    msg = f"Queued {added} unique download(s)."
+                    if duplicate_count:
+                        msg += (f" Saved {duplicate_count} duplicate transfer(s) by hardlinking "
+                                f"the same clip across multiple shots.")
+                    st.success(msg)
                 else:
                     st.warning("Nothing was queued — check URLs.")
 
@@ -1470,7 +1494,9 @@ elif app_mode == "Director (v0.2)":
                         f"{t['status'].title()} ({t['progress']*100:.1f}%)"
                         + (f" — {meta}" if meta else "")
                     )
-                    st.markdown(f"**{os.path.basename(t['output_path'])}** — {label}")
+                    extras_n = len(t.get("extra_paths") or [])
+                    extras_lbl = f" · ↗ +{extras_n} mirror{'s' if extras_n > 1 else ''}" if extras_n else ""
+                    st.markdown(f"**{os.path.basename(t['output_path'])}**{extras_lbl} — {label}")
                     st.progress(t["progress"])
                     b1, b2, _b3 = st.columns([1, 1, 5])
                     if not is_proc:
@@ -1502,7 +1528,9 @@ elif app_mode == "Director (v0.2)":
                     with st.container(border=True):
                         top1, top2 = st.columns([5, 1])
                         with top1:
-                            st.markdown(f"**{os.path.basename(ft['output_path'])}**")
+                            extras_n = len(ft.get("extra_paths") or [])
+                            extras_lbl = f" · ↗ +{extras_n} mirror{'s' if extras_n > 1 else ''}" if extras_n else ""
+                            st.markdown(f"**{os.path.basename(ft['output_path'])}**{extras_lbl}")
                             st.caption(
                                 f"⚠ {ft.get('error_summary') or ft.get('error_msg') or 'Unknown error'} · "
                                 f"attempt {ft.get('attempts', 0)}/{MAX_RETRIES}"
