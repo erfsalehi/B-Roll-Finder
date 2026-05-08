@@ -12,7 +12,7 @@ from core.keywords import generate_keywords_for_slots, generate_keywords_with_ai
 from core.youtube import fetch_youtube_results
 from core.stock_apis import search_pexels, search_pixabay
 from core.output import generate_keywords_txt, generate_youtube_txt, generate_srt
-from core.download_manager import DownloadManager
+from core.download_manager import DownloadManager, MAX_RETRIES
 import time
 
 # --- Config & Initialization ---
@@ -1379,7 +1379,13 @@ elif app_mode == "Director (v0.2)":
     selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_results")]
     if selected_shots:
         st.header("Step 6: Download Selected")
+        st.caption(
+            "Settings below apply to **new** downloads and to **retries**. Change "
+            "Quality or Max Size, then click *Retry* on a failed item to re-attempt "
+            "with the new settings."
+        )
 
+        # Live-bound settings — read on each render so retry/new-download both see them.
         col_dv1, col_dv2, col_dv3 = st.columns(3)
         with col_dv1:
             d_quality  = st.selectbox("Quality", ["1080p", "720p", "480p", "Best", "Worst"], key="d_vq")
@@ -1389,8 +1395,9 @@ elif app_mode == "Director (v0.2)":
             d_workers  = st.slider("Concurrent", 1, 10, 3, key="d_workers")
 
         total_selected_files = sum(len(s.get("selected_results", [])) for s in selected_shots)
-        c_dl1, c_dl2 = st.columns(2)
-        if c_dl1.button(f"Download {total_selected_files} Selected Videos", key="d_dl_start"):
+
+        if st.button(f"⬇ Download {total_selected_files} selected videos",
+                     key="d_dl_start", type="primary", use_container_width=True):
             if not _check_network():
                 st.error("No network connection detected.")
             else:
@@ -1426,46 +1433,127 @@ elif app_mode == "Director (v0.2)":
                 else:
                     st.warning("Nothing was queued — check URLs.")
 
-        if c_dl2.button("Cancel All", key="d_cancel"):
-            st.session_state.dm.cancel_all()
-
-        # Download dashboard
+        # ── Dashboard ────────────────────────────────────────────────────
         tasks = st.session_state.dm.get_all_tasks()
         if tasks:
             stats     = st.session_state.dm.get_stats()
             total_t   = stats["total"]
             completed = stats["completed"]
+
             st.progress(completed / total_t if total_t else 0.0)
-            st.write(f"**{completed}/{total_t}** done · Active: {stats['downloading']} · Queued: {stats['queued']} · Failed: {stats['error']}")
+            stat_col, cancel_col = st.columns([5, 1])
+            with stat_col:
+                st.markdown(
+                    f"**{completed}/{total_t}** done · "
+                    f"⬇ {stats['downloading']} active · "
+                    f"⏸ {stats.get('paused', 0)} paused · "
+                    f"⏳ {stats['queued']} queued · "
+                    f"❌ {stats['error']} failed · "
+                    f"⏭ {stats['cancelled']} cancelled"
+                )
+            with cancel_col:
+                if stats["downloading"] + stats["queued"] + stats.get("paused", 0) > 0:
+                    if st.button("✖ Cancel All", key="d_cancel", use_container_width=True):
+                        st.session_state.dm.cancel_all()
+                        st.rerun()
 
-            failed = st.session_state.dm.get_failed_tasks()
-            if failed:
-                with st.expander(f"⚠️ {len(failed)} failed"):
-                    if st.button("Retry All Failed", key="d_retry"):
-                        st.session_state.dm.retry_all_failed(); st.rerun()
-                    for ft in failed:
-                        st.write(f"❌ {os.path.basename(ft['output_path'])} — {ft.get('error_msg','?')}")
-
+            # ── Active tasks ─────────────────────────────────────────────
             active = st.session_state.dm.get_active_tasks()
             if active:
-                st.subheader("Downloading")
+                st.subheader("In progress")
                 for t in active:
-                    is_proc    = t["status"] == "processing"
-                    speed_str  = _format_speed(t.get("speed"))
-                    eta_str    = _format_eta(t.get("eta"))
-                    meta       = " | ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
-                    label      = "Normalizing…" if is_proc else f"{t['status'].title()} ({t['progress']*100:.1f}%){(' — ' + meta) if meta else ''}"
-                    st.write(f"**{os.path.basename(t['output_path'])}** — {label}")
+                    is_proc   = t["status"] == "processing"
+                    speed_str = _format_speed(t.get("speed"))
+                    eta_str   = _format_eta(t.get("eta"))
+                    meta      = " · ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
+                    label     = "Normalizing…" if is_proc else (
+                        f"{t['status'].title()} ({t['progress']*100:.1f}%)"
+                        + (f" — {meta}" if meta else "")
+                    )
+                    st.markdown(f"**{os.path.basename(t['output_path'])}** — {label}")
                     st.progress(t["progress"])
-                    b1, b2, _ = st.columns(3)
+                    b1, b2, _b3 = st.columns([1, 1, 5])
                     if not is_proc:
                         if t["status"] == "downloading":
-                            if b1.button("Pause",  key=f"pd_{t['id']}"): st.session_state.dm.pause_download(t["id"]);  st.rerun()
+                            if b1.button("Pause", key=f"pd_{t['id']}", use_container_width=True):
+                                st.session_state.dm.pause_download(t["id"]); st.rerun()
                         elif t["status"] == "paused":
-                            if b1.button("Resume", key=f"rd_{t['id']}"): st.session_state.dm.resume_download(t["id"]); st.rerun()
-                    if b2.button("Cancel", key=f"cd_{t['id']}"): st.session_state.dm.cancel_download(t["id"]); st.rerun()
-                time.sleep(1); st.rerun()
-            elif stats["queued"] > 0:
+                            if b1.button("Resume", key=f"rd_{t['id']}", use_container_width=True):
+                                st.session_state.dm.resume_download(t["id"]); st.rerun()
+                    if b2.button("Cancel", key=f"cd_{t['id']}", use_container_width=True):
+                        st.session_state.dm.cancel_download(t["id"]); st.rerun()
+
+            # ── Failed tasks (URL + per-task retry with current settings) ──
+            failed = st.session_state.dm.get_failed_tasks()
+            if failed:
+                st.subheader(f"❌ Failed ({len(failed)})")
+                retryable = [f for f in failed if st.session_state.dm.can_retry(f["id"])]
+                if retryable:
+                    if st.button(
+                        f"↻ Retry all ({len(retryable)}) with current settings",
+                        key="d_retry_all", use_container_width=True,
+                    ):
+                        st.session_state.dm.retry_all_failed(overrides={
+                            "quality": d_quality, "max_size_mb": d_max_size,
+                        })
+                        st.rerun()
+
+                for ft in failed:
+                    with st.container(border=True):
+                        top1, top2 = st.columns([5, 1])
+                        with top1:
+                            st.markdown(f"**{os.path.basename(ft['output_path'])}**")
+                            st.caption(
+                                f"⚠ {ft.get('error_summary') or ft.get('error_msg') or 'Unknown error'} · "
+                                f"attempt {ft.get('attempts', 0)}/{MAX_RETRIES}"
+                            )
+                        with top2:
+                            can_retry = st.session_state.dm.can_retry(ft["id"])
+                            if st.button(
+                                "↻ Retry" if can_retry else "Max retries",
+                                key=f"retry_{ft['id']}",
+                                disabled=not can_retry,
+                                use_container_width=True,
+                                help=("Retry with the current Quality / Max Size settings."
+                                      if can_retry else
+                                      "Maximum retry attempts reached. Edit settings or remove this task."),
+                            ):
+                                st.session_state.dm.retry_failed(ft["id"], overrides={
+                                    "quality": d_quality, "max_size_mb": d_max_size,
+                                })
+                                st.rerun()
+                        # URL row — let the user copy or open the source page
+                        url_col, link_col = st.columns([5, 1])
+                        with url_col:
+                            st.code(ft.get("url", ""), language=None)
+                        with link_col:
+                            if ft.get("url"):
+                                st.link_button("Open ↗", ft["url"], use_container_width=True)
+                        # Full error in a collapsed expander for power users
+                        if ft.get("error_msg") and ft["error_msg"] != ft.get("error_summary"):
+                            with st.expander("Full error"):
+                                st.code(ft["error_msg"], language=None)
+
+            # ── History (preserved across batches) ─────────────────────────
+            history = [t for t in st.session_state.dm.get_history()
+                       if t["status"] in ("completed", "cancelled")
+                       and t["id"] not in {x["id"] for x in tasks}]  # exclude current batch
+            if history:
+                with st.expander(f"📜 History — {len(history)} task(s) from earlier batches"):
+                    h_completed = sum(1 for h in history if h["status"] == "completed")
+                    h_cancelled = sum(1 for h in history if h["status"] == "cancelled")
+                    st.caption(f"✅ {h_completed} completed · ⏭ {h_cancelled} cancelled")
+                    if st.button("Clear history", key="d_clear_history"):
+                        st.session_state.dm.clear_history(); st.rerun()
+                    for h in history[-20:]:  # cap display to avoid blowing up the page
+                        icon = "✅" if h["status"] == "completed" else "⏭"
+                        st.write(f"{icon} {os.path.basename(h['output_path'])}")
+
+            # Auto-refresh while anything is still moving (downloading, queued,
+            # paused, or post-download processing).
+            in_motion = (stats["downloading"] + stats["queued"]
+                         + stats.get("paused", 0) + stats.get("processing", 0))
+            if in_motion > 0:
                 time.sleep(1); st.rerun()
 
     # ── Step 7 — Export ──────────────────────────────────────────────────────
