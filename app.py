@@ -12,7 +12,8 @@ from core.keywords import generate_keywords_for_slots, generate_keywords_with_ai
 from core.youtube import fetch_youtube_results
 from core.stock_apis import search_pexels, search_pixabay
 from core.output import generate_keywords_txt, generate_youtube_txt, generate_srt
-from core.download_manager import DownloadManager, MAX_RETRIES
+from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
+from core import download_cache
 import time
 
 # --- Config & Initialization ---
@@ -1197,8 +1198,21 @@ elif app_mode == "Director (v0.2)":
         st.header("Step 5: Review & Select")
         st.caption(
             "Tick the clips you want for each shot. Selections persist as you navigate — "
-            "nothing downloads until you click **Download** in Step 6."
+            "nothing downloads until you click **Download** in Step 6. "
+            "Picking the same clip across multiple shots downloads it once."
         )
+
+        # Build a global URL → list of slot_ids map across ALL shots so we
+        # can flag candidates that are already picked elsewhere — useful
+        # signal for editorial decisions even though Step 6 dedupes the
+        # downloads automatically.
+        global_pick_map = {}
+        for s in review_shots:
+            sid = s.get("slot_id", "?")
+            for r in s.get("selected_results", []):
+                u = r.get("url")
+                if u:
+                    global_pick_map.setdefault(u, []).append(sid)
 
         if "d_review_idx" not in st.session_state:
             st.session_state.d_review_idx = 0
@@ -1306,6 +1320,11 @@ elif app_mode == "Director (v0.2)":
                 w, h = c.get("width"), c.get("height")
                 size = f"{w}×{h}" if (w and h) else "—"
                 dur  = c.get("duration")
+                # Multi-pick hint: which OTHER shots have already picked this clip?
+                other_shots = [s for s in global_pick_map.get(c.get("url"), [])
+                               if s != slot_id]
+                also_lbl = (f"↗ also: {', '.join(str(x) for x in other_shots)}"
+                            if other_shots else "")
                 rows.append({
                     "Pick":        c.get("url") in sel_urls,
                     "Preview":     c.get("thumbnail") or "",
@@ -1313,6 +1332,7 @@ elif app_mode == "Director (v0.2)":
                     "Source":      (c.get("source") or "?").upper(),
                     "Size":        size,
                     "Dur":         f"{dur}s" if dur else "—",
+                    "Also":        also_lbl,
                     "Description": c.get("description") or "",
                     "Query":       c.get("matched_query") or "",
                     "Open":        c.get("page_url") or c.get("url") or "",
@@ -1331,12 +1351,16 @@ elif app_mode == "Director (v0.2)":
                     "Source":      st.column_config.TextColumn("Source", width="small"),
                     "Size":        st.column_config.TextColumn("Size", width="small"),
                     "Dur":         st.column_config.TextColumn("Dur", width="small"),
+                    "Also":        st.column_config.TextColumn(
+                        "Also", width="small",
+                        help="Other shots that have already picked this same clip. Picking it here means it'll be hardlinked, not re-downloaded.",
+                    ),
                     "Description": st.column_config.TextColumn("Description", width="medium"),
                     "Query":       st.column_config.TextColumn("Matched query", width="medium"),
                     "Open":        st.column_config.LinkColumn("Open", display_text="↗", width="small"),
                     "_url":        None,
                 },
-                disabled=["Preview", "Title", "Source", "Size", "Dur", "Description", "Query", "Open"],
+                disabled=["Preview", "Title", "Source", "Size", "Dur", "Also", "Description", "Query", "Open"],
                 hide_index=True,
                 use_container_width=True,
                 key=f"d_table_{slot_id}",
@@ -1382,8 +1406,32 @@ elif app_mode == "Director (v0.2)":
         st.caption(
             "Settings below apply to **new** downloads and to **retries**. Change "
             "Quality or Max Size, then click *Retry* on a failed item to re-attempt "
-            "with the new settings."
+            "with the new settings. Clips downloaded in earlier sessions are reused "
+            "automatically — no re-download."
         )
+
+        # Persistent download cache info — collapsed by default, but shows
+        # the user we're remembering past downloads and gives them a way
+        # to invalidate the registry without touching the actual files.
+        _cache_stats = download_cache.stats()
+        if _cache_stats["count"]:
+            with st.expander(
+                f"📦 Download cache — {_cache_stats['count']} clip(s), "
+                f"{_cache_stats['size_bytes'] / (1024 * 1024):.1f} MB"
+                + (f"  ·  {_cache_stats['stale']} stale" if _cache_stats['stale'] else "")
+            ):
+                st.caption(
+                    "URLs you've already downloaded across all sessions are remembered. "
+                    "When you pick the same clip again, it's hardlinked from the cached "
+                    "file instead of being re-downloaded. Stale entries (file deleted "
+                    "from disk) are pruned automatically on lookup. "
+                    "Clearing the registry doesn't delete any files — it just forgets the "
+                    "URL→path mapping."
+                )
+                if st.button("Clear download cache", key="d_cache_clear"):
+                    download_cache.clear()
+                    st.success("Cache cleared. The actual files in `downloads/` are untouched.")
+                    st.rerun()
 
         # Live-bound settings — read on each render so retry/new-download both see them.
         col_dv1, col_dv2, col_dv3 = st.columns(3)
@@ -1435,25 +1483,48 @@ elif app_mode == "Director (v0.2)":
 
                 duplicate_count = sum(len(g["extras"]) for g in url_groups.values())
                 added = 0
+                cached_hits = 0
                 for url, group in url_groups.items():
                     primary_path, primary_source = group["primary"]
+                    extras = group["extras"]
+
+                    # ── Cross-session cache lookup ──────────────────
+                    # If we've previously downloaded this URL (any earlier
+                    # session) and the file is still on disk, skip the
+                    # network entirely and just hardlink/copy from the
+                    # cached file to all expected per-shot paths.
+                    cached = download_cache.lookup_path(url)
+                    if cached and cached != primary_path:
+                        ok_primary = link_or_copy(cached, primary_path)
+                        for ext in extras:
+                            link_or_copy(cached, ext)
+                        if ok_primary:
+                            cached_hits += 1
+                            continue
+                        # If we couldn't materialize from cache, fall
+                        # through to a fresh download below.
+
                     try:
                         task_id = st.session_state.dm.add_download(
                             url, primary_path, d_quality,
                             source=primary_source, max_size_mb=d_max_size, normalize=False,
-                            extra_paths=group["extras"] or None,
+                            extra_paths=extras or None,
                         )
                         st.session_state.dm.start_download(task_id)
                         added += 1
                     except Exception as e:
                         st.error(f"Shot {group['shots'][0]}: {e}")
 
+                # Build a single, concise summary message covering all paths.
+                parts = []
                 if added:
-                    msg = f"Queued {added} unique download(s)."
-                    if duplicate_count:
-                        msg += (f" Saved {duplicate_count} duplicate transfer(s) by hardlinking "
-                                f"the same clip across multiple shots.")
-                    st.success(msg)
+                    parts.append(f"queued **{added}** new download(s)")
+                if cached_hits:
+                    parts.append(f"reused **{cached_hits}** clip(s) from cache")
+                if duplicate_count:
+                    parts.append(f"saved **{duplicate_count}** duplicate transfer(s) via hardlink")
+                if added or cached_hits:
+                    st.success("Done — " + "; ".join(parts) + ".")
                 else:
                     st.warning("Nothing was queued — check URLs.")
 

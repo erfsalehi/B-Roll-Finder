@@ -139,6 +139,25 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+_SHORTS_TAGS = ("#shorts", "#short", "#youtubeshorts", "#youtubeshort", "#ytshorts")
+
+
+def _looks_like_short(title: str, description: str) -> bool:
+    """Heuristic: detect YouTube Shorts via hashtag in title/description.
+
+    The Data API v3 doesn't expose pixel dimensions or aspect ratio for
+    arbitrary user videos — ``contentDetails.dimension`` only returns
+    "2d"/"3d", thumbnails are normalized to 16:9, and there's no
+    orientation filter on ``search.list``. The cleapest signal we have
+    is the ``#shorts`` hashtag that creators conventionally include in
+    Shorts metadata. False positives are possible (a regular video
+    referencing "shorts" in its title) but those just get demoted by
+    the rank-stage horizontal preference, not excluded — acceptable.
+    """
+    haystack = (title or "").lower() + " " + (description or "").lower()
+    return any(tag in haystack for tag in _SHORTS_TAGS)
+
+
 def search_youtube_data_api(keyword: str, api_key: str, num_results: int = 3,
                             errors: list = None) -> list:
     """Search YouTube via the Data API v3.
@@ -189,6 +208,12 @@ def search_youtube_data_api(keyword: str, api_key: str, num_results: int = 3,
                 desc += f" — {_truncate(raw_desc, 200)}"
             thumb = (snippet.get("thumbnails") or {}).get("medium", {}).get("url", "")
 
+            # Detect Shorts via hashtag and synthesize portrait dimensions
+            # so the rank-stage horizontal preference can demote them.
+            is_short = _looks_like_short(title, raw_desc)
+            yt_w = 1080 if is_short else None
+            yt_h = 1920 if is_short else None
+
             results.append({
                 "title": _truncate(title, 120),
                 "url": f"https://www.youtube.com/watch?v={video_id}",
@@ -196,13 +221,13 @@ def search_youtube_data_api(keyword: str, api_key: str, num_results: int = 3,
                 "source": "youtube",
                 "thumbnail": thumb,
                 "description": desc,
-                # search.list does not return duration or pixel dimensions.
-                # Filling these would require a second videos.list call; we
-                # skip it to stay on the daily quota.
+                # search.list does not return real duration or pixel
+                # dimensions for normal videos. We synthesize portrait
+                # dimensions only for Shorts (detected via hashtag).
                 "duration": None,
-                "is_short": False,
-                "width": None,
-                "height": None,
+                "is_short": is_short,
+                "width": yt_w,
+                "height": yt_h,
                 "quality": None,
                 "file_size": None,
                 "channel": channel,

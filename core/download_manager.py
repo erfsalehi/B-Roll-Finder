@@ -15,32 +15,40 @@ from core.direct_downloader import download_direct_video
 MAX_RETRIES = 3
 
 
-def _materialize_extras(state: dict) -> None:
-    """After a canonical download completes, materialize each extra_path.
+def link_or_copy(src: str, dst: str) -> bool:
+    """Make ``dst`` point at the same data as ``src``, preferring a hardlink.
 
-    Hardlinks are tried first (free — same inode, same data); if the
-    target filesystem doesn't support hardlinks (cross-drive, FAT32,
-    ReFS, etc.) we fall back to copy2. Errors are swallowed so a
-    materialization failure doesn't poison an otherwise-successful task.
+    Falls back to ``shutil.copy2`` when hardlinks aren't supported on the
+    target filesystem (cross-drive, FAT32, ReFS, etc.). Returns True on
+    success. Skips silently if ``dst`` already exists or equals ``src``.
     """
-    src   = state.get('output_path', '')
-    extras = state.get('extra_paths', []) or []
-    if not src or not extras or not os.path.exists(src):
-        return
-    for dst in extras:
-        if not dst or dst == src:
-            continue
+    if not src or not dst or src == dst:
+        return False
+    if not os.path.exists(src):
+        return False
+    if os.path.exists(dst):
+        return True  # treat as success — caller asked for it to exist
+    try:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
         try:
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            if os.path.exists(dst):
-                continue  # already materialized from a previous run
-            try:
-                os.link(src, dst)
-            except (OSError, NotImplementedError, AttributeError):
-                shutil.copy2(src, dst)
-        except Exception as e:
-            # Best-effort: log but don't fail the parent task.
-            print(f"Could not materialize mirror {dst}: {e}")
+            os.link(src, dst)
+        except (OSError, NotImplementedError, AttributeError):
+            shutil.copy2(src, dst)
+        return True
+    except Exception as e:
+        print(f"link_or_copy: {dst} <- {src} failed: {e}")
+        return False
+
+
+def _materialize_extras(state: dict) -> None:
+    """After a canonical download completes, materialize each extra_path
+    via :func:`link_or_copy`. Best-effort — failures don't poison the
+    parent task's success status.
+    """
+    src    = state.get('output_path', '')
+    extras = state.get('extra_paths', []) or []
+    for dst in extras:
+        link_or_copy(src, dst)
 
 
 def _summarize_error(msg: str) -> str:
@@ -180,8 +188,16 @@ class DownloadManager:
 
         if state['status'] == 'error' and state.get('error_msg'):
             state['error_summary'] = _summarize_error(state['error_msg'])
-        elif state['status'] == 'completed' and state.get('extra_paths'):
-            _materialize_extras(state)
+        elif state['status'] == 'completed':
+            if state.get('extra_paths'):
+                _materialize_extras(state)
+            # Persist URL → file mapping so a future session can skip this
+            # download. Best-effort; cache failures don't affect the task.
+            try:
+                from core import download_cache
+                download_cache.register(state.get('url', ''), state.get('output_path', ''))
+            except Exception:
+                pass
 
     # ── Pause / resume / cancel ─────────────────────────────────────────
     def pause_download(self, task_id: str) -> None:
