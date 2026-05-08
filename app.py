@@ -102,36 +102,63 @@ app_mode = st.sidebar.radio("Select Mode", ["Classic Finder", "Director (v0.2)"]
 def render_classic_mode():
     st.title("🎬 B-Roll Finder")
 
-    # Step 1: Setup
-    with st.expander("Step 1: Setup (API Keys)", expanded=not bool(os.getenv("GROQ_API_KEY"))):
+    # ── Setup: API keys (status pill in header, auto-collapses when ready) ──
+    # Auto-import keys from any *Api.txt files in the project root.
+    for txt_file, env_key in [
+        ("groq api.txt",      "GROQ_API_KEY"),
+        ("Pexels Api.txt",    "PEXELS_API_KEY"),
+        ("Pixabay Api.txt",   "PIXABAY_API_KEY"),
+        ("YT Api.txt",        "YOUTUBE_API_KEY"),
+        ("Openrouter Api.txt","OPENROUTER_API_KEY"),
+    ]:
+        if not os.getenv(env_key) and os.path.exists(txt_file):
+            try:
+                with open(txt_file, 'r') as f:
+                    key_val = f.read().strip()
+                    if key_val:
+                        set_key(ENV_FILE, env_key, key_val)
+            except Exception:
+                pass
+    load_dotenv(ENV_FILE, override=True)
 
-        # Auto-load keys from txt files if available and not in env
-        for txt_file, env_key in [("groq api.txt", "GROQ_API_KEY"), ("Pexels Api.txt", "PEXELS_API_KEY"), ("Pixabay Api.txt", "PIXABAY_API_KEY")]:
-            if not os.getenv(env_key) and os.path.exists(txt_file):
-                try:
-                    with open(txt_file, 'r') as f:
-                        key_val = f.read().strip()
-                        if key_val:
-                            set_key(ENV_FILE, env_key, key_val)
-                except Exception as e:
-                    pass
-        load_dotenv(ENV_FILE, override=True)
-
-        current_groq       = os.getenv("GROQ_API_KEY", "")
-        current_pexels     = os.getenv("PEXELS_API_KEY", "")
-        current_pixabay    = os.getenv("PIXABAY_API_KEY", "")
-        current_openrouter = os.getenv("OPENROUTER_API_KEY", "")
-
-        groq_input       = st.text_input("Groq API Key (Required)", value=current_groq, type="password")
-        openrouter_input = st.text_input(
-            "OpenRouter API Key (Optional — fallback when Groq hits rate limits)",
-            value=current_openrouter, type="password",
-            help="Uses meta-llama/llama-3.3-70b-instruct:free on OpenRouter automatically when Groq returns a rate-limit error."
+    _key_status = {
+        "Groq":       bool(os.getenv("GROQ_API_KEY")),
+        "Pexels":     bool(os.getenv("PEXELS_API_KEY")),
+        "Pixabay":    bool(os.getenv("PIXABAY_API_KEY")),
+        "YouTube":    bool(os.getenv("YOUTUBE_API_KEY")),
+        "OpenRouter": bool(os.getenv("OPENROUTER_API_KEY")),
+    }
+    _pill = " · ".join(f"{'✅' if v else '○'} {k}" for k, v in _key_status.items())
+    with st.expander(f"⚙️ Setup — API keys  ·  {_pill}",
+                     expanded=not _key_status["Groq"]):
+        st.caption(
+            "Groq is required (script analysis). Pexels/Pixabay/YouTube are search "
+            "sources — enable at least one. OpenRouter is an automatic fallback "
+            "when Groq hits its rate limit."
         )
-        pexels_input   = st.text_input("Pexels API Key (Optional)",   value=current_pexels,   type="password")
-        pixabay_input  = st.text_input("Pixabay API Key (Optional)",  value=current_pixabay,  type="password")
+        col_k1, col_k2 = st.columns(2)
+        with col_k1:
+            groq_input    = st.text_input("Groq API Key (required)",
+                                          value=os.getenv("GROQ_API_KEY", ""),
+                                          type="password")
+            pexels_input  = st.text_input("Pexels API Key",
+                                          value=os.getenv("PEXELS_API_KEY", ""),
+                                          type="password")
+            pixabay_input = st.text_input("Pixabay API Key",
+                                          value=os.getenv("PIXABAY_API_KEY", ""),
+                                          type="password")
+        with col_k2:
+            youtube_input    = st.text_input("YouTube Data API Key",
+                                             value=os.getenv("YOUTUBE_API_KEY", ""),
+                                             type="password",
+                                             help="Optional. 10,000 quota units/day; each search costs 100.")
+            openrouter_input = st.text_input("OpenRouter API Key",
+                                             value=os.getenv("OPENROUTER_API_KEY", ""),
+                                             type="password",
+                                             help="Optional fallback when Groq returns rate-limit errors.")
+            st.markdown("&nbsp;")
 
-        if st.button("Save API Keys"):
+        if st.button("Save API Keys", type="primary"):
             if groq_input:
                 if not os.path.exists(ENV_FILE):
                     open(ENV_FILE, 'w').close()
@@ -139,13 +166,14 @@ def render_classic_mode():
                 if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
                 if pexels_input:     set_key(ENV_FILE, "PEXELS_API_KEY",     pexels_input)
                 if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
+                if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
                 load_dotenv(ENV_FILE, override=True)
-                st.success("API Keys saved to .env!")
+                st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
             else:
-                st.warning("Please enter a valid Groq API key.")
+                st.warning("Groq API key is required.")
 
-    # Step 2: Upload
-    st.header("Step 2: Upload Files")
+    # Step 1: Upload
+    st.header("Step 1: Upload Files")
     col1, col2 = st.columns(2)
     with col1:
         script_file = st.file_uploader("Upload Script (.txt)", type=["txt"])
@@ -173,11 +201,11 @@ def render_classic_mode():
         st.session_state.script_text = script_content
         st.session_state.audio_duration = duration
 
-    # Step 2.5: AI Transcription (Optional for Precise Timing)
-    st.header("Step 2.5: AI Transcription (Optional)")
+    # Step 2: AI Transcription (Optional for Precise Timing)
+    st.header("Step 2: AI Transcription (Optional)")
     if audio_file and st.button("Transcribe Audio for Precise Timing"):
         if not os.getenv("GROQ_API_KEY"):
-            st.error("Please set Groq API key in Step 1.")
+            st.error("Please set your Groq API key in the Setup section above.")
         else:
             from core.transcription import transcribe_audio
             with st.spinner("Transcribing with Whisper..."):
@@ -232,7 +260,7 @@ def render_classic_mode():
 
     if st.button("Generate Keywords"):
         if not os.getenv("GROQ_API_KEY"):
-            st.error("Please set your Groq API Key in Step 1.")
+            st.error("Please set your Groq API key in the Setup section above.")
         elif not st.session_state.script_text or st.session_state.audio_duration <= 0:
             st.error("Please upload valid script and audio files first.")
         else:
@@ -439,6 +467,7 @@ def render_classic_mode():
                     st.session_state.is_fetching = False
 
     # Step 6: Download Videos (Local)
+    st.header("Step 6: Download Videos")
     col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
     with col_vid1:
         video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0)
@@ -601,7 +630,7 @@ def render_classic_mode():
             if not st.session_state.script_text:
                 st.error("Please upload a script first.")
             elif not os.getenv("GROQ_API_KEY"):
-                st.error("Please set your Groq API Key in Step 1.")
+                st.error("Please set your Groq API key in the Setup section above.")
             else:
                 from core.keywords import generate_global_themes
                 with st.spinner("Analyzing themes..."):
@@ -1062,7 +1091,7 @@ elif app_mode == "Director (v0.2)":
             elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
                  not (use_pixabay and os.getenv("PIXABAY_API_KEY")) and \
                  not (use_youtube and os.getenv("YOUTUBE_API_KEY")):
-                st.error("No search sources enabled. Add Pexels, Pixabay, and/or YouTube keys in Step 1 and tick at least one source.")
+                st.error("No search sources enabled. Add Pexels, Pixabay, and/or YouTube keys in the Setup section above and tick at least one source.")
             else:
                 st.session_state.is_fetching = True
                 d_fetch_errors = []
