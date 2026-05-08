@@ -1216,7 +1216,12 @@ elif app_mode == "Director (v0.2)":
 
         if "d_review_idx" not in st.session_state:
             st.session_state.d_review_idx = 0
-        st.session_state.d_review_idx = min(st.session_state.d_review_idx, len(review_shots) - 1)
+        # Clamp BOTH ends. Stale session state from a prior batch (or
+        # an interrupted rerun via browser back) can leave d_review_idx
+        # negative — that fed st.progress a negative ratio and crashed.
+        st.session_state.d_review_idx = max(
+            0, min(st.session_state.d_review_idx, len(review_shots) - 1)
+        )
         idx = st.session_state.d_review_idx
         shot = review_shots[idx]
 
@@ -1406,27 +1411,65 @@ elif app_mode == "Director (v0.2)":
                     shot["skipped"] = False
                 save_cache()
 
-        # Footer actions: skip / advance. Skip is a secondary action so we
-        # give it less prominence; advance is the primary path.
+        # ── Shot recap below the table ───────────────────────────────────
+        # Repeat the shot's narration and the search queries that produced
+        # this candidate set, so the editor doesn't need to scroll back up
+        # after reviewing the table.
+        with st.container(border=True):
+            st.markdown(
+                f"**Shot {slot_id}** &nbsp;·&nbsp; ⏱ {ts} &nbsp;·&nbsp; "
+                f"🎬 {shot.get('shot_intent', '—')}"
+            )
+            st.markdown(f"💬 _{shot.get('text', '')}_")
+            queries = shot.get("search_queries", [])
+            if queries:
+                q_md = " &nbsp;·&nbsp; ".join(f"`{q}`" for q in queries)
+                st.markdown(f"🔎 **Searched:** {q_md}")
+
+        # ── Footer action bar ────────────────────────────────────────────
+        # Prev | Skip | Save & Next (primary) | Next — gives the editor
+        # quick navigation without scrolling back up to the top nav.
         st.divider()
-        sk1, sk2 = st.columns([1, 2])
-        with sk1:
-            skip_label = "↩ Unskip" if skipped else "⏭ Skip this shot"
+        fa1, fa2, fa3, fa4 = st.columns([1, 1, 2, 1])
+        with fa1:
+            if st.button(
+                "◀ Prev", key="d_prev_bot",
+                disabled=idx == 0, use_container_width=True,
+            ):
+                save_cache()
+                st.session_state.d_review_idx -= 1
+                st.rerun()
+        with fa2:
+            skip_label = "↩ Unskip" if skipped else "⏭ Skip"
             if st.button(skip_label, key=f"skip_{slot_id}", use_container_width=True):
                 shot["skipped"] = not skipped
                 shot["selected_results"] = []
                 save_cache()
                 st.rerun()
-        with sk2:
+        with fa3:
             if idx < len(review_shots) - 1:
-                if st.button("Save & Next ▶", key="d_save_next", type="primary", use_container_width=True):
+                if st.button(
+                    "Save & Next ▶", key="d_save_next",
+                    type="primary", use_container_width=True,
+                ):
                     save_cache()
                     st.session_state.d_review_idx += 1
                     st.rerun()
             else:
-                if st.button("✅ Finish Review", key="d_finish", type="primary", use_container_width=True):
+                if st.button(
+                    "✅ Finish Review", key="d_finish",
+                    type="primary", use_container_width=True,
+                ):
                     save_cache()
                     st.success("Review complete! Scroll down to Step 6 to start downloads.")
+        with fa4:
+            if st.button(
+                "Next ▶", key="d_next_bot",
+                disabled=idx == len(review_shots) - 1, use_container_width=True,
+            ):
+                save_cache()
+                st.session_state.d_review_idx += 1
+                st.rerun()
 
     # ── Step 6 — Download ────────────────────────────────────────────────────
     selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_results")]
