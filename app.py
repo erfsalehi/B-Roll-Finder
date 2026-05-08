@@ -1315,6 +1315,12 @@ elif app_mode == "Director (v0.2)":
                 )
 
             # Build one row per candidate. Pick reflects current selection.
+            # Row order matches `candidates` exactly — we identify rows on
+            # sync by their position, not by a hidden URL column. Hidden
+            # columns in st.data_editor have inconsistent state semantics
+            # (a column that's in the df but missing from column_config
+            # AND missing from `disabled` was making single-click selects
+            # non-deterministic — sometimes the click failed to commit).
             rows = []
             for c in candidates:
                 w, h = c.get("width"), c.get("height")
@@ -1336,7 +1342,6 @@ elif app_mode == "Director (v0.2)":
                     "Description": c.get("description") or "",
                     "Query":       c.get("matched_query") or "",
                     "Open":        c.get("page_url") or c.get("url") or "",
-                    "_url":        c.get("url") or "",
                 })
             df = pd.DataFrame(rows)
 
@@ -1344,7 +1349,7 @@ elif app_mode == "Director (v0.2)":
                 df,
                 column_config={
                     "Pick": st.column_config.CheckboxColumn(
-                        "✓", help="Tick to add this clip to the download queue", default=False, width="small"
+                        "✓", help="Tick to add this clip to the download queue", width="small"
                     ),
                     "Preview":     st.column_config.ImageColumn("Preview", width="medium"),
                     "Title":       st.column_config.TextColumn("Title", width="large"),
@@ -1358,19 +1363,24 @@ elif app_mode == "Director (v0.2)":
                     "Description": st.column_config.TextColumn("Description", width="medium"),
                     "Query":       st.column_config.TextColumn("Matched query", width="medium"),
                     "Open":        st.column_config.LinkColumn("Open", display_text="↗", width="small"),
-                    "_url":        None,
                 },
                 disabled=["Preview", "Title", "Source", "Size", "Dur", "Also", "Description", "Query", "Open"],
                 hide_index=True,
                 use_container_width=True,
+                num_rows="fixed",
                 key=f"d_table_{slot_id}",
             )
 
-            # Sync edited Pick column back to shot["selected_results"].
-            # We read the edited Pick state, build the new URL set, and only
-            # mutate the shot when something actually changed — avoids
-            # spurious save_cache calls on every rerun.
-            new_picked_urls = {row["_url"] for _, row in edited.iterrows() if bool(row["Pick"])}
+            # Sync the edited Pick column back to shot["selected_results"].
+            # We map row index → candidate (stable for this render) and
+            # only mutate the shot dict when the URL set actually changes
+            # so every keystroke doesn't churn save_cache.
+            new_picked_urls = set()
+            for i, row in edited.iterrows():
+                if bool(row["Pick"]) and 0 <= i < len(candidates):
+                    u = candidates[i].get("url")
+                    if u:
+                        new_picked_urls.add(u)
             if new_picked_urls != sel_urls:
                 shot["selected_results"] = [c for c in candidates if c.get("url") in new_picked_urls]
                 if shot["selected_results"]:
