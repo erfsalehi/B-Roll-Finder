@@ -8,8 +8,12 @@ queueing a download.
 
 The registry is a tiny JSON file at ``.cache/downloads_registry.json``.
 Stale entries (file no longer on disk) are pruned lazily on lookup.
-Concurrent writes are serialized with a module-level lock — ample for
-the single-process Streamlit app.
+
+Reads go through an in-memory cache that's invalidated whenever the
+on-disk file's mtime changes — so external writes (e.g. a parallel
+Streamlit reload, a manual edit) are picked up on the next call. Our
+own writes update the in-memory cache atomically. Concurrent operations
+within the process are serialized via a module-level lock.
 """
 
 import json
@@ -21,8 +25,14 @@ from typing import Optional
 REGISTRY_FILE = os.path.join(".cache", "downloads_registry.json")
 _lock = threading.Lock()
 
+# In-memory copy of the registry. ``None`` means "not loaded yet".
+# We track the file's mtime alongside so we can detect external writes
+# and re-read on demand.
+_cache: Optional[dict] = None
+_cache_mtime: Optional[float] = None
 
-def _load() -> dict:
+
+def _read_from_disk() -> dict:
     if not os.path.exists(REGISTRY_FILE):
         return {}
     try:
@@ -33,15 +43,37 @@ def _load() -> dict:
         return {}
 
 
+def _current_mtime() -> Optional[float]:
+    try:
+        return os.path.getmtime(REGISTRY_FILE)
+    except OSError:
+        return None
+
+
+def _get_registry() -> dict:
+    """Return the in-memory registry, re-reading from disk only when
+    the file's mtime no longer matches what we last saw."""
+    global _cache, _cache_mtime
+    current = _current_mtime()
+    if _cache is None or current != _cache_mtime:
+        _cache = _read_from_disk()
+        _cache_mtime = current
+    return _cache
+
+
 def _save(registry: dict) -> None:
+    """Persist atomically (write to .tmp, rename) and refresh the
+    in-memory cache so the next read doesn't bounce off the mtime
+    check we just triggered."""
+    global _cache, _cache_mtime
     try:
         os.makedirs(os.path.dirname(REGISTRY_FILE), exist_ok=True)
-        # Write to a temp file then rename — avoids leaving a half-written
-        # registry on disk if the process is killed mid-write.
         tmp_path = REGISTRY_FILE + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(registry, f, indent=2)
         os.replace(tmp_path, REGISTRY_FILE)
+        _cache = registry
+        _cache_mtime = _current_mtime()
     except Exception as e:
         print(f"download_cache: could not persist registry: {e}")
 
@@ -52,16 +84,18 @@ def lookup_path(url: str) -> Optional[str]:
     if not url:
         return None
     with _lock:
-        registry = _load()
+        registry = _get_registry()
         entry = registry.get(url)
         if not entry:
             return None
         path = entry.get("path") if isinstance(entry, dict) else None
         if path and os.path.exists(path):
             return path
-        # Stale — file is gone. Drop the entry.
-        registry.pop(url, None)
-        _save(registry)
+        # Stale — file is gone. Work on a copy so iteration on the live
+        # cache elsewhere can't see a half-mutated dict, then persist.
+        new_registry = dict(registry)
+        new_registry.pop(url, None)
+        _save(new_registry)
         return None
 
 
@@ -70,17 +104,17 @@ def register(url: str, path: str) -> None:
     if not url or not path or not os.path.exists(path):
         return
     with _lock:
-        registry = _load()
+        new_registry = dict(_get_registry())
         try:
             size = os.path.getsize(path)
         except OSError:
             size = None
-        registry[url] = {
+        new_registry[url] = {
             "path":          path,
             "size":          size,
             "downloaded_at": time.time(),
         }
-        _save(registry)
+        _save(new_registry)
 
 
 def forget(url: str) -> None:
@@ -88,17 +122,23 @@ def forget(url: str) -> None:
     if not url:
         return
     with _lock:
-        registry = _load()
-        if url in registry:
-            registry.pop(url)
-            _save(registry)
+        registry = _get_registry()
+        if url not in registry:
+            return
+        new_registry = dict(registry)
+        new_registry.pop(url)
+        _save(new_registry)
 
 
 def stats() -> dict:
     """Return summary stats: count, total size, plus how many entries
-    point at files that are now missing."""
+    point at files that are now missing.
+
+    Note: ``size_bytes`` reflects only entries whose file still exists
+    on disk; stale entries are counted but not summed.
+    """
     with _lock:
-        registry = _load()
+        registry = dict(_get_registry())  # copy so we can iterate post-lock
     count = 0
     total = 0
     stale = 0
@@ -118,3 +158,10 @@ def clear() -> None:
     """Forget everything. Doesn't touch the actual files on disk."""
     with _lock:
         _save({})
+
+
+def _reset_for_tests() -> None:
+    """Clear the in-memory cache (test-only — never call in app code)."""
+    global _cache, _cache_mtime
+    _cache = None
+    _cache_mtime = None
