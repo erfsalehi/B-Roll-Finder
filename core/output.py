@@ -1,14 +1,17 @@
+import os
 def format_time(seconds: int) -> str:
     h = seconds // 3600
     m = (seconds % 3600) // 60
     s = seconds % 60
     return f"[{h:02d}:{m:02d}:{s:02d}]"
 
-def format_srt_time(seconds: int) -> str:
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
-    return f"{h:02d}:{m:02d}:{s:02d},000"
+def format_srt_time(seconds: float) -> str:
+    millis = int((seconds % 1) * 1000)
+    total_seconds = int(seconds)
+    h = total_seconds // 3600
+    m = (total_seconds % 3600) // 60
+    s = total_seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d},{millis:03d}"
 
 def generate_keywords_txt(slots: list) -> str:
     lines = []
@@ -55,6 +58,30 @@ def generate_srt(slots: list) -> str:
         lines.append(f"{start_ts} --> {end_ts}")
         lines.append(primary_kw)
         lines.append("") # Empty line separator
+    return "\n".join(lines)
+
+def generate_transcription_srt(segments: list) -> str:
+    """Generates an SRT from Whisper segments."""
+    lines = []
+    for i, seg in enumerate(segments, 1):
+        start_ts = format_srt_time(seg['start'])
+        end_ts = format_srt_time(seg['end'])
+        text = seg['text'].strip()
+        
+        lines.append(str(i))
+        lines.append(f"{start_ts} --> {end_ts}")
+        lines.append(text)
+        lines.append("") # Empty line separator
+    return "\n".join(lines)
+
+def generate_failed_downloads_txt(failed_tasks: list) -> str:
+    """Generates a text file listing failed downloads."""
+    lines = []
+    for task in failed_tasks:
+        # Format: title (1-1 youtube - keyword) + link
+        filename = os.path.basename(task['output_path'])
+        url = task.get('url', 'No URL')
+        lines.append(f"{filename} | {url}")
     return "\n".join(lines)
 
 import json

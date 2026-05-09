@@ -2,8 +2,9 @@ import os
 import re
 import json
 import requests
+from requests.exceptions import HTTPError, ConnectionError, Timeout
 from groq import Groq, RateLimitError as GroqRateLimitError
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type, retry_if_exception
 
 GROQ_MODEL       = "llama-3.3-70b-versatile"
 OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
@@ -144,6 +145,15 @@ def _call_groq_json(client: Groq, system_prompt: str, block: str,
     return json.loads(response.choices[0].message.content)
 
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=4, max=20),
+    stop=stop_after_attempt(5),
+    # Retry on 429 Rate Limit, 5xx Server Errors, and connection issues
+    retry=retry_if_exception(lambda e: 
+        (isinstance(e, HTTPError) and (e.response.status_code == 429 or e.response.status_code >= 500)) or
+        isinstance(e, (ConnectionError, Timeout))
+    )
+)
 def _call_openrouter_json(system_prompt: str, user_content: str,
                           temperature: float = 0.7, max_tokens: int = 2000) -> dict:
     """Calls OpenRouter with the shared fallback model. Raises on failure."""

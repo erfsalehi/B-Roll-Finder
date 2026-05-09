@@ -11,7 +11,10 @@ from core.timing import get_audio_duration, parse_script_to_slots, calculate_wps
 from core.keywords import generate_keywords_for_slots, generate_keywords_with_ai_chunking
 from core.youtube import fetch_youtube_results
 from core.stock_apis import search_pexels, search_pixabay
-from core.output import generate_keywords_txt, generate_youtube_txt, generate_srt
+from core.output import (
+    generate_keywords_txt, generate_youtube_txt, generate_srt,
+    generate_transcription_srt, generate_failed_downloads_txt
+)
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
 from core import download_cache
 import time
@@ -227,8 +230,15 @@ def render_classic_mode():
         st.info(f"Detected Audio Duration: {duration:.2f} seconds | Script Word Count: {word_count}")
         
         st.audio(audio_path)
-        with st.expander("View Uploaded Script"):
-            st.text_area("Full Script", value=script_content, height=200, disabled=True)
+        with st.expander("View Script / Transcription"):
+            if st.session_state.transcription_segments:
+                st.write("**AI Transcription (Timestamped):**")
+                for seg in st.session_state.transcription_segments:
+                    start_m = int(seg['start'] // 60)
+                    start_s = int(seg['start'] % 60)
+                    st.write(f"**[{start_m:02d}:{start_s:02d}]** {seg['text']}")
+            else:
+                st.text_area("Full Script", value=script_content, height=200, disabled=True)
 
         st.session_state.script_text = script_content
         st.session_state.audio_duration = duration
@@ -627,11 +637,24 @@ def render_classic_mode():
         keywords_txt = generate_keywords_txt(st.session_state.slots)
         yt_txt = generate_youtube_txt(st.session_state.slots)
         srt_txt = generate_srt(st.session_state.slots)
+        
+        trans_srt = ""
+        if st.session_state.transcription_segments:
+            trans_srt = generate_transcription_srt(st.session_state.transcription_segments)
+            
+        failed_tasks = st.session_state.dm.get_failed_tasks()
+        failed_txt = ""
+        if failed_tasks:
+            failed_txt = generate_failed_downloads_txt(failed_tasks)
 
         with col1:
             st.download_button("Download keywords.txt", data=keywords_txt, file_name="keywords.txt", mime="text/plain")
+            if trans_srt:
+                st.download_button("Download transcription.srt", data=trans_srt, file_name="transcription.srt", mime="text/plain")
         with col2:
             st.download_button("Download youtube_results.txt", data=yt_txt, file_name="youtube_results.txt", mime="text/plain")
+            if failed_txt:
+                st.download_button("Download failed_downloads.txt", data=failed_txt, file_name="failed_downloads.txt", mime="text/plain")
         with col3:
             st.download_button("Download timing.srt", data=srt_txt, file_name="timing.srt", mime="text/plain")
 
@@ -642,6 +665,10 @@ def render_classic_mode():
                 zip_file.writestr("keywords.txt", keywords_txt)
                 zip_file.writestr("youtube_results.txt", yt_txt)
                 zip_file.writestr("timing.srt", srt_txt)
+                if trans_srt:
+                    zip_file.writestr("transcription.srt", trans_srt)
+                if failed_txt:
+                    zip_file.writestr("failed_downloads.txt", failed_txt)
 
             st.download_button(
                 label="Download All (.zip)",
@@ -1009,11 +1036,22 @@ elif app_mode == "Director":
         with s3: st.metric("Speaking rate", f"{c_wps:.2f} wps")
 
         with st.expander(f"📝 Read Chunk {active_idx + 1} text", expanded=False):
-            st.text_area(
-                "Chunk text", value=active["text"], height=200,
-                disabled=True, key=f"chunk_text_{active_idx}",
-                label_visibility="collapsed",
-            )
+            if st.session_state.transcription_segments:
+                # Find segments that belong to this chunk
+                chunk_start = active['start']
+                chunk_end = active['end']
+                st.write(f"**AI Transcription for Chunk {active_idx + 1}:**")
+                for seg in st.session_state.transcription_segments:
+                    if seg['start'] >= chunk_start and seg['end'] <= chunk_end:
+                        start_m = int(seg['start'] // 60)
+                        start_s = int(seg['start'] % 60)
+                        st.write(f"**[{start_m:02d}:{start_s:02d}]** {seg['text']}")
+            else:
+                st.text_area(
+                    "Chunk text", value=active["text"], height=200,
+                    disabled=True, key=f"chunk_text_{active_idx}",
+                    label_visibility="collapsed",
+                )
 
     st.header("Step 2: Generate Shot List")
 
@@ -1846,7 +1884,24 @@ elif app_mode == "Director":
         shot_list_json = json.dumps(st.session_state.director_shots, indent=2)
         shot_list_txt  = generate_shot_list_txt(st.session_state.director_shots)
         fcpxml         = generate_fcpxml(st.session_state.director_shots)
+        
+        trans_srt = ""
+        if st.session_state.transcription_segments:
+            trans_srt = generate_transcription_srt(st.session_state.transcription_segments)
+            
+        failed_tasks = st.session_state.dm.get_failed_tasks()
+        failed_txt = ""
+        if failed_tasks:
+            failed_txt = generate_failed_downloads_txt(failed_tasks)
+            
         c1, c2, c3     = st.columns(3)
-        with c1: st.download_button("shot_list.json", data=shot_list_json, file_name="shot_list.json", mime="application/json")
-        with c2: st.download_button("shot_list.txt",  data=shot_list_txt,  file_name="shot_list.txt",  mime="text/plain")
-        with c3: st.download_button("markers.fcpxml", data=fcpxml,         file_name="markers.fcpxml", mime="text/xml")
+        with c1: 
+            st.download_button("shot_list.json", data=shot_list_json, file_name="shot_list.json", mime="application/json")
+            if trans_srt:
+                st.download_button("transcription.srt", data=trans_srt, file_name="transcription.srt", mime="text/plain")
+        with c2: 
+            st.download_button("shot_list.txt",  data=shot_list_txt,  file_name="shot_list.txt",  mime="text/plain")
+            if failed_txt:
+                st.download_button("failed_downloads.txt", data=failed_txt, file_name="failed_downloads.txt", mime="text/plain")
+        with c3: 
+            st.download_button("markers.fcpxml", data=fcpxml,         file_name="markers.fcpxml", mime="text/xml")

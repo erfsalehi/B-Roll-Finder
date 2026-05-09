@@ -48,16 +48,18 @@ D. PREFER THE *MEANING* OVER THE LITERAL SCRIPT WORDS.
      -> NOT "she understood"
      -> YES "woman face lighting up realization close-up"
 
-E. KEEP IT SHORT — 4 to 8 words. Long queries fragment the search.
+E. KEEP IT SHORT — 2 to 5 words. Long queries (7+ words) fragment the search and often trigger "zero results" fallbacks.
+   - GOOD: "mechanic hands screwdriver engine"
+   - BAD : "hand pulling out a screwdriver from a toolbox in a garage"
 
 F. THE 2–3 QUERIES PER SHOT MUST EXPLORE DIFFERENT ANGLES, NOT BE REWORDINGS.
    For one shot, span at least two of these axes:
-   - the literal subject doing the action
-   - the setting / establishing wide
+   - the literal subject doing the action (e.g. "barista pouring milk")
+   - the setting / establishing wide (e.g. "coffee shop interior")
    - a close-up sensory detail (hands, eyes, object)
    - a metaphor or abstract visual that captures the meaning
    BAD set (rewordings): ["mechanic fixing car", "mechanic repairing car", "mechanic working on car"]
-   GOOD set (different angles): ["mechanic hands turning wrench engine", "auto repair shop wide interior", "oil dripping engine close-up"]
+   GOOD set (different angles): ["mechanic hands wrench engine", "auto repair shop interior", "oil dripping close-up"]
 
 G. NO VISUAL REPETITION across adjacent shots in this chunk. If the previous shot was an aerial, do not propose another aerial unless narratively required.
 

@@ -20,12 +20,18 @@ Your task: rank the candidates from best to worst fit for this shot, and flag an
 
 CRITICAL RULES:
 1. Output ONLY valid JSON. No markdown, no extra text.
-2. A candidate is RELEVANT only if its PRIMARY visual content (TITLE) directly matches the shot intent.
+2. A candidate is RELEVANT only if its PRIMARY visual subject and action directly match the shot intent.
 3. DO NOT rank a candidate highly just because it shares one incidental keyword.
    Example: a "woodworking tool close-up" is NOT relevant for a "car mechanic repairs engine" shot,
    even though both involve tools. The primary subject must match.
-4. Example: "carpenter, wood, planer" tags are irrelevant for anything car/automotive related.
-5. If a candidate is completely off-topic, set "irrelevant": true. The editor will hide it.
+4. KEYWORD TRAPS:
+   - Searching for "hand using tool" often returns "man in office" because of the word "man". This is IRRELEVANT.
+   - Searching for "screwdriver" often returns "CPU socket" or "motherboard" because they are technical. This is IRRELEVANT unless the script is about computers.
+   - Searching for "market" often returns "vegetable stand" when the script is about "stock market". This is IRRELEVANT.
+5. ZERO TOLERANCE FOR NOISE:
+   Stock libraries (especially Pixabay) often return random "Featured" videos (nature, coffee, animals) when a query has no hits. 
+   If a candidate looks like a generic stock video that doesn't match the intent, mark "irrelevant": true.
+   **It is much better to mark everything as irrelevant than to show a single wrong clip.**
 6. ORIENTATION TIE-BREAKER — when two candidates have similar relevance, prefer **horizontal** clips
    over vertical or square ones. Vertical clips require cropping or letterboxing in standard
    16:9 video. Promote horizontal candidates above otherwise-equal vertical ones.
