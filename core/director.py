@@ -136,7 +136,9 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
     system_prompt = system_prompt_template.replace("{custom_instructions_block}", custom_block)
     # The director prompt might need a small tweak to understand [start - end] segments, 
     # but the base prompt is usually smart enough if we explain the format.
-    system_prompt += "\n\nYou will receive transcription segments as '[start - end]: text'. Group them into logical cinematic shots."
+    system_prompt += "\n\nYou will receive transcription segments as '[start - end]: text'. Group them into logical cinematic shots. " \
+                     "CRITICAL: For each shot, you MUST include 'start' and 'end' keys in the JSON (floats, in seconds) corresponding to the start of the first segment and end of the last segment in that shot. " \
+                     "The 'script_chunk' must contain the verbatim text from those segments."
 
     # Block segments
     block_size = 20
@@ -157,17 +159,25 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
                 # or just trust the AI's logic if it groups them correctly.
                 # Let's assume the AI provides 'start' and 'end' in the JSON for this mode.
                 
+                s_time = shot.get("start")
+                e_time = shot.get("end")
+                
+                # If AI returns 0 or None, try to use current_time if we had one
+                # but in transcription mode we really want the AI's values.
+                if s_time is None: s_time = 0.0
+                if e_time is None: e_time = s_time + 5.0
+                
                 all_shots.append({
                     "slot_id": slot_id,
-                    "timestamp": int(shot.get("start", 0)),
-                    "end_timestamp": int(shot.get("end", 0)),
-                    "timestamp_start_str": format_time(int(shot.get("start", 0))),
-                    "timestamp_end_str": format_time(int(shot.get("end", 0))),
+                    "timestamp": int(float(s_time)),
+                    "end_timestamp": int(float(e_time)),
+                    "timestamp_start_str": format_time(int(float(s_time))),
+                    "timestamp_end_str": format_time(int(float(e_time))),
                     "text": shot.get("script_chunk", ""),
                     "shot_intent": shot.get("shot_intent", "B-roll"),
                     "shot_type": shot.get("shot_type", "medium"),
                     "search_queries": shot.get("search_queries", []),
-                    "duration_needed_sec": round(shot.get("end", 0) - shot.get("start", 0), 1),
+                    "duration_needed_sec": round(float(e_time) - float(s_time), 1),
                     "priority": shot.get("priority", "medium"),
                     "video_results": []
                 })
