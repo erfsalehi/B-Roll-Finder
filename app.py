@@ -1059,13 +1059,9 @@ elif app_mode == "Director":
     # Editing it here updates Step 4, and vice versa, because Streamlit
     # binds widgets with the same `key` to one session_state slot.
     col_topic_in, col_topic_btn = st.columns([5, 1])
-    with col_topic_in:
-        d_video_topic = st.text_input(
-            "What is this video about? (sharpens both query generation and ranking)",
-            placeholder="e.g. car mechanics and engine repair",
-            key="d_video_topic",
-            help="One sentence describing the topic. Used to disambiguate shot queries (so \"tool\" in a car video means \"wrench\", not \"saw\") and to filter off-topic candidates during ranking."
-        )
+    # IMPORTANT: We check the button BEFORE rendering the text_input widget
+    # so we can update its session_state key without triggering the 
+    # "cannot be modified after instantiation" error.
     with col_topic_btn:
         st.markdown("<div style='padding-top: 1.7rem;'></div>", unsafe_allow_html=True)
         if st.button("✨ Suggest", key="d_suggest_topic", use_container_width=True, help="AI analyzes your script to suggest a topic description."):
@@ -1085,6 +1081,13 @@ elif app_mode == "Director":
                             st.warning("Could not generate a suggestion. Try again.")
                     except Exception as e:
                         st.error(f"Error: {e}")
+    with col_topic_in:
+        d_video_topic = st.text_input(
+            "What is this video about? (sharpens both query generation and ranking)",
+            placeholder="e.g. car mechanics and engine repair",
+            key="d_video_topic",
+            help="One sentence describing the topic. Used to disambiguate shot queries (so \"tool\" in a car video means \"wrench\", not \"saw\") and to filter off-topic candidates during ranking."
+        )
 
     custom_instructions = st.text_area("Style Hints (Optional)", placeholder="e.g. cinematic, slow motion, no talking heads", key="d_style")
 
