@@ -1617,24 +1617,50 @@ elif app_mode == "Director":
                 # download it once and hardlink it into the other per-shot
                 # filenames. Without this grouping we'd transfer the same
                 # MP4 multiple times through the user's network.
-                url_groups = {}  # url -> {"primary": (path, dm_source), "extras": [path], "shots": [slot_id]}
+                #
+                # Filename format: {chunk}-{shot}-{source}-{keyword}.mp4
+                # where chunk is the active chunk index (1-based), shot is
+                # the slot_id within that chunk, source is pexels/pixabay/
+                # youtube, and keyword is the matched search query that
+                # surfaced this clip (sanitized for the filesystem). If a
+                # second pick in the same shot collides on keyword (e.g.
+                # two Pexels results from one query), we suffix -2, -3 etc.
+                # only the duplicates.
+                def _safe_for_fs(text: str, max_len: int = 30) -> str:
+                    if not text:
+                        return ""
+                    cleaned = "".join(c if (c.isalnum() or c in " -_") else " "
+                                      for c in text)
+                    cleaned = "-".join(cleaned.split()).lower()
+                    return cleaned[:max_len].strip("-") or ""
+
+                chunk_num = st.session_state.get("active_chunk_idx", 0) + 1
+
+                url_groups = {}      # url -> {"primary": (path, dm_source), "extras": [...], "shots": [...]}
+                seen_filenames = set()  # collision detector for this batch
                 for shot in selected_shots:
-                    slot_id  = shot.get("slot_id", "X")
-                    safe_int = "".join(c if c.isalnum() or c in " -_" else "_"
-                                       for c in shot.get("shot_intent", "shot")).strip()
-                    for k, res in enumerate(shot.get("selected_results", [])):
+                    slot_id = shot.get("slot_id", "X")
+                    for res in shot.get("selected_results", []):
                         url = res.get("url")
                         if not url:
                             continue
-                        source      = res.get("source", "stock")
-                        filename    = f"Shot{slot_id}-{source}-{safe_int[:25]}-{k+1}.mp4"
+                        source  = res.get("source", "stock")
+                        keyword = _safe_for_fs(res.get("matched_query", ""), 30) or "clip"
+                        base    = f"{chunk_num}-{slot_id}-{source}-{keyword}"
+                        filename = f"{base}.mp4"
+                        n = 1
+                        while filename in seen_filenames:
+                            n += 1
+                            filename = f"{base}-{n}.mp4"
+                        seen_filenames.add(filename)
+
                         output_path = os.path.join("downloads", "director", filename)
                         dm_source   = "direct" if source in ("pexels", "pixabay") else "youtube"
                         if url not in url_groups:
                             url_groups[url] = {
-                                "primary":    (output_path, dm_source),
-                                "extras":     [],
-                                "shots":      [slot_id],
+                                "primary": (output_path, dm_source),
+                                "extras":  [],
+                                "shots":   [slot_id],
                             }
                         else:
                             url_groups[url]["extras"].append(output_path)
