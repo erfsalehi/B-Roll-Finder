@@ -1058,12 +1058,33 @@ elif app_mode == "Director":
     # Video topic — single source of truth shared with Step 4 (ranking).
     # Editing it here updates Step 4, and vice versa, because Streamlit
     # binds widgets with the same `key` to one session_state slot.
-    d_video_topic = st.text_input(
-        "What is this video about? (sharpens both query generation and ranking)",
-        placeholder="e.g. car mechanics and engine repair",
-        key="d_video_topic",
-        help="One sentence describing the topic. Used to disambiguate shot queries (so \"tool\" in a car video means \"wrench\", not \"saw\") and to filter off-topic candidates during ranking."
-    )
+    col_topic_in, col_topic_btn = st.columns([5, 1])
+    with col_topic_in:
+        d_video_topic = st.text_input(
+            "What is this video about? (sharpens both query generation and ranking)",
+            placeholder="e.g. car mechanics and engine repair",
+            key="d_video_topic",
+            help="One sentence describing the topic. Used to disambiguate shot queries (so \"tool\" in a car video means \"wrench\", not \"saw\") and to filter off-topic candidates during ranking."
+        )
+    with col_topic_btn:
+        st.markdown("<div style='padding-top: 1.7rem;'></div>", unsafe_allow_html=True)
+        if st.button("✨ Suggest", key="d_suggest_topic", use_container_width=True, help="AI analyzes your script to suggest a topic description."):
+            if not st.session_state.get("script_text"):
+                st.error("Upload audio and transcribe first.")
+            elif not os.getenv("GROQ_API_KEY"):
+                st.error("Set Groq API key in Setup at the top.")
+            else:
+                from core.keywords import generate_video_topic
+                with st.spinner("Analyzing..."):
+                    try:
+                        suggested = generate_video_topic(st.session_state.script_text, os.getenv("GROQ_API_KEY"))
+                        if suggested:
+                            st.session_state.d_video_topic = suggested
+                            st.rerun()
+                        else:
+                            st.warning("Could not generate a suggestion. Try again.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
     custom_instructions = st.text_area("Style Hints (Optional)", placeholder="e.g. cinematic, slow motion, no talking heads", key="d_style")
 

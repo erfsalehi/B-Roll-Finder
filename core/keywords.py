@@ -192,6 +192,59 @@ def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
         print("Groq rate limit hit — falling back to OpenRouter.")
         return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
 
+def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
+                   temperature: float = 0.7, max_tokens: int = 500) -> str:
+    """
+    Try Groq first for a string response. On rate-limit, fall back to OpenRouter.
+    """
+    try:
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            model=GROQ_MODEL,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content.strip()
+    except GroqRateLimitError:
+        print("Groq rate limit hit — falling back to OpenRouter.")
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not api_key:
+            raise ValueError("OpenRouter API key is missing for fallback.")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        }
+        payload = {
+            "model":           OPENROUTER_MODEL,
+            "temperature":     temperature,
+            "max_tokens":      max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_content},
+            ],
+        }
+        resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+
+def generate_video_topic(script_text: str, api_key: str) -> str:
+    """Analyzes the script and suggests a brief one-sentence topic description."""
+    if not api_key:
+        raise ValueError("Groq API key is missing.")
+    
+    client = Groq(api_key=api_key)
+    system_prompt = "You are a creative director. Given a video script, summarize what the video is about in one sharp, descriptive sentence. Focus on the core subject matter to help with B-roll search. Do not include quotes."
+    
+    try:
+        topic = _call_llm_str(client, system_prompt, f"SCRIPT:\n{script_text[:8000]}")
+        return topic.strip('"')
+    except Exception as e:
+        print(f"Error generating video topic: {e}")
+        return ""
+
 def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "", start_offset: float = 0.0) -> list:
     if not api_key:
         raise ValueError("Groq API key is missing.")
