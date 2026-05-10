@@ -3,7 +3,6 @@ import os
 import json
 import zipfile
 import io
-import socket
 import pandas as pd
 from dotenv import load_dotenv, set_key
 
@@ -17,6 +16,8 @@ from core.output import (
 )
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
 from core import download_cache
+from core.app_utils import check_network, format_speed, format_eta
+from core.session_cache import load_session_cache, save_session_cache
 import time
 
 # --- Config & Initialization ---
@@ -42,29 +43,6 @@ if os.getenv("BROLL_BYPASS_HTTP_PROXY", "").strip().lower() in ("1", "true", "ye
                  "ALL_PROXY", "all_proxy"):
         os.environ.pop(_var, None)
 
-def _check_network() -> bool:
-    try:
-        socket.setdefaulttimeout(3)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("8.8.8.8", 53))
-        return True
-    except Exception:
-        return False
-
-def _format_speed(bps) -> str:
-    if not bps:
-        return ""
-    if bps >= 1_048_576:
-        return f"{bps / 1_048_576:.1f} MB/s"
-    return f"{bps / 1024:.0f} KB/s"
-
-def _format_eta(seconds) -> str:
-    if seconds is None:
-        return ""
-    seconds = int(seconds)
-    if seconds < 60:
-        return f"{seconds}s"
-    return f"{seconds // 60}m {seconds % 60}s"
-
 # Initialize Session State
 if "slots" not in st.session_state:
     st.session_state.slots = []
@@ -87,34 +65,14 @@ if "is_fetching" not in st.session_state:
 
 # Attempt to load from cache
 def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r") as f:
-                data = json.load(f)
-                st.session_state.slots = data.get("slots", [])
-                st.session_state.director_shots = data.get("director_shots", [])
-                st.session_state.script_text = data.get("script_text", "")
-                st.session_state.audio_duration = data.get("audio_duration", 0.0)
-                st.session_state.global_themes = data.get("global_themes", [])
-                st.session_state.transcription_segments = data.get("transcription_segments", [])
-                st.session_state.transcription_chunks = data.get("transcription_chunks", [])
-                st.session_state.active_chunk_idx = data.get("active_chunk_idx", 0)
-        except Exception as e:
-            st.error(f"Error loading cache: {e}")
+    try:
+        load_session_cache(CACHE_FILE, st.session_state)
+    except Exception as e:
+        st.error(f"Error loading cache: {e}")
 
 def save_cache():
     try:
-        with open(CACHE_FILE, "w") as f:
-            json.dump({
-                "slots": st.session_state.slots,
-                "director_shots": st.session_state.get("director_shots", []),
-                "script_text": st.session_state.script_text,
-                "audio_duration": st.session_state.audio_duration,
-                "global_themes": st.session_state.get("global_themes", []),
-                "transcription_segments": st.session_state.get("transcription_segments", []),
-                "transcription_chunks": st.session_state.get("transcription_chunks", []),
-                "active_chunk_idx": st.session_state.get("active_chunk_idx", 0),
-            }, f)
+        save_session_cache(CACHE_FILE, st.session_state)
     except Exception as e:
         st.error(f"Error saving cache: {e}")
 
@@ -423,7 +381,7 @@ def render_classic_mode():
         elif st.session_state.is_fetching:
             st.warning("A fetch is already in progress. Please wait.")
         else:
-            if not _check_network():
+            if not check_network():
                 st.error("No network connection detected. Please check your internet and try again.")
             else:
                 st.session_state.is_fetching = True
@@ -526,7 +484,7 @@ def render_classic_mode():
     if c1.button("Start Downloading Videos"):
         if not st.session_state.slots:
             st.error("Please generate keywords and fetch video links first.")
-        elif not _check_network():
+        elif not check_network():
             st.error("No network connection detected. Please check your internet and try again.")
         else:
             if st.session_state.dm.max_workers != max_workers:
@@ -600,8 +558,8 @@ def render_classic_mode():
             st.subheader("Currently Downloading")
             for t in active_tasks:
                 is_processing = t['status'] == 'processing'
-                speed_str = _format_speed(t.get('speed'))
-                eta_str = _format_eta(t.get('eta'))
+                speed_str = format_speed(t.get('speed'))
+                eta_str = format_eta(t.get('eta'))
                 meta = " | ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
                 label = "Normalizing…" if is_processing else f"{t['status'].title()} ({t['progress']*100:.1f}%){(' — ' + meta) if meta else ''}"
                 st.write(f"**{os.path.basename(t['output_path'])}** — {label}")
@@ -736,7 +694,7 @@ def render_classic_mode():
         if c_gf1.button("Fetch Global Video Links", disabled=st.session_state.is_fetching):
             if st.session_state.is_fetching:
                 st.warning("A fetch is already in progress. Please wait.")
-            elif not _check_network():
+            elif not check_network():
                 st.error("No network connection detected. Please check your internet and try again.")
             else:
                 st.session_state.is_fetching = True
@@ -1248,7 +1206,7 @@ elif app_mode == "Director":
             )
 
         if st.button("Fetch Candidates", disabled=st.session_state.is_fetching, key="d_fetch"):
-            if not _check_network():
+            if not check_network():
                 st.error("No network connection detected.")
             elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
                  not (use_pixabay and os.getenv("PIXABAY_API_KEY")) and \
@@ -1667,7 +1625,7 @@ elif app_mode == "Director":
 
         if st.button(f"⬇ Download {total_selected_files} selected videos",
                      key="d_dl_start", type="primary", use_container_width=True):
-            if not _check_network():
+            if not check_network():
                 st.error("No network connection detected.")
             else:
                 if st.session_state.dm.max_workers != d_workers:
@@ -1805,8 +1763,8 @@ elif app_mode == "Director":
                 st.subheader("In progress")
                 for t in active:
                     is_proc   = t["status"] == "processing"
-                    speed_str = _format_speed(t.get("speed"))
-                    eta_str   = _format_eta(t.get("eta"))
+                    speed_str = format_speed(t.get("speed"))
+                    eta_str   = format_eta(t.get("eta"))
                     meta      = " · ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
                     label     = "Normalizing…" if is_proc else (
                         f"{t['status'].title()} ({t['progress']*100:.1f}%)"

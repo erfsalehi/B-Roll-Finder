@@ -1,4 +1,11 @@
 import os
+from xml.sax.saxutils import escape
+
+
+def _xml_attr(value) -> str:
+    return escape(str(value), {'"': "&quot;"})
+
+
 def format_time(seconds: int) -> str:
     h = seconds // 3600
     m = (seconds % 3600) // 60
@@ -122,8 +129,8 @@ def generate_fcpxml(shots: list) -> str:
     
     for shot in shots:
         start_sec = shot.get('timestamp', 0)
-        intent = shot.get('shot_intent', '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        queries = " | ".join(shot.get('search_queries', [])).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        intent = _xml_attr(shot.get('shot_intent', ''))
+        queries = _xml_attr(" | ".join(shot.get('search_queries', [])))
         marker_name = f"{intent} ({queries})"
         
         xml.append(f'              <marker start="{start_sec}s" duration="1s" value="{marker_name}"/>')

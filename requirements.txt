@@ -1,7 +1,8 @@
-groq
-mutagen
-yt-dlp
-streamlit
-python-dotenv
-tenacity
-requests
+groq==1.2.0
+mutagen==1.47.0
+yt-dlp==2026.3.17
+streamlit==1.57.0
+python-dotenv==1.2.2
+tenacity==9.1.4
+requests==2.33.1
+pytest==8.4.2

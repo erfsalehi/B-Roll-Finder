@@ -117,3 +117,9 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
     except Exception as e:
         task_state['status'] = 'error'
         task_state['error_msg'] = str(e)
+        err = str(e).lower()
+        if ("exceeds limit" in err or "exceeded limit" in err) and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass

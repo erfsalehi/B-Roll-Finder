@@ -168,6 +168,8 @@ class DownloadManager:
         defensive net for unexpected exceptions, and the place where we
         compute the user-facing ``error_summary``.
         """
+        if state.get('status') == 'cancelled':
+            return
         try:
             if state['source'] == 'youtube':
                 download_video(
@@ -214,11 +216,17 @@ class DownloadManager:
         state = self.tasks.get(task_id)
         if state and state['status'] in ('downloading', 'paused', 'queued'):
             state['status'] = 'cancelled'
+            future = self.futures.get(task_id)
+            if future:
+                future.cancel()
 
     def cancel_all(self) -> None:
-        for state in self.tasks.values():
+        for task_id, state in self.tasks.items():
             if state['status'] in ('downloading', 'paused', 'queued'):
                 state['status'] = 'cancelled'
+                future = self.futures.get(task_id)
+                if future:
+                    future.cancel()
 
     # ── Retry ────────────────────────────────────────────────────────────
     def retry_failed(self, task_id: str, overrides: Optional[dict] = None) -> bool:
