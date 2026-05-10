@@ -826,6 +826,7 @@ if app_mode == "Classic Finder":
 elif app_mode == "Director":
     from core.director_search import fetch_director_footage
     from core.director_rank import rank_shot_candidates
+    from core.director_youtube import generate_youtube_keywords_for_shots, seed_youtube_keywords
     from core.output import generate_fcpxml, generate_shot_list_txt
     st.title("🎬 B-Roll Director")
 
@@ -1084,7 +1085,7 @@ elif app_mode == "Director":
                 status.empty()
                 st.success(
                     f"Shot list generated for Chunk {chunk_idx + 1} — "
-                    f"{len(st.session_state.director_shots)} shot(s). Continue to Step 3."
+                    f"{len(st.session_state.director_shots)} shot(s). Continue to Step 2.5 or Step 3."
                 )
                 save_cache()
             except Exception as e:
@@ -1168,11 +1169,102 @@ elif app_mode == "Director":
         if changed:
             save_cache()
 
+    # Step 2.5: optional YouTube-specific keywords for Classic-style search.
+    if st.session_state.director_shots:
+        st.header("Step 2.5: YouTube Keywords")
+        st.caption(
+            "Optional. These keywords are used only by Director's Classic-style YouTube search. "
+            "Pexels and Pixabay still use the stock-footage queries in the shot list above."
+        )
+
+        yt_kw_count = st.number_input(
+            "YouTube keywords per shot",
+            value=2,
+            min_value=1,
+            max_value=4,
+            key="d_yt_kw_count",
+        )
+        yk1, yk2, yk3 = st.columns([2, 2, 6])
+        with yk1:
+            if st.button("Seed from Queries", key="d_seed_yt_keywords", use_container_width=True):
+                st.session_state.director_shots = seed_youtube_keywords(
+                    st.session_state.director_shots,
+                    max_keywords=int(yt_kw_count),
+                )
+                save_cache()
+                st.rerun()
+        with yk2:
+            if st.button("Generate with AI", key="d_gen_yt_keywords", use_container_width=True):
+                if not os.getenv("GROQ_API_KEY"):
+                    st.error("Groq API key required to generate YouTube keywords.")
+                else:
+                    pbar_yk = st.progress(0)
+                    try:
+                        st.session_state.director_shots = generate_youtube_keywords_for_shots(
+                            st.session_state.director_shots,
+                            api_key=os.getenv("GROQ_API_KEY"),
+                            video_topic=st.session_state.get("d_video_topic", ""),
+                            custom_instructions=custom_instructions,
+                            max_keywords=int(yt_kw_count),
+                            progress_callback=lambda p: pbar_yk.progress(p),
+                        )
+                        pbar_yk.progress(1.0)
+                        save_cache()
+                        st.success("YouTube keywords generated. Edit any row before fetching.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not generate YouTube keywords: {e}")
+        with yk3:
+            st.caption("Use plain YouTube search language, separated with ` | `.")
+
+        yt_rows = []
+        for shot in st.session_state.director_shots:
+            yt_rows.append({
+                "#": shot.get("slot_id", 0),
+                "Time": f"{shot.get('timestamp_start_str')} - {shot.get('timestamp_end_str')}",
+                "Intent": shot.get("shot_intent", ""),
+                "Priority": shot.get("priority", "medium"),
+                "YouTube Keywords": " | ".join(shot.get("youtube_keywords", [])),
+            })
+        yt_df = pd.DataFrame(yt_rows)
+        edited_yt = st.data_editor(
+            yt_df,
+            column_config={
+                "#": st.column_config.NumberColumn("#", width="small"),
+                "Time": st.column_config.TextColumn("Time", width="small"),
+                "Intent": st.column_config.TextColumn("Intent", width="medium"),
+                "Priority": st.column_config.TextColumn("Priority", width="small"),
+                "YouTube Keywords": st.column_config.TextColumn(
+                    "YouTube Keywords (use ' | ' to separate)",
+                    width="large",
+                ),
+            },
+            disabled=["#", "Time", "Intent", "Priority"],
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            key="d_youtube_keywords_editor",
+        )
+        yt_changed = False
+        for i, shot in enumerate(st.session_state.director_shots):
+            if i >= len(edited_yt):
+                continue
+            if shot.get("priority") == "none":
+                new_keywords = []
+            else:
+                raw = str(edited_yt.iloc[i]["YouTube Keywords"] or "")
+                new_keywords = [kw.strip() for kw in raw.split("|") if kw.strip()]
+            if shot.get("youtube_keywords", []) != new_keywords:
+                shot["youtube_keywords"] = new_keywords
+                yt_changed = True
+        if yt_changed:
+            save_cache()
+
     # ── Step 3 — Fetch Candidates ────────────────────────────────────────────
     if st.session_state.director_shots:
         st.header("Step 3: Fetch Candidates")
 
-        col_s2a, col_s2b, col_s2c, col_s2d = st.columns(4)
+        col_s2a, col_s2b, col_s2c, col_s2d, col_s2e = st.columns(5)
         with col_s2a:
             use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb")
         with col_s2b:
@@ -1180,7 +1272,7 @@ elif app_mode == "Director":
         with col_s2c:
             use_youtube = st.checkbox(
                 "YouTube",
-                value=bool(os.getenv("YOUTUBE_API_KEY")),
+                value=True,
                 key="d_yt_cb",
                 help=(
                     "Adds YouTube as a search source. Each YT search costs "
@@ -1191,10 +1283,26 @@ elif app_mode == "Director":
                 ),
             )
         with col_s2d:
+            youtube_mode_label = st.selectbox(
+                "YouTube mode",
+                ["Classic search", "Data API"],
+                key="d_yt_mode",
+                help="Classic search matches the older Finder behavior and usually gives more natural YouTube results.",
+            )
+        with col_s2e:
             d_num_results = st.number_input("Results per query", value=3, min_value=1, max_value=10, key="d_nr")
+        youtube_mode = "classic" if youtube_mode_label == "Classic search" else "data_api"
 
-        # Quota nudge: number of YT calls about to fire.
-        if use_youtube and os.getenv("YOUTUBE_API_KEY"):
+        if use_youtube and youtube_mode == "classic":
+            yt_calls = sum(
+                len(s.get("youtube_keywords") or s.get("search_queries", [])[:1])
+                for s in st.session_state.director_shots
+                if s.get("priority") != "none"
+            )
+            st.caption(
+                f"YouTube Classic enabled - ~{yt_calls} yt-dlp search(es), no YouTube Data API quota used."
+            )
+        elif use_youtube and youtube_mode == "data_api" and os.getenv("YOUTUBE_API_KEY"):
             yt_calls = sum(
                 1 for s in st.session_state.director_shots
                 if s.get("priority") != "none" and s.get("search_queries")
@@ -1210,8 +1318,10 @@ elif app_mode == "Director":
                 st.error("No network connection detected.")
             elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
                  not (use_pixabay and os.getenv("PIXABAY_API_KEY")) and \
-                 not (use_youtube and os.getenv("YOUTUBE_API_KEY")):
-                st.error("No search sources enabled. Add Pexels, Pixabay, and/or YouTube keys in the Setup section above and tick at least one source.")
+                 not (use_youtube and (youtube_mode == "classic" or os.getenv("YOUTUBE_API_KEY"))):
+                st.error("No search sources enabled. Add Pexels/Pixabay keys or enable YouTube Classic search.")
+            elif use_youtube and youtube_mode == "data_api" and not os.getenv("YOUTUBE_API_KEY"):
+                st.error("YouTube Data API mode requires a YouTube API key. Switch to Classic search to use yt-dlp without API quota.")
             else:
                 st.session_state.is_fetching = True
                 d_fetch_errors = []
@@ -1225,6 +1335,8 @@ elif app_mode == "Director":
                         use_pixabay=use_pixabay,
                         use_youtube=use_youtube,
                         num_results=d_num_results,
+                        youtube_num_results=d_num_results,
+                        youtube_mode=youtube_mode,
                         progress_callback=lambda p: pbar2.progress(p),
                         errors=d_fetch_errors,
                     )
