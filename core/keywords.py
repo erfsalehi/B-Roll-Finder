@@ -271,9 +271,12 @@ def generate_video_topic(script_text: str, api_key: str) -> str:
     client = Groq(api_key=api_key)
     system_prompt = "You are a creative director. Given a video script, summarize what the video is about in one sharp, descriptive sentence. Focus on the core subject matter to help with B-roll search. Do not include quotes."
     
-    # Use _call_llm_str which now handles fallbacks and raises descriptive errors
-    topic = _call_llm_str(client, system_prompt, f"SCRIPT:\n{script_text[:8000]}")
-    return topic.strip('"').strip()
+    try:
+        topic = _call_llm_str(client, system_prompt, f"SCRIPT:\n{script_text[:8000]}")
+        return topic.strip('"')
+    except Exception as e:
+        print(f"Error generating video topic: {e}")
+        return ""
 
 def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "", start_offset: float = 0.0) -> list:
     if not api_key:
@@ -352,13 +355,16 @@ def generate_global_themes(script_text: str, api_key: str, num_themes: int = 5) 
     with open(prompt_path, 'r', encoding='utf-8') as f:
         system_prompt = f.read().replace("{num_themes}", str(num_themes))
         
-    # Use _call_llm_json which now handles fallbacks and raises descriptive errors
-    data = _call_llm_json(client, system_prompt, f"SCRIPT:\n{script_text}")
-    themes = data.get("themes", [])
-    for t in themes:
-        t.setdefault('keywords', [])
-        t.setdefault('video_results', [])
-    return themes
+    try:
+        data = _call_llm_json(client, system_prompt, f"SCRIPT:\n{script_text}")
+        themes = data.get("themes", [])
+        for t in themes:
+            t.setdefault('keywords', [])
+            t.setdefault('video_results', [])
+        return themes
+    except Exception as e:
+        print(f"Error generating global themes: {e}")
+        return []
 
 def generate_keywords_from_transcription(segments: list, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "") -> list:
     """
