@@ -15,5 +15,4 @@ def search_pixabay(keyword, api_key, num_results=3):
         print(f"Hit {i}: {hit.get('tags')}")
 
 api_key = os.getenv("PIXABAY_API_KEY")
-search_pixabay("forest", api_key)
-search_pixabay("asdfghjklqwertyuiop", api_key)
+search_pixabay("hand pulling out a screwdriver", api_key)

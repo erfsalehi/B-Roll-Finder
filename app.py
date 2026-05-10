@@ -1632,6 +1632,7 @@ elif app_mode == "Director":
                 shot["selected_results"] = [c for c in candidates if c.get("url") in new_picked_urls]
                 if shot["selected_results"]:
                     shot["skipped"] = False
+                st.session_state[df_cache_key] = edited
                 save_cache()
 
         # ── Shot recap below the table ───────────────────────────────────

@@ -50,7 +50,10 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
                     elif 'shorts' in url.lower() or 'short' in title.lower():
                         is_short = True
                         
-                    item = {'title': title, 'url': url, 'is_short': is_short, 'duration': duration}
+                    thumbs = entry.get('thumbnails', [])
+                    thumbnail = thumbs[-1].get('url') if thumbs else entry.get('thumbnail', '')
+                        
+                    item = {'title': title, 'url': url, 'is_short': is_short, 'duration': duration, 'thumbnail': thumbnail}
                     
                     if is_short and len(shorts_found) < num_shorts:
                         shorts_found.append(item)
