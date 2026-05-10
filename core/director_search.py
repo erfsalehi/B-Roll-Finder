@@ -55,9 +55,12 @@ def search_youtube_classic(keyword: str, num_results: int = 3, errors: list = No
 
 def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bool = True,
                            use_youtube: bool = False,
-                           num_results: int = 3, max_workers: int = 6,
+                           pexels_num_results: int = 3,
+                           pixabay_num_results: int = 3,
+                           youtube_api_num_results: int = 3,
+                           youtube_search_num_results: int = 3,
+                           max_workers: int = 6,
                            progress_callback=None, errors: list = None,
-                           youtube_num_results: int = 3,
                            youtube_mode: str = "classic",
                            use_youtube_api: bool = False,
                            use_youtube_search: bool = None,
@@ -109,12 +112,12 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
         # Pexels/Pixabay: every query. YouTube: first query only (quota).
         jobs = []
         for q in queries:
-            if use_pexels and pexels_key:
-                jobs.append((q, 'pexels', pexels_key, num_results))
-            if use_pixabay and pixabay_key:
-                jobs.append((q, 'pixabay', pixabay_key, num_results))
-        if use_youtube_api and youtube_key and queries:
-            jobs.append((queries[0], 'youtube', youtube_key, youtube_num_results))
+            if use_pexels and pexels_key and pexels_num_results > 0:
+                jobs.append((q, 'pexels', pexels_key, pexels_num_results))
+            if use_pixabay and pixabay_key and pixabay_num_results > 0:
+                jobs.append((q, 'pixabay', pixabay_key, pixabay_num_results))
+        if use_youtube_api and youtube_key and queries and youtube_api_num_results > 0:
+            jobs.append((queries[0], 'youtube', youtube_key, youtube_api_num_results))
 
         results = []
         seen_urls = set()
@@ -134,10 +137,10 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
                 except Exception as e:
                     errors.append(f"Fetch error for shot {shot.get('slot_id')}: {e}")
 
-        if use_youtube_search and youtube_queries:
+        if use_youtube_search and youtube_queries and youtube_search_num_results > 0:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futures = {
-                    ex.submit(search_youtube_classic, q, youtube_num_results, errors): q
+                    ex.submit(search_youtube_classic, q, youtube_search_num_results, errors): q
                     for q in youtube_queries
                 }
                 for future in concurrent.futures.as_completed(futures):

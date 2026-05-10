@@ -1275,11 +1275,13 @@ elif app_mode == "Director":
     if st.session_state.director_shots:
         st.header("Step 3: Fetch Candidates")
 
-        col_s2a, col_s2b, col_s2c, col_s2d, col_s2e = st.columns(5)
+        col_s2a, col_s2b, col_s2c, col_s2d = st.columns(4)
         with col_s2a:
             use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb")
+            pex_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pex_nr") if use_pexels else 0
         with col_s2b:
             use_pixabay = st.checkbox("Pixabay", value=bool(os.getenv("PIXABAY_API_KEY")), key="d_pix_cb")
+            pix_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pix_nr") if use_pixabay else 0
         with col_s2c:
             use_youtube_api = st.checkbox(
                 "YouTube API",
@@ -1293,6 +1295,7 @@ elif app_mode == "Director":
                     "run all queries. Selected YT clips download via yt-dlp."
                 ),
             )
+            yt_api_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_ytapi_nr") if use_youtube_api else 0
         with col_s2d:
             use_youtube_search = st.checkbox(
                 "YouTube Search",
@@ -1303,8 +1306,7 @@ elif app_mode == "Director":
                     "YouTube keywords. No YouTube Data API quota used."
                 ),
             )
-        with col_s2e:
-            d_num_results = st.number_input("Results per query", value=3, min_value=1, max_value=10, key="d_nr")
+            yt_search_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_yts_nr") if use_youtube_search else 0
 
         if use_youtube_search:
             yt_calls = sum(
@@ -1354,8 +1356,10 @@ elif app_mode == "Director":
                         use_pexels=use_pexels,
                         use_pixabay=use_pixabay,
                         use_youtube=use_youtube_search,
-                        num_results=d_num_results,
-                        youtube_num_results=d_num_results,
+                        pexels_num_results=pex_num,
+                        pixabay_num_results=pix_num,
+                        youtube_api_num_results=yt_api_num,
+                        youtube_search_num_results=yt_search_num,
                         use_youtube_api=use_youtube_api,
                         use_youtube_search=use_youtube_search,
                         progress_callback=lambda p: pbar2.progress(p),
@@ -1594,17 +1598,20 @@ elif app_mode == "Director":
                                    if s != slot_id]
                     also_lbl = (f"↗ also: {', '.join(str(x) for x in other_shots)}"
                                 if other_shots else "")
+                    title_safe = (c.get("title") or "—").replace(" ", "_").replace("'", "").replace('"', '')
+                    url_val = c.get("page_url") or c.get("url") or ""
+                    title_link = f"{url_val}#title={title_safe}" if url_val else ""
+
                     rows.append({
                         "Pick":        c.get("url") in sel_urls,
                         "Preview":     c.get("thumbnail") or "",
-                        "Title":       c.get("title") or "—",
+                        "Title":       title_link,
                         "Source":      (c.get("source") or "?").upper(),
                         "Size":        size,
                         "Dur":         f"{dur}s" if dur else "—",
                         "Also":        also_lbl,
                         "Description": c.get("description") or "",
                         "Query":       c.get("matched_query") or "",
-                        "Open":        c.get("page_url") or c.get("url") or "",
                     })
                 st.session_state[df_cache_key] = pd.DataFrame(rows)
 
@@ -1617,7 +1624,7 @@ elif app_mode == "Director":
                         "✓", help="Tick to add this clip to the download queue", width="small"
                     ),
                     "Preview":     st.column_config.ImageColumn("Preview", width="medium"),
-                    "Title":       st.column_config.TextColumn("Title", width="large"),
+                    "Title":       st.column_config.LinkColumn("Title", display_text=r"#title=(.*)", width="large"),
                     "Source":      st.column_config.TextColumn("Source", width="small"),
                     "Size":        st.column_config.TextColumn("Size", width="small"),
                     "Dur":         st.column_config.TextColumn("Dur", width="small"),
@@ -1627,9 +1634,8 @@ elif app_mode == "Director":
                     ),
                     "Description": st.column_config.TextColumn("Description", width="medium"),
                     "Query":       st.column_config.TextColumn("Matched query", width="medium"),
-                    "Open":        st.column_config.LinkColumn("Open", display_text="↗", width="small"),
                 },
-                disabled=["Preview", "Title", "Source", "Size", "Dur", "Also", "Description", "Query", "Open"],
+                disabled=["Preview", "Title", "Source", "Size", "Dur", "Also", "Description", "Query"],
                 hide_index=True,
                 use_container_width=True,
                 num_rows="fixed",
