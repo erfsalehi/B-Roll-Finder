@@ -76,6 +76,26 @@ def save_cache():
     except Exception as e:
         st.error(f"Error saving cache: {e}")
 
+def toggle_pick(url, cand_dict, shot_dict):
+    """Toggle a candidate in the shot's selected_results."""
+    current_urls = {r.get("url") for r in shot_dict.get("selected_results", [])}
+    if url in current_urls:
+        shot_dict["selected_results"] = [r for r in shot_dict["selected_results"] if r.get("url") != url]
+    else:
+        if "selected_results" not in shot_dict:
+            shot_dict["selected_results"] = []
+        shot_dict["selected_results"].append(cand_dict)
+    save_cache()
+
+
+def toggle_global_pick(url):
+    if 'picked_global_urls' not in st.session_state:
+        st.session_state.picked_global_urls = set()
+    if url in st.session_state.picked_global_urls:
+        st.session_state.picked_global_urls.remove(url)
+    else:
+        st.session_state.picked_global_urls.add(url)
+    save_cache()
 if not st.session_state.slots and os.path.exists(CACHE_FILE):
     load_cache()
 
@@ -470,6 +490,14 @@ def render_classic_mode():
     has_cands = any(len(s.get('video_results', [])) > 0 for s in st.session_state.slots)
     if has_cands:
         st.header("Step 5.5: Review Candidates")
+        
+        c_q_filter = st.selectbox(
+            "Quality Filter (Stock Sources)",
+            options=["All", "720p and above", "1080p and above"],
+            index=0,
+            key="classic_q_filter",
+            help="Filter displayed candidates by minimum resolution. (YouTube candidates are always shown)."
+        )
         with st.expander("🔍 View Search Results Gallery", expanded=True):
             st.caption("Review the footage found for each keyword. Titles and thumbnails are clickable.")
             
@@ -478,6 +506,13 @@ def render_classic_mode():
             for i, slot in enumerate(st.session_state.slots):
                 primary_kw = slot.get('keywords', ['Unknown'])[0]
                 for res in slot.get('video_results', []):
+                    # Apply quality filter
+                    h = res.get('height') or 0
+                    if c_q_filter == "720p and above" and h < 720 and res.get('source') != 'youtube':
+                        continue
+                    if c_q_filter == "1080p and above" and h < 1080 and res.get('source') != 'youtube':
+                        continue
+                    
                     title = res.get('title') or "Video"
                     url = res.get('page_url') or res.get('url') or ""
                     title_safe = str(title).replace(" ", "_").replace("'", "").replace('"', '')
@@ -839,33 +874,68 @@ def render_classic_mode():
         has_g_results = any(len(t.get('video_results', [])) > 0 for t in st.session_state.global_themes)
         if has_g_results:
             st.subheader("🌐 Global Footage Review")
-            with st.expander("View Global Candidates", expanded=True):
-                g_rows = []
-                for theme in st.session_state.global_themes:
-                    for res in theme.get('video_results', []):
-                        title = res.get('title') or "Video"
-                        url = res.get('page_url') or res.get('url') or ""
-                        title_safe = str(title).replace(" ", "_").replace("'", "").replace('"', '')
-                        title_link = f"{url}#title={title_safe}" if url else ""
-                        g_rows.append({
-                            "Theme": theme.get('name', 'General'),
-                            "Preview": res.get('thumbnail') or "",
-                            "Title": title_link,
-                            "Source": (res.get('source') or '?').upper(),
-                        })
-                if g_rows:
-                    st.data_editor(
-                        pd.DataFrame(g_rows),
-                        column_config={
-                            "Preview": st.column_config.ImageColumn("Preview", width="medium"),
-                            "Title": st.column_config.LinkColumn("Title", display_text=r"#title=(.*)", width="large"),
-                        },
-                        hide_index=True,
-                        use_container_width=True,
-                        disabled=True,
-                        key="global_review_table"
-                    )
+            
+            # Global Gallery Section
+            st.subheader("🖼️ Global Gallery")
+            
+            g_q_filter = st.selectbox(
+                "Filter Global by Quality",
+                options=["All", "720p and above", "1080p and above"],
+                index=0,
+                key="global_q_filter_gal_fix"
+            )
 
+            if 'picked_global_urls' not in st.session_state:
+                st.session_state.picked_global_urls = set()
+
+            g_all_cands = []
+            for theme in st.session_state.global_themes:
+                for res in theme.get('video_results', []):
+                    # Apply quality filter
+                    h = res.get('height') or 0
+                    if g_q_filter == "720p and above" and h < 720 and res.get('source') != 'youtube':
+                        continue
+                    if g_q_filter == "1080p and above" and h < 1080 and res.get('source') != 'youtube':
+                        continue
+                    g_all_cands.append((theme, res))
+
+            st.caption(f"**{len(st.session_state.picked_global_urls)} selected** · Showing {len(g_all_cands)} results.")
+
+            gn_cols = 3
+            for i_g in range(0, len(g_all_cands), gn_cols):
+                gcols = st.columns(gn_cols)
+                for j_g in range(gn_cols):
+                    if i_g + j_g < len(g_all_cands):
+                        theme, res = g_all_cands[i_g + j_g]
+                        thumb = res.get('thumbnail')
+                        url = res.get('page_url') or res.get('url')
+                        source = res.get('source', '').upper()
+                        w, h = res.get('width'), res.get('height')
+                        dur = res.get('duration')
+                        res_str = f"{w}x{h}" if w and h else "Resolution Unknown"
+                        dur_str = f"{dur}s" if dur else ""
+
+                        with gcols[j_g]:
+                            with st.container(border=True):
+                                if thumb:
+                                    st.markdown(
+                                        f'<div style="position: relative;">' 
+                                        f'<img src="{thumb}" style="width:100%; border-radius:4px; aspect-ratio:16/9; object-fit:cover; border:1px solid #444;">' 
+                                        f'<div style="position: absolute; top: 5px; right: 5px;">' 
+                                        f'<a href="{url}" target="_blank" style="text-decoration: none; background: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 4px; color: white; font-size: 12px; font-weight: bold;">📺 WATCH</a>' 
+                                        f'</div>' 
+                                        f'</div>',
+                                        unsafe_allow_html=True
+                                    )
+
+                                is_g_picked = res.get('url') in st.session_state.picked_global_urls
+                                g_btn_label = "✅ SELECTED" if is_g_picked else "⬜ PICK CLIP"
+                                if st.button(g_btn_label, key=f"gbtn_{hash(res.get('url'))}", use_container_width=True, type="primary" if is_g_picked else "secondary"):
+                                    toggle_global_pick(res.get('url'))
+                                    st.rerun()
+
+                                st.markdown(f"**{source}** · {res_str} · {dur_str}")
+                                st.caption(f"{theme['name']}: {res.get('title', 'Video')[:40]}...")
         if c_gf2.button("Start Downloading Global Footage"):
             # Update state from editor just in case keywords were changed, but DON'T clear results
             # if we have them. This is tricky. Let's just use what's in session state.
@@ -876,13 +946,15 @@ def render_classic_mode():
             if not has_any_results:
                 st.error("No links have been fetched yet. Please click 'Fetch Global Video Links' first.")
             else:
+                # Deduplicate and filter by st.session_state.picked_global_urls
                 for theme in st.session_state.global_themes:
                     results = theme.get('video_results', [])
                     if not results: continue
                     
                     for j, res in enumerate(results):
                         url = res.get('url')
-                        if not url: continue
+                        if not url or url not in st.session_state.picked_global_urls:
+                            continue
                         
                         source = res.get('source', 'stock')
                         safe_theme = "".join([c if c.isalnum() or c in " -_" else "_" for c in theme['name']]).strip()
@@ -1600,7 +1672,6 @@ elif app_mode == "Director":
         sel_urls = {r.get("url") for r in shot.get("selected_results", [])}
         skipped  = shot.get("skipped", False)
 
-        # Shot brief — bordered container groups the metadata visually.
         with st.container(border=True):
             st.markdown(
                 f"**Shot {slot_id}** &nbsp;·&nbsp; ⏱ {ts} &nbsp;·&nbsp; "
@@ -1615,174 +1686,149 @@ elif app_mode == "Director":
         if skipped:
             st.warning("⏭ This shot is marked as skipped. Selecting any clip will unskip it.")
 
-        # ── Candidate table ──────────────────────────────────────────────
         candidates = [c for c in shot["video_results"] if not c.get("irrelevant")]
-        hidden     = len(shot["video_results"]) - len(candidates)
-        if hidden:
-            st.caption(f"🚫 {hidden} off-topic candidate(s) hidden by AI ranking.")
 
         if not candidates:
             st.warning("No relevant candidates found for this shot.")
         else:
-            n_picked_in_shot = sum(1 for c in candidates if c.get("url") in sel_urls)
-            all_picked       = n_picked_in_shot == len(candidates)
-            none_picked      = n_picked_in_shot == 0
+            # ── Gallery Selection UI ───────────────────────────────────────
+            st.markdown("---")
+            st.subheader("🖼️ Selection Gallery")
+            
+            # Context at the top: Script & Keywords
+            with st.container(border=True):
+                st.markdown(f"💬 **Script:** _{shot.get('text', '')}_")
+                queries = shot.get("search_queries", [])
+                if queries:
+                    q_md = " &nbsp;·&nbsp; ".join(f"`{q}`" for q in queries)
+                    st.markdown(f"🔎 **Keywords:** {q_md}")
 
-            # Cache key for both the input df and Streamlit's stored edits.
-            # Includes a hash of the candidate URLs so re-ranking (which
-            # changes candidate order) invalidates the cache and starts
-            # fresh — but normal click interactions hit a stable cache.
-            _cand_sig = hash(tuple(c.get("url", "") for c in candidates))
-            df_cache_key = f"d_table_df_{slot_id}_{_cand_sig}"
-            table_key    = f"d_table_{slot_id}_{_cand_sig}"
+            # CSS for clickable images
+            st.markdown("""
+                <style>
+                /* Container for the whole gallery card */
+                .gallery-card {
+                    position: relative !important;
+                }
+                
+                /* Target the status button at the bottom and expand its clickable area */
+                .gallery-card [data-testid="stButton"] button {
+                    position: relative;
+                }
+                
+                .gallery-card [data-testid="stButton"] button::after {
+                    content: "";
+                    position: absolute;
+                    top: -450px; /* Pull up to cover image and metadata */
+                    left: -20px;
+                    right: -20px;
+                    bottom: -20px;
+                    z-index: 1;
+                    cursor: pointer;
+                }
 
-            def _invalidate_table_state():
-                """Drop the cached input df AND Streamlit's stored edits
-                so the next render rebuilds from the current selected_results.
-                Used by bulk actions to force a clean state without race."""
-                for k in (df_cache_key, table_key):
-                    st.session_state.pop(k, None)
+                .watch-btn-overlay {
+                    z-index: 10 !important;
+                    position: relative;
+                }
+                
+                /* Selection indicators */
+                .selection-border-active {
+                    border: 3px solid #00ff00 !important;
+                    border-radius: 6px;
+                }
+                </style>
+            """, unsafe_allow_html=True)
 
-            # Bulk-action row above the table.
-            ba1, ba2, ba3 = st.columns([2, 2, 6])
+            # Bulk Actions & Quality Filter
+            ba1, ba2, ba3, ba4 = st.columns([1, 1, 1.5, 1.5])
             with ba1:
-                if st.button(
-                    f"☑ Select all ({len(candidates)})",
-                    key=f"sel_all_{slot_id}",
-                    disabled=all_picked,
-                    use_container_width=True,
-                ):
-                    shot["selected_results"] = list(candidates)
+                # Use global quality filter key
+                q_filter_key = "director_global_q_filter"
+                temp_q_filter = st.session_state.get(q_filter_key, "All")
+                temp_filtered = [c for c in candidates]
+                if temp_q_filter == "720p and above":
+                    temp_filtered = [c for c in temp_filtered if (c.get("height") or 0) >= 720 or c.get("source") == "youtube"]
+                elif temp_q_filter == "1080p and above":
+                    temp_filtered = [c for c in temp_filtered if (c.get("height") or 0) >= 1080 or c.get("source") == "youtube"]
+                
+                if st.button("☑ Select All", key=f"sel_all_{slot_id}", use_container_width=True):
+                    shot["selected_results"] = list(temp_filtered)
                     shot["skipped"] = False
-                    _invalidate_table_state()
                     save_cache()
                     st.rerun()
             with ba2:
-                if st.button(
-                    f"☐ Clear ({n_picked_in_shot})",
-                    key=f"sel_none_{slot_id}",
-                    disabled=none_picked,
-                    use_container_width=True,
-                ):
+                if st.button("☐ Clear All", key=f"sel_none_{slot_id}", use_container_width=True):
                     shot["selected_results"] = []
-                    _invalidate_table_state()
                     save_cache()
                     st.rerun()
             with ba3:
-                st.caption(
-                    f"**{n_picked_in_shot} of {len(candidates)}** ticked for this shot. "
-                    f"Selections persist across shots and steps — nothing downloads until you click "
-                    f"**Download** in Step 6."
+                q_filter = st.selectbox(
+                    "Filter by Quality",
+                    options=["All", "720p and above", "1080p and above"],
+                    index=0,
+                    key="director_global_q_filter",
+                    label_visibility="collapsed",
+                    help="Filter candidates by minimum resolution."
                 )
 
-            # Build the input df ONCE per shot visit (per candidate signature)
-            # and cache it. Rebuilding it from `sel_urls` every render races
-            # with Streamlit's data_editor stored edits — symptom: a click
-            # appears to register, then the checkbox flips back to its
-            # rebuilt-from-sel_urls value. With the cache, data_editor owns
-            # state for the whole visit; we just read the edited result.
-            if df_cache_key not in st.session_state:
-                rows = []
-                for c in candidates:
-                    w, h = c.get("width"), c.get("height")
-                    size = f"{w}×{h}" if (w and h) else "—"
-                    dur  = c.get("duration")
-                    # Multi-pick hint: which OTHER shots have already picked this clip?
-                    other_shots = [s for s in global_pick_map.get(c.get("url"), [])
-                                   if s != slot_id]
-                    also_lbl = (f"↗ also: {', '.join(str(x) for x in other_shots)}"
-                                if other_shots else "")
-                    title_safe = (c.get("title") or "—").replace(" ", "_").replace("'", "").replace('"', '')
-                    url_val = c.get("page_url") or c.get("url") or ""
-                    title_link = f"{url_val}#title={title_safe}" if url_val else ""
+            # Apply quality filter (now q_filter is defined)
+            filtered_cands = [c for c in candidates]
+            if q_filter == "720p and above":
+                filtered_cands = [c for c in filtered_cands if (c.get("height") or 0) >= 720 or c.get("source") == "youtube"]
+            elif q_filter == "1080p and above":
+                filtered_cands = [c for c in filtered_cands if (c.get("height") or 0) >= 1080 or c.get("source") == "youtube"]
 
-                    rows.append({
-                        "Pick":        c.get("url") in sel_urls,
-                        "Preview":     c.get("thumbnail") or "",
-                        "Title":       title_link,
-                        "Source":      (c.get("source") or "?").upper(),
-                        "Size":        size,
-                        "Dur":         f"{dur}s" if dur else "—",
-                        "Also":        also_lbl,
-                        "Description": c.get("description") or "",
-                        "Query":       c.get("matched_query") or "",
-                    })
-                st.session_state[df_cache_key] = pd.DataFrame(rows)
+            n_picked_in_shot = sum(1 for c in filtered_cands if c.get("url") in sel_urls)
+            st.caption(f"**{n_picked_in_shot} selected** · Showing {len(filtered_cands)} of {len(candidates)} candidates.")
 
-            df = st.session_state[df_cache_key]
-
-            edited = st.data_editor(
-                df,
-                column_config={
-                    "Pick": st.column_config.CheckboxColumn(
-                        "✓", help="Tick to add this clip to the download queue", width="small"
-                    ),
-                    "Preview":     st.column_config.ImageColumn("Preview", width="medium"),
-                    "Title":       st.column_config.LinkColumn("Title", display_text=r"#title=(.*)", width="large"),
-                    "Source":      st.column_config.TextColumn("Source", width="small"),
-                    "Size":        st.column_config.TextColumn("Size", width="small"),
-                    "Dur":         st.column_config.TextColumn("Dur", width="small"),
-                    "Also":        st.column_config.TextColumn(
-                        "Also", width="small",
-                        help="Other shots that have already picked this same clip. Picking it here means it'll be hardlinked, not re-downloaded.",
-                    ),
-                    "Description": st.column_config.TextColumn("Description", width="medium"),
-                    "Query":       st.column_config.TextColumn("Matched query", width="medium"),
-                },
-                disabled=["Preview", "Title", "Source", "Size", "Dur", "Also", "Description", "Query"],
-                hide_index=True,
-                use_container_width=True,
-                num_rows="fixed",
-                key=table_key,
-            )
-
-            # ── Thumbnail Gallery ──────────────────────────────────────────
-            st.markdown("---")
-            st.subheader("🖼️ Quick Preview Gallery")
-            st.caption("Click any thumbnail to open the video in a new tab.")
-
-            n_cols = 4
-            for i in range(0, len(candidates), n_cols):
+            # Gallery Grid
+            n_cols = 3
+            for i_g in range(0, len(filtered_cands), n_cols):
                 cols = st.columns(n_cols)
-                for j in range(n_cols):
-                    if i + j < len(candidates):
-                        cand = candidates[i + j]
+                for j_g in range(n_cols):
+                    if i_g + j_g < len(filtered_cands):
+                        cand = filtered_cands[i_g + j_g]
                         thumb = cand.get("thumbnail")
                         url = cand.get("page_url") or cand.get("url")
                         title = cand.get("title", "Video")
                         source = cand.get("source", "").upper()
+                        w, h = cand.get("width"), cand.get("height")
+                        dur = cand.get("duration")
+                        res_str = f"{w}x{h}" if w and h else "Resolution Unknown"
+                        dur_str = f"{dur}s" if dur else ""
                         
-                        with cols[j]:
-                            if thumb:
-                                # Use HTML to make the image clickable
-                                st.markdown(
-                                    f'<a href="{url}" target="_blank">'
-                                    f'<img src="{thumb}" style="width:100%; border-radius:8px; aspect-ratio:16/9; object-fit:cover; border:1px solid #444;">'
-                                    f'</a>',
-                                    unsafe_allow_html=True
-                                )
-                            else:
-                                st.info("No preview available")
-                            
-                            st.markdown(f"**{source}** · {title[:40]}...")
+                        with cols[j_g]:
+                            is_picked = cand.get("url") in sel_urls
+                            # Use a unique class for the card to target with CSS
+                            st.markdown('<div class="gallery-card">', unsafe_allow_html=True)
+                            with st.container(border=True):
+                                if thumb:
+                                    # 1. The Image with overlays
+                                    selection_overlay = f'<div style="position: absolute; top: 5px; left: 5px; z-index: 10; background: #00ff00; color: black; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 2px solid black;">✓</div>' if is_picked else ""
+                                    
+                                    st.markdown(
+                                        f'<div style="position: relative; border: {"3px solid #00ff00" if is_picked else "1px solid #444"}; border-radius: 6px; overflow: hidden;">' 
+                                        f'{selection_overlay}'
+                                        f'<img src="{thumb}" style="width:100%; aspect-ratio:16/9; object-fit:cover;">' 
+                                        f'<div class="watch-btn-overlay" style="position: absolute; top: 5px; right: 5px; z-index: 10;">' 
+                                        f'<a href="{url}" target="_blank" style="text-decoration: none; background: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 4px; color: white; font-size: 12px; font-weight: bold;">📺 WATCH</a>' 
+                                        f'</div>' 
+                                        f'</div>',
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.info("No preview")
 
-            # Sync the edited Pick column back to shot["selected_results"].
-            # Row order matches `candidates` exactly. We only mutate the
-            # shot dict (and call save_cache) when the URL set actually
-            # changes so every render doesn't churn the cache file.
-            new_picked_urls = set()
-            for i, row in edited.iterrows():
-                if bool(row["Pick"]) and 0 <= i < len(candidates):
-                    u = candidates[i].get("url")
-                    if u:
-                        new_picked_urls.add(u)
-            if new_picked_urls != sel_urls:
-                shot["selected_results"] = [c for c in candidates if c.get("url") in new_picked_urls]
-                if shot["selected_results"]:
-                    shot["skipped"] = False
-                st.session_state[df_cache_key] = edited
-                save_cache()
-
+                                st.markdown(f"**{source}** · {res_str} · {dur_str}")
+                                st.caption(title[:60] + ("..." if len(title) > 60 else ""))
+                                
+                                # 3. The Status Button (Also serves as the full-card click trigger)
+                                btn_label = "✅ SELECTED" if is_picked else "⬜ PICK CLIP"
+                                if st.button(btn_label, key=f"galpick_{slot_id}_{hash(cand.get('url'))}", use_container_width=True, type="primary" if is_picked else "secondary"):
+                                    toggle_pick(cand.get("url"), cand, shot)
+                                    st.rerun()
+                            st.markdown('</div>', unsafe_allow_html=True)
         # ── Shot recap below the table ───────────────────────────────────
         # Repeat the shot's narration and the search queries that produced
         # this candidate set, so the editor doesn't need to scroll back up

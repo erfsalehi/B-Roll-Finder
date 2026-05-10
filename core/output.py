@@ -54,7 +54,14 @@ def generate_srt(slots: list) -> str:
     lines = []
     for i, slot in enumerate(slots, 1):
         start_ts = format_srt_time(slot['timestamp'])
-        end_ts = format_srt_time(slot.get('end_timestamp', slot['timestamp'] + 1))
+        
+        # Close gaps: Use next slot's start time if available
+        if i < len(slots):
+            end_val = slots[i]['timestamp']
+        else:
+            end_val = slot.get('end_timestamp', slot['timestamp'] + 1)
+            
+        end_ts = format_srt_time(end_val)
         
         primary_kw = "No keyword"
         keywords = slot.get('keywords', [])
@@ -68,11 +75,18 @@ def generate_srt(slots: list) -> str:
     return "\n".join(lines)
 
 def generate_transcription_srt(segments: list) -> str:
-    """Generates an SRT from Whisper segments."""
+    """Generates an SRT from Whisper segments, closing gaps between segments."""
     lines = []
     for i, seg in enumerate(segments, 1):
         start_ts = format_srt_time(seg['start'])
-        end_ts = format_srt_time(seg['end'])
+        
+        # Close gaps: Use next segment's start time if available
+        if i < len(segments):
+            end_val = segments[i]['start']
+        else:
+            end_val = seg['end']
+            
+        end_ts = format_srt_time(end_val)
         text = seg['text'].strip()
         
         lines.append(str(i))
