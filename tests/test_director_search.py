@@ -66,3 +66,48 @@ def test_fetch_director_footage_uses_youtube_keywords_for_classic(monkeypatch):
         "plain youtube query",
         "second query",
     ]
+
+
+def test_fetch_director_footage_can_use_api_and_classic_together(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_API_KEY", "yt-key")
+
+    def fake_fetch_query(query, source, api_key, num_results, errors):
+        assert source == "youtube"
+        return [{
+            "title": "api result",
+            "url": "https://youtube.test/api",
+            "source": "youtube",
+            "matched_query": query,
+        }]
+
+    def fake_search(keyword, num_results, errors):
+        return [{
+            "title": "classic result",
+            "url": "https://youtube.test/classic",
+            "source": "youtube",
+            "matched_query": keyword,
+        }]
+
+    monkeypatch.setattr("core.director_search._fetch_query", fake_fetch_query)
+    monkeypatch.setattr("core.director_search.search_youtube_classic", fake_search)
+
+    shots = [{
+        "slot_id": 1,
+        "priority": "medium",
+        "search_queries": ["director api query"],
+        "youtube_keywords": ["classic search query"],
+    }]
+
+    updated = fetch_director_footage(
+        shots,
+        use_pexels=False,
+        use_pixabay=False,
+        use_youtube_api=True,
+        use_youtube_search=True,
+        youtube_num_results=2,
+    )
+
+    assert sorted(r["matched_query"] for r in updated[0]["video_results"]) == [
+        "classic search query",
+        "director api query",
+    ]

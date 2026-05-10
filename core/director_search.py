@@ -58,7 +58,9 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
                            num_results: int = 3, max_workers: int = 6,
                            progress_callback=None, errors: list = None,
                            youtube_num_results: int = 3,
-                           youtube_mode: str = "classic") -> list:
+                           youtube_mode: str = "classic",
+                           use_youtube_api: bool = False,
+                           use_youtube_search: bool = None) -> list:
     """
     Stage 2: For each shot, run search_queries across the enabled sources
     in parallel and deduplicate by URL.
@@ -74,6 +76,9 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
     pexels_key = os.getenv("PEXELS_API_KEY", "")
     pixabay_key = os.getenv("PIXABAY_API_KEY", "")
     youtube_key = os.getenv("YOUTUBE_API_KEY", "")
+    if use_youtube_search is None:
+        use_youtube_search = use_youtube and youtube_mode == "classic"
+    use_youtube_api = bool(use_youtube_api or (use_youtube and youtube_mode == "data_api"))
 
     total = len(shots)
 
@@ -86,7 +91,7 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
 
         queries = shot.get('search_queries', [])
         youtube_queries = shot.get('youtube_keywords') or queries[:1]
-        if not queries and not (use_youtube and youtube_queries):
+        if not queries and not (use_youtube_search and youtube_queries):
             shot['video_results'] = []
             if progress_callback:
                 progress_callback((idx + 1) / total)
@@ -100,7 +105,7 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
                 jobs.append((q, 'pexels', pexels_key, num_results))
             if use_pixabay and pixabay_key:
                 jobs.append((q, 'pixabay', pixabay_key, num_results))
-        if use_youtube and youtube_mode == "data_api" and youtube_key and queries:
+        if use_youtube_api and youtube_key and queries:
             jobs.append((queries[0], 'youtube', youtube_key, youtube_num_results))
 
         results = []
@@ -121,7 +126,7 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
                 except Exception as e:
                     errors.append(f"Fetch error for shot {shot.get('slot_id')}: {e}")
 
-        if use_youtube and youtube_mode == "classic" and youtube_queries:
+        if use_youtube_search and youtube_queries:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futures = {
                     ex.submit(search_youtube_classic, q, youtube_num_results, errors): q

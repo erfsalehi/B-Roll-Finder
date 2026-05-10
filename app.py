@@ -1270,10 +1270,10 @@ elif app_mode == "Director":
         with col_s2b:
             use_pixabay = st.checkbox("Pixabay", value=bool(os.getenv("PIXABAY_API_KEY")), key="d_pix_cb")
         with col_s2c:
-            use_youtube = st.checkbox(
-                "YouTube",
-                value=True,
-                key="d_yt_cb",
+            use_youtube_api = st.checkbox(
+                "YouTube API",
+                value=bool(os.getenv("YOUTUBE_API_KEY")),
+                key="d_yt_api_cb",
                 help=(
                     "Adds YouTube as a search source. Each YT search costs "
                     "100 quota units (default daily quota: 10,000), so to stay "
@@ -1283,26 +1283,28 @@ elif app_mode == "Director":
                 ),
             )
         with col_s2d:
-            youtube_mode_label = st.selectbox(
-                "YouTube mode",
-                ["Classic search", "Data API"],
-                key="d_yt_mode",
-                help="Classic search matches the older Finder behavior and usually gives more natural YouTube results.",
+            use_youtube_search = st.checkbox(
+                "YouTube Search",
+                value=True,
+                key="d_yt_search_cb",
+                help=(
+                    "Uses Classic Finder-style yt-dlp search and the Step 2.5 "
+                    "YouTube keywords. No YouTube Data API quota used."
+                ),
             )
         with col_s2e:
             d_num_results = st.number_input("Results per query", value=3, min_value=1, max_value=10, key="d_nr")
-        youtube_mode = "classic" if youtube_mode_label == "Classic search" else "data_api"
 
-        if use_youtube and youtube_mode == "classic":
+        if use_youtube_search:
             yt_calls = sum(
                 len(s.get("youtube_keywords") or s.get("search_queries", [])[:1])
                 for s in st.session_state.director_shots
                 if s.get("priority") != "none"
             )
             st.caption(
-                f"YouTube Classic enabled - ~{yt_calls} yt-dlp search(es), no YouTube Data API quota used."
+                f"YouTube Search enabled - ~{yt_calls} yt-dlp search(es), no YouTube Data API quota used."
             )
-        elif use_youtube and youtube_mode == "data_api" and os.getenv("YOUTUBE_API_KEY"):
+        if use_youtube_api and os.getenv("YOUTUBE_API_KEY"):
             yt_calls = sum(
                 1 for s in st.session_state.director_shots
                 if s.get("priority") != "none" and s.get("search_queries")
@@ -1318,10 +1320,11 @@ elif app_mode == "Director":
                 st.error("No network connection detected.")
             elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
                  not (use_pixabay and os.getenv("PIXABAY_API_KEY")) and \
-                 not (use_youtube and (youtube_mode == "classic" or os.getenv("YOUTUBE_API_KEY"))):
-                st.error("No search sources enabled. Add Pexels/Pixabay keys or enable YouTube Classic search.")
-            elif use_youtube and youtube_mode == "data_api" and not os.getenv("YOUTUBE_API_KEY"):
-                st.error("YouTube Data API mode requires a YouTube API key. Switch to Classic search to use yt-dlp without API quota.")
+                 not use_youtube_search and \
+                 not (use_youtube_api and os.getenv("YOUTUBE_API_KEY")):
+                st.error("No search sources enabled. Add Pexels/Pixabay keys or enable YouTube Search.")
+            elif use_youtube_api and not os.getenv("YOUTUBE_API_KEY"):
+                st.error("YouTube API requires a YouTube API key. Untick YouTube API or add the key in Setup.")
             else:
                 st.session_state.is_fetching = True
                 d_fetch_errors = []
@@ -1333,10 +1336,11 @@ elif app_mode == "Director":
                         st.session_state.director_shots,
                         use_pexels=use_pexels,
                         use_pixabay=use_pixabay,
-                        use_youtube=use_youtube,
+                        use_youtube=use_youtube_search,
                         num_results=d_num_results,
                         youtube_num_results=d_num_results,
-                        youtube_mode=youtube_mode,
+                        use_youtube_api=use_youtube_api,
+                        use_youtube_search=use_youtube_search,
                         progress_callback=lambda p: pbar2.progress(p),
                         errors=d_fetch_errors,
                     )
