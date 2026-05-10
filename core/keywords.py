@@ -174,23 +174,42 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
             {"role": "user",   "content": user_content},
         ],
     }
-    resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
+    try:
+        resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+    except HTTPError as e:
+        status_code = e.response.status_code
+        try:
+            error_json = e.response.json()
+            error_msg = error_json.get("error", {}).get("message", str(e))
+        except:
+            error_msg = e.response.text or str(e)
+        
+        # Re-raise with more context
+        raise HTTPError(f"OpenRouter API error {status_code}: {error_msg}", response=e.response)
+        
     return json.loads(resp.json()["choices"][0]["message"]["content"])
 
 
 def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 2000) -> dict:
     """
-    Try Groq first. On rate-limit, fall back to OpenRouter automatically.
-    All other callers should use this instead of _call_groq_json directly.
+    Try Groq first. On any Groq-related error (rate-limit, overload, etc.), 
+    fall back to OpenRouter automatically if a key is available.
     """
     try:
         return _call_groq_json(client, system_prompt, user_content,
                                temperature=temperature, max_tokens=max_tokens)
-    except GroqRateLimitError:
-        print("Groq rate limit hit — falling back to OpenRouter.")
-        return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
+    except Exception as e:
+        # Check if it's a Groq error or something else we should fall back on
+        # The SDK raises various errors from groq.APIError
+        import groq
+        if isinstance(e, (groq.APIError, GroqRateLimitError)):
+            print(f"Groq API error ({type(e).__name__}) — falling back to OpenRouter.")
+            return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
+        else:
+            # If it's something else (like a code error), re-raise it
+            raise e
 
 def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 500) -> str:
@@ -208,11 +227,16 @@ def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
             max_tokens=max_tokens,
         )
         return response.choices[0].message.content.strip()
-    except GroqRateLimitError:
-        print("Groq rate limit hit — falling back to OpenRouter.")
+    except Exception as e:
+        import groq
+        if not isinstance(e, (groq.APIError, GroqRateLimitError)):
+            raise e
+            
+        print(f"Groq API error ({type(e).__name__}) — falling back to OpenRouter.")
         api_key = os.getenv("OPENROUTER_API_KEY", "")
         if not api_key:
             raise ValueError("OpenRouter API key is missing for fallback.")
+            
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type":  "application/json",
@@ -226,8 +250,17 @@ def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
                 {"role": "user",   "content": user_content},
             ],
         }
-        resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
-        resp.raise_for_status()
+        try:
+            resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
+            resp.raise_for_status()
+        except HTTPError as e2:
+            status_code = e2.response.status_code
+            try:
+                error_msg = e2.response.json().get("error", {}).get("message", str(e2))
+            except:
+                error_msg = e2.response.text or str(e2)
+            raise HTTPError(f"OpenRouter fallback error {status_code}: {error_msg}")
+            
         return resp.json()["choices"][0]["message"]["content"].strip()
 
 def generate_video_topic(script_text: str, api_key: str) -> str:
