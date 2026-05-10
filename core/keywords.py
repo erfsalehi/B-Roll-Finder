@@ -7,8 +7,7 @@ from groq import Groq, RateLimitError as GroqRateLimitError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type, retry_if_exception
 
 GROQ_MODEL       = "llama-3.3-70b-versatile"
-GROQ_MODEL_SMALL = "llama-3.1-8b-instant"
-OPENROUTER_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
+OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 OPENROUTER_BASE  = "https://openrouter.ai/api/v1/chat/completions"
 
 def load_prompt() -> str:
@@ -132,18 +131,16 @@ def load_json_prompt() -> str:
     retry=retry_if_not_exception_type(GroqRateLimitError)
 )
 def _call_groq_json(client: Groq, system_prompt: str, block: str,
-                    model: str = GROQ_MODEL, temperature: float = 0.7, 
-                    max_tokens: int = 2000) -> dict:
+                    temperature: float = 0.7, max_tokens: int = 2000) -> dict:
     response = client.chat.completions.create(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": block}
         ],
-        model=model,
+        model=GROQ_MODEL,
         temperature=temperature,
         max_tokens=max_tokens,
-        # Only use response_format for models that support it
-        response_format={"type": "json_object"} if "llama3" in model.lower() or "llama-3" in model.lower() else None
+        response_format={"type": "json_object"}
     )
     return json.loads(response.choices[0].message.content)
 
@@ -197,41 +194,28 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
 def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 2000) -> dict:
     """
-    Multi-stage fallback:
-    1. Try Groq 70B (Best quality)
-    2. Try Groq 8B (Higher rate limits, faster)
-    3. Try OpenRouter (Final fallback)
+    Try Groq first. On any Groq-related error (rate-limit, overload, etc.), 
+    fall back to OpenRouter automatically if a key is available.
     """
-    import groq
-    # 1. Try Groq 70B
     try:
         return _call_groq_json(client, system_prompt, user_content,
-                               model=GROQ_MODEL, temperature=temperature, max_tokens=max_tokens)
+                               temperature=temperature, max_tokens=max_tokens)
     except Exception as e:
-        if not isinstance(e, (groq.APIError, GroqRateLimitError)):
-            raise e
-        print(f"Groq 70B failed ({type(e).__name__}) — trying Groq 8B...")
-        
-        # 2. Try Groq 8B
-        try:
-            return _call_groq_json(client, system_prompt, user_content,
-                                   model=GROQ_MODEL_SMALL, temperature=temperature, max_tokens=max_tokens)
-        except Exception as e2:
-            if not isinstance(e2, (groq.APIError, GroqRateLimitError)):
-                raise e2
-            print(f"Groq 8B also failed — falling back to OpenRouter.")
-            
-            # 3. Final Fallback: OpenRouter
+        # Check if it's a Groq error or something else we should fall back on
+        # The SDK raises various errors from groq.APIError
+        import groq
+        if isinstance(e, (groq.APIError, GroqRateLimitError)):
+            print(f"Groq API error ({type(e).__name__}) — falling back to OpenRouter.")
             return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
+        else:
+            # If it's something else (like a code error), re-raise it
+            raise e
 
 def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 500) -> str:
     """
-    Multi-stage fallback for string responses.
+    Try Groq first for a string response. On rate-limit, fall back to OpenRouter.
     """
-    import groq
-    
-    # 1. Try Groq 70B
     try:
         response = client.chat.completions.create(
             messages=[
@@ -244,57 +228,40 @@ def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
+        import groq
         if not isinstance(e, (groq.APIError, GroqRateLimitError)):
             raise e
-        print(f"Groq 70B failed — trying Groq 8B...")
-        
-        # 2. Try Groq 8B
-        try:
-            response = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
-                model=GROQ_MODEL_SMALL,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e2:
-            if not isinstance(e2, (groq.APIError, GroqRateLimitError)):
-                raise e2
-            print(f"Groq 8B failed — falling back to OpenRouter.")
             
-            # 3. Final Fallback: OpenRouter
-            api_key = os.getenv("OPENROUTER_API_KEY", "")
-            if not api_key:
-                raise ValueError("OpenRouter API key is missing for fallback.")
-                
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type":  "application/json",
-            }
-            payload = {
-                "model":           OPENROUTER_MODEL,
-                "temperature":     temperature,
-                "max_tokens":      max_tokens,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_content},
-                ],
-            }
+        print(f"Groq API error ({type(e).__name__}) — falling back to OpenRouter.")
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not api_key:
+            raise ValueError("OpenRouter API key is missing for fallback.")
+            
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        }
+        payload = {
+            "model":           OPENROUTER_MODEL,
+            "temperature":     temperature,
+            "max_tokens":      max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_content},
+            ],
+        }
+        try:
+            resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
+            resp.raise_for_status()
+        except HTTPError as e2:
+            status_code = e2.response.status_code
             try:
-                resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
-                resp.raise_for_status()
-            except HTTPError as e3:
-                status_code = e3.response.status_code
-                try:
-                    error_msg = e3.response.json().get("error", {}).get("message", str(e3))
-                except:
-                    error_msg = e3.response.text or str(e3)
-                raise HTTPError(f"OpenRouter fallback error {status_code}: {error_msg}")
-                
-            return resp.json()["choices"][0]["message"]["content"].strip()
+                error_msg = e2.response.json().get("error", {}).get("message", str(e2))
+            except:
+                error_msg = e2.response.text or str(e2)
+            raise HTTPError(f"OpenRouter fallback error {status_code}: {error_msg}")
+            
+        return resp.json()["choices"][0]["message"]["content"].strip()
 
 def generate_video_topic(script_text: str, api_key: str) -> str:
     """Analyzes the script and suggests a brief one-sentence topic description."""
