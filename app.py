@@ -1028,6 +1028,10 @@ elif app_mode == "Director":
                                              value=os.getenv("OPENROUTER_API_KEY", ""),
                                              type="password", key="d_or",
                                              help="Optional fallback when Groq returns rate-limit errors.")
+            openrouter_2_input = st.text_input("OpenRouter Key 2 (Fallback)",
+                                               value=os.getenv("OPENROUTER_API_KEY_2", ""),
+                                               type="password", key="d_or_2",
+                                               help="Second fallback key if the first OpenRouter key is also limited.")
             st.markdown("&nbsp;")  # vertical spacer to align rows
         if st.button("Save API Keys", key="d_save_keys", type="primary"):
             if groq_input:
@@ -1036,6 +1040,7 @@ elif app_mode == "Director":
                 if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
                 if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
                 if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
+                if openrouter_2_input: set_key(ENV_FILE, "OPENROUTER_API_KEY_2", openrouter_2_input)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
             else:

@@ -7,7 +7,7 @@ from groq import Groq, RateLimitError as GroqRateLimitError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type, retry_if_exception
 
 GROQ_MODEL       = "llama-3.3-70b-versatile"
-OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+OPENROUTER_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
 OPENROUTER_BASE  = "https://openrouter.ai/api/v1/chat/completions"
 
 def load_prompt() -> str:
@@ -145,58 +145,84 @@ def _call_groq_json(client: Groq, system_prompt: str, block: str,
     return json.loads(response.choices[0].message.content)
 
 
-@retry(
-    wait=wait_exponential(multiplier=1, min=4, max=20),
-    stop=stop_after_attempt(5),
-    # Retry on 429 Rate Limit, 5xx Server Errors, and connection issues
-    retry=retry_if_exception(lambda e: 
-        (isinstance(e, HTTPError) and (e.response.status_code == 429 or e.response.status_code >= 500)) or
-        isinstance(e, (ConnectionError, Timeout))
-    )
-)
 def _call_openrouter_json(system_prompt: str, user_content: str,
                           temperature: float = 0.7, max_tokens: int = 2000) -> dict:
-    """Calls OpenRouter with the shared fallback model. Raises on failure."""
-    api_key = os.getenv("OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise ValueError("OpenRouter API key is missing. Add it in Step 1 settings.")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type":  "application/json",
-    }
-    payload = {
-        "model":           OPENROUTER_MODEL,
-        "temperature":     temperature,
-        "max_tokens":      max_tokens,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_content},
-        ],
-    }
-    resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    return json.loads(resp.json()["choices"][0]["message"]["content"])
+    """Calls OpenRouter with fallback between multiple keys if provided."""
+    keys = [os.getenv("OPENROUTER_API_KEY", ""), os.getenv("OPENROUTER_API_KEY_2", "")]
+    active_keys = [k.strip() for k in keys if k and k.strip()]
+    
+    if not active_keys:
+        raise ValueError("No OpenRouter API keys found. Add at least one in Setup.")
+
+    last_error = None
+    for i, api_key in enumerate(active_keys):
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        }
+        payload = {
+            "model":           OPENROUTER_MODEL,
+            "temperature":     temperature,
+            "max_tokens":      max_tokens,
+            "response_format": {"type": "json_object"} if "llama" in OPENROUTER_MODEL.lower() else None,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_content},
+            ],
+        }
+        try:
+            resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
+            resp.raise_for_status()
+            return json.loads(resp.json()["choices"][0]["message"]["content"])
+        except Exception as e:
+            last_error = e
+            status_code = getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
+            
+            # If it's a rate limit or provider error, try the next key
+            if status_code == 429 or status_code >= 500:
+                print(f"OpenRouter Key {i+1} failed with status {status_code}. Trying next key...")
+                continue
+            
+            # If it's a 401/403/400, it's a configuration error, don't try next key unless we want to
+            if status_code in (401, 403):
+                print(f"OpenRouter Key {i+1} authentication error. Trying next key...")
+                continue
+                
+            raise e
+            
+    if last_error:
+        # Re-wrap error for better reporting
+        if hasattr(last_error, "response"):
+            try:
+                msg = last_error.response.json().get("error", {}).get("message", str(last_error))
+            except:
+                msg = last_error.response.text or str(last_error)
+            raise HTTPError(f"OpenRouter all keys failed. Last error ({last_error.response.status_code}): {msg}")
+        raise last_error
 
 
 def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 2000) -> dict:
     """
-    Try Groq first. On rate-limit, fall back to OpenRouter automatically.
-    All other callers should use this instead of _call_groq_json directly.
+    Try Groq first. On any Groq-related error (rate-limit, overload, etc.), 
+    fall back to OpenRouter automatically.
     """
+    import groq
     try:
         return _call_groq_json(client, system_prompt, user_content,
                                temperature=temperature, max_tokens=max_tokens)
-    except GroqRateLimitError:
-        print("Groq rate limit hit — falling back to OpenRouter.")
-        return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
+    except Exception as e:
+        if isinstance(e, (groq.APIError, GroqRateLimitError)):
+            print(f"Groq failed ({type(e).__name__}) — falling back to OpenRouter.")
+            return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
+        raise e
 
 def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 500) -> str:
     """
     Try Groq first for a string response. On rate-limit, fall back to OpenRouter.
     """
+    import groq
     try:
         response = client.chat.completions.create(
             messages=[
@@ -208,27 +234,44 @@ def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
             max_tokens=max_tokens,
         )
         return response.choices[0].message.content.strip()
-    except GroqRateLimitError:
-        print("Groq rate limit hit — falling back to OpenRouter.")
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
-        if not api_key:
+    except Exception as e:
+        if not isinstance(e, (groq.APIError, GroqRateLimitError)):
+            raise e
+            
+        print(f"Groq failed ({type(e).__name__}) — falling back to OpenRouter.")
+        
+        # String fallback for OpenRouter
+        # We reuse _call_openrouter_json logic but adapted for strings
+        keys = [os.getenv("OPENROUTER_API_KEY", ""), os.getenv("OPENROUTER_API_KEY_2", "")]
+        active_keys = [k.strip() for k in keys if k and k.strip()]
+        if not active_keys:
             raise ValueError("OpenRouter API key is missing for fallback.")
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type":  "application/json",
-        }
-        payload = {
-            "model":           OPENROUTER_MODEL,
-            "temperature":     temperature,
-            "max_tokens":      max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_content},
-            ],
-        }
-        resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
+            
+        for i, api_key in enumerate(active_keys):
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type":  "application/json",
+            }
+            payload = {
+                "model":           OPENROUTER_MODEL,
+                "temperature":     temperature,
+                "max_tokens":      max_tokens,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_content},
+                ],
+            }
+            try:
+                resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"].strip()
+            except Exception as e2:
+                status_code = getattr(e2.response, "status_code", 0) if hasattr(e2, "response") else 0
+                if status_code == 429 or status_code >= 500 or status_code in (401, 403):
+                    print(f"OpenRouter Key {i+1} fallback failed. Trying next key...")
+                    continue
+                raise e2
+        raise e
 
 def generate_video_topic(script_text: str, api_key: str) -> str:
     """Analyzes the script and suggests a brief one-sentence topic description."""
