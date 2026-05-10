@@ -1326,7 +1326,13 @@ elif app_mode == "Director":
                 f"~{est_units:,} quota unit(s) (daily quota is 10,000)."
             )
 
-        if st.button("Fetch Candidates", disabled=st.session_state.is_fetching, key="d_fetch"):
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            fetch_clicked = st.button("Fetch Candidates", disabled=st.session_state.is_fetching, key="d_fetch", use_container_width=True)
+        with col_btn2:
+            retry_clicked = st.button("Retry Failed/Empty", disabled=st.session_state.is_fetching, key="d_retry", use_container_width=True, help="Only searches for shots that currently have 0 candidates. Preserves existing successful searches.")
+
+        if fetch_clicked or retry_clicked:
             if not check_network():
                 st.error("No network connection detected.")
             elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
@@ -1354,6 +1360,7 @@ elif app_mode == "Director":
                         use_youtube_search=use_youtube_search,
                         progress_callback=lambda p: pbar2.progress(p),
                         errors=d_fetch_errors,
+                        retry_only=retry_clicked,
                     )
                     pbar2.progress(1.0)
                     total_found = sum(len(s.get("video_results", [])) for s in st.session_state.director_shots)

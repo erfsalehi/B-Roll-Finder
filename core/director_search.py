@@ -60,7 +60,8 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
                            youtube_num_results: int = 3,
                            youtube_mode: str = "classic",
                            use_youtube_api: bool = False,
-                           use_youtube_search: bool = None) -> list:
+                           use_youtube_search: bool = None,
+                           retry_only: bool = False) -> list:
     """
     Stage 2: For each shot, run search_queries across the enabled sources
     in parallel and deduplicate by URL.
@@ -84,7 +85,13 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
 
     for idx, shot in enumerate(shots):
         if shot.get('priority') == 'none':
-            shot['video_results'] = []
+            if not retry_only:
+                shot['video_results'] = []
+            if progress_callback:
+                progress_callback((idx + 1) / total)
+            continue
+
+        if retry_only and len(shot.get('video_results', [])) > 0:
             if progress_callback:
                 progress_callback((idx + 1) / total)
             continue
@@ -92,7 +99,8 @@ def fetch_director_footage(shots: list, use_pexels: bool = True, use_pixabay: bo
         queries = shot.get('search_queries', [])
         youtube_queries = shot.get('youtube_keywords') or queries[:1]
         if not queries and not (use_youtube_search and youtube_queries):
-            shot['video_results'] = []
+            if not retry_only:
+                shot['video_results'] = []
             if progress_callback:
                 progress_callback((idx + 1) / total)
             continue
