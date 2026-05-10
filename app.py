@@ -54,8 +54,8 @@ if "transcription_segments" not in st.session_state:
     st.session_state.transcription_segments = []
 if "transcription_chunks" not in st.session_state:
     st.session_state.transcription_chunks = []
-if "active_chunk_idx" not in st.session_state:
-    st.session_state.active_chunk_idx = 0
+if "active_chunk_indices" not in st.session_state:
+    st.session_state.active_chunk_indices = [0]
 if "global_themes" not in st.session_state:
     st.session_state.global_themes = []
 if "dm" not in st.session_state:
@@ -931,7 +931,7 @@ elif app_mode == "Director":
                                     segments, target_duration=120.0, max_duration=180.0
                                 )
                                 st.session_state.transcription_chunks = chunks
-                                st.session_state.active_chunk_idx = 0
+                                st.session_state.active_chunk_indices = [0]
                                 save_cache()
                                 st.success(
                                     f"Transcribed and split into {len(chunks)} chunk(s). "
@@ -947,7 +947,7 @@ elif app_mode == "Director":
                                  help="Discard the current transcription and chunks."):
                         st.session_state.transcription_segments = []
                         st.session_state.transcription_chunks   = []
-                        st.session_state.active_chunk_idx       = 0
+                        st.session_state.active_chunk_indices   = [0]
                         st.session_state.script_text            = ""
                         save_cache()
                         st.rerun()
@@ -975,40 +975,45 @@ elif app_mode == "Director":
                 preview += "…"
             return f"Chunk {i+1} · {ms_s}–{ms_e} · {wc} words · \"{preview}\""
 
-        # selectbox stores the index directly via the format_func pattern
-        active_idx = st.selectbox(
-            "Active chunk",
+        # multiselect stores the indices directly via the format_func pattern
+        active_indices = st.multiselect(
+            "Active chunks",
             options=list(range(len(chunks))),
             format_func=_format_chunk,
-            index=min(st.session_state.get("active_chunk_idx", 0), len(chunks) - 1),
-            key="active_chunk_idx",
+            default=st.session_state.get("active_chunk_indices", [0] if chunks else []),
+            key="active_chunk_indices",
         )
 
-        active = chunks[active_idx]
-        # Compact stats for the active chunk
-        c_dur = active['end'] - active['start']
-        c_words = len(active['text'].split())
+        if not active_indices:
+            st.warning("Please select at least one chunk to proceed.")
+            st.stop()
+
+        # Compact stats for the active chunks
+        c_dur = sum(chunks[i]['end'] - chunks[i]['start'] for i in active_indices)
+        c_words = sum(len(chunks[i]['text'].split()) for i in active_indices)
         c_wps = c_words / c_dur if c_dur > 0 else 0
         s1, s2, s3 = st.columns(3)
         with s1: st.metric("Length", f"{c_dur/60:.1f} min")
         with s2: st.metric("Words", f"{c_words:,}")
         with s3: st.metric("Speaking rate", f"{c_wps:.2f} wps")
 
-        with st.expander(f"📝 Read Chunk {active_idx + 1} text", expanded=False):
+        idx_str = ", ".join(str(i+1) for i in sorted(active_indices))
+        with st.expander(f"📝 Read text for Chunk(s) {idx_str}", expanded=False):
             if st.session_state.transcription_segments:
-                # Find segments that belong to this chunk
-                chunk_start = active['start']
-                chunk_end = active['end']
-                st.write(f"**AI Transcription for Chunk {active_idx + 1}:**")
-                for seg in st.session_state.transcription_segments:
-                    if seg['start'] >= chunk_start and seg['end'] <= chunk_end:
-                        start_m = int(seg['start'] // 60)
-                        start_s = int(seg['start'] % 60)
-                        st.write(f"**[{start_m:02d}:{start_s:02d}]** {seg['text']}")
+                st.write(f"**AI Transcription for Chunk(s) {idx_str}:**")
+                for i in sorted(active_indices):
+                    chunk_start = chunks[i]['start']
+                    chunk_end = chunks[i]['end']
+                    for seg in st.session_state.transcription_segments:
+                        if seg['start'] >= chunk_start and seg['end'] <= chunk_end:
+                            start_m = int(seg['start'] // 60)
+                            start_s = int(seg['start'] % 60)
+                            st.write(f"**[{start_m:02d}:{start_s:02d}]** {seg['text']}")
             else:
+                combined_text = "\n\n".join(chunks[i]["text"] for i in sorted(active_indices))
                 st.text_area(
-                    "Chunk text", value=active["text"], height=200,
-                    disabled=True, key=f"chunk_text_{active_idx}",
+                    "Chunk text", value=combined_text, height=200,
+                    disabled=True, key=f"chunk_text_{hash(tuple(active_indices))}",
                     label_visibility="collapsed",
                 )
 
@@ -1060,34 +1065,40 @@ elif app_mode == "Director":
             st.error("Upload audio and click *Transcribe & chunk* in Step 1 first.")
         else:
             chunks = st.session_state.transcription_chunks
-            chunk_idx = min(st.session_state.get("active_chunk_idx", 0), len(chunks) - 1)
-            active_chunk = chunks[chunk_idx]
-            chunk_segments = active_chunk.get("segments", [])
+            indices = st.session_state.get("active_chunk_indices", [])
+            if not indices:
+                st.error("Select at least one chunk in Step 1.")
+            else:
+                chunk_segments = []
+                for i in sorted(indices):
+                    chunk_segments.extend(chunks[i].get("segments", []))
 
-            pbar = st.progress(0)
-            status = st.empty()
-            status.info(
-                f"Generating shot list for **Chunk {chunk_idx + 1}** "
-                f"({len(chunk_segments)} segments, "
-                f"{(active_chunk['end'] - active_chunk['start']) / 60:.1f} min)…"
-            )
+                pbar = st.progress(0)
+                status = st.empty()
+                c_dur = sum(chunks[i]['end'] - chunks[i]['start'] for i in indices)
+                idx_str = ", ".join(str(i+1) for i in sorted(indices))
+                status.info(
+                    f"Generating shot list for **Chunk(s) {idx_str}** "
+                    f"({len(chunk_segments)} segments, "
+                    f"{c_dur / 60:.1f} min)…"
+                )
 
-            try:
-                from core.director import generate_shot_list_from_transcription
-                st.session_state.director_shots = generate_shot_list_from_transcription(
-                    chunk_segments,
-                    os.getenv("GROQ_API_KEY"),
-                    progress_callback=lambda p: pbar.progress(p),
-                    custom_instructions=custom_instructions,
-                    video_topic=d_video_topic,
-                )
-                pbar.progress(1.0)
-                status.empty()
-                st.success(
-                    f"Shot list generated for Chunk {chunk_idx + 1} — "
-                    f"{len(st.session_state.director_shots)} shot(s). Continue to Step 2.5 or Step 3."
-                )
-                save_cache()
+                try:
+                    from core.director import generate_shot_list_from_transcription
+                    st.session_state.director_shots = generate_shot_list_from_transcription(
+                        chunk_segments,
+                        os.getenv("GROQ_API_KEY"),
+                        progress_callback=lambda p: pbar.progress(p),
+                        custom_instructions=custom_instructions,
+                        video_topic=d_video_topic,
+                    )
+                    pbar.progress(1.0)
+                    status.empty()
+                    st.success(
+                        f"Shot list generated for Chunk(s) {idx_str} — "
+                        f"{len(st.session_state.director_shots)} shot(s). Continue to Step 2.5 or Step 3."
+                    )
+                    save_cache()
             except Exception as e:
                 st.error(f"Error generating shot list: {e}")
 
@@ -1771,7 +1782,8 @@ elif app_mode == "Director":
                     cleaned = "-".join(cleaned.split()).lower()
                     return cleaned[:max_len].strip("-") or ""
 
-                chunk_num = st.session_state.get("active_chunk_idx", 0) + 1
+                indices = st.session_state.get("active_chunk_indices", [0])
+                chunk_str = "_".join(str(i+1) for i in sorted(indices))
 
                 url_groups = {}      # url -> {"primary": (path, dm_source), "extras": [...], "shots": [...]}
                 seen_filenames = set()  # collision detector for this batch
@@ -1783,7 +1795,7 @@ elif app_mode == "Director":
                             continue
                         source  = res.get("source", "stock")
                         keyword = _safe_for_fs(res.get("matched_query", ""), 30) or "clip"
-                        base    = f"{chunk_num}-{slot_id}-{source}-{keyword}"
+                        base    = f"{chunk_str}-{slot_id}-{source}-{keyword}"
                         filename = f"{base}.mp4"
                         n = 1
                         while filename in seen_filenames:
