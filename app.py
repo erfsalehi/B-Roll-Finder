@@ -466,6 +466,65 @@ def render_classic_mode():
                 finally:
                     st.session_state.is_fetching = False
 
+    # Step 5.5: Review Candidates
+    has_cands = any(len(s.get('video_results', [])) > 0 for s in st.session_state.slots)
+    if has_cands:
+        st.header("Step 5.5: Review Candidates")
+        with st.expander("🔍 View Search Results Gallery", expanded=True):
+            st.caption("Review the footage found for each keyword. Titles and thumbnails are clickable.")
+            
+            # Show in a grid or table? Let's do a table first for compactness.
+            all_rows = []
+            for i, slot in enumerate(st.session_state.slots):
+                primary_kw = slot.get('keywords', ['Unknown'])[0]
+                for res in slot.get('video_results', []):
+                    title = res.get('title') or "Video"
+                    url = res.get('page_url') or res.get('url') or ""
+                    title_safe = str(title).replace(" ", "_").replace("'", "").replace('"', '')
+                    title_link = f"{url}#title={title_safe}" if url else ""
+                    
+                    all_rows.append({
+                        "Slot": i + 1,
+                        "Keyword": primary_kw,
+                        "Preview": res.get("thumbnail") or "",
+                        "Title": title_link,
+                        "Source": (res.get("source") or "?").upper(),
+                        "Duration": f"{res.get('duration')}s" if res.get('duration') else "—",
+                    })
+            
+            if all_rows:
+                df_review = pd.DataFrame(all_rows)
+                st.data_editor(
+                    df_review,
+                    column_config={
+                        "Slot": st.column_config.NumberColumn("#", width="small"),
+                        "Keyword": st.column_config.TextColumn("Keyword", width="medium"),
+                        "Preview": st.column_config.ImageColumn("Preview", width="medium"),
+                        "Title": st.column_config.LinkColumn("Title", display_text=r"#title=(.*)", width="large"),
+                        "Source": st.column_config.TextColumn("Source", width="small"),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=True,
+                    key="classic_review_table"
+                )
+                
+                # Optional Gallery for Classic mode (only first 12 results to avoid lag)
+                st.subheader("🖼️ Quick Preview Gallery")
+                g_cols = st.columns(4)
+                for idx, row in df_review.head(12).iterrows():
+                    with g_cols[idx % 4]:
+                        thumb = row["Preview"]
+                        url = row["Title"].split("#title=")[0] if "#title=" in row["Title"] else ""
+                        if thumb:
+                            st.markdown(
+                                f'<a href="{url}" target="_blank">'
+                                f'<img src="{thumb}" style="width:100%; border-radius:5px; aspect-ratio:16/9; object-fit:cover;">'
+                                f'</a>',
+                                unsafe_allow_html=True
+                            )
+                        st.caption(f"Slot {row['Slot']}: {row['Keyword'][:20]}...")
+
     # Step 6: Download Videos (Local)
     st.header("Step 6: Download Videos")
     col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
@@ -776,6 +835,37 @@ def render_classic_mode():
                 finally:
                     st.session_state.is_fetching = False
 
+        # Global Review Section
+        has_g_results = any(len(t.get('video_results', [])) > 0 for t in st.session_state.global_themes)
+        if has_g_results:
+            st.subheader("🌐 Global Footage Review")
+            with st.expander("View Global Candidates", expanded=True):
+                g_rows = []
+                for theme in st.session_state.global_themes:
+                    for res in theme.get('video_results', []):
+                        title = res.get('title') or "Video"
+                        url = res.get('page_url') or res.get('url') or ""
+                        title_safe = str(title).replace(" ", "_").replace("'", "").replace('"', '')
+                        title_link = f"{url}#title={title_safe}" if url else ""
+                        g_rows.append({
+                            "Theme": theme.get('name', 'General'),
+                            "Preview": res.get('thumbnail') or "",
+                            "Title": title_link,
+                            "Source": (res.get('source') or '?').upper(),
+                        })
+                if g_rows:
+                    st.data_editor(
+                        pd.DataFrame(g_rows),
+                        column_config={
+                            "Preview": st.column_config.ImageColumn("Preview", width="medium"),
+                            "Title": st.column_config.LinkColumn("Title", display_text=r"#title=(.*)", width="large"),
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        disabled=True,
+                        key="global_review_table"
+                    )
+
         if c_gf2.button("Start Downloading Global Footage"):
             # Update state from editor just in case keywords were changed, but DON'T clear results
             # if we have them. This is tricky. Let's just use what's in session state.
@@ -982,6 +1072,7 @@ elif app_mode == "Director":
             format_func=_format_chunk,
             default=st.session_state.get("active_chunk_indices", [0] if chunks else []),
             key="active_chunk_indices",
+            on_change=save_cache,
         )
 
         if not active_indices:
@@ -1050,10 +1141,11 @@ elif app_mode == "Director":
             "What is this video about? (sharpens both query generation and ranking)",
             placeholder="e.g. car mechanics and engine repair",
             key="d_video_topic",
+            on_change=save_cache,
             help="One sentence describing the topic. Used to disambiguate shot queries (so \"tool\" in a car video means \"wrench\", not \"saw\") and to filter off-topic candidates during ranking."
         )
 
-    custom_instructions = st.text_area("Style Hints (Optional)", placeholder="e.g. cinematic, slow motion, no talking heads", key="d_style")
+    custom_instructions = st.text_area("Style Hints (Optional)", placeholder="e.g. cinematic, slow motion, no talking heads", key="d_style", on_change=save_cache)
 
     if "director_shots" not in st.session_state:
         st.session_state.director_shots = []
@@ -1099,8 +1191,8 @@ elif app_mode == "Director":
                         f"{len(st.session_state.director_shots)} shot(s). Continue to Step 2.5 or Step 3."
                     )
                     save_cache()
-            except Exception as e:
-                st.error(f"Error generating shot list: {e}")
+                except Exception as e:
+                    st.error(f"Error generating shot list: {e}")
 
     # ── Generated shot list (editable) ──────────────────────────────────────
     if st.session_state.director_shots:
@@ -1277,16 +1369,17 @@ elif app_mode == "Director":
 
         col_s2a, col_s2b, col_s2c, col_s2d = st.columns(4)
         with col_s2a:
-            use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb")
-            pex_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pex_nr") if use_pexels else 0
+            use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb", on_change=save_cache)
+            pex_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pex_nr", on_change=save_cache) if use_pexels else 0
         with col_s2b:
-            use_pixabay = st.checkbox("Pixabay", value=bool(os.getenv("PIXABAY_API_KEY")), key="d_pix_cb")
-            pix_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pix_nr") if use_pixabay else 0
+            use_pixabay = st.checkbox("Pixabay", value=bool(os.getenv("PIXABAY_API_KEY")), key="d_pix_cb", on_change=save_cache)
+            pix_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pix_nr", on_change=save_cache) if use_pixabay else 0
         with col_s2c:
             use_youtube_api = st.checkbox(
                 "YouTube API",
                 value=bool(os.getenv("YOUTUBE_API_KEY")),
                 key="d_yt_api_cb",
+                on_change=save_cache,
                 help=(
                     "Adds YouTube as a search source. Each YT search costs "
                     "100 quota units (default daily quota: 10,000), so to stay "
@@ -1295,18 +1388,19 @@ elif app_mode == "Director":
                     "run all queries. Selected YT clips download via yt-dlp."
                 ),
             )
-            yt_api_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_ytapi_nr") if use_youtube_api else 0
+            yt_api_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_ytapi_nr", on_change=save_cache) if use_youtube_api else 0
         with col_s2d:
             use_youtube_search = st.checkbox(
                 "YouTube Search",
                 value=True,
                 key="d_yt_search_cb",
+                on_change=save_cache,
                 help=(
                     "Uses Classic Finder-style yt-dlp search and the Step 2.5 "
                     "YouTube keywords. No YouTube Data API quota used."
                 ),
             )
-            yt_search_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_yts_nr") if use_youtube_search else 0
+            yt_search_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_yts_nr", on_change=save_cache) if use_youtube_search else 0
 
         if use_youtube_search:
             yt_calls = sum(
@@ -1641,6 +1735,36 @@ elif app_mode == "Director":
                 num_rows="fixed",
                 key=table_key,
             )
+
+            # ── Thumbnail Gallery ──────────────────────────────────────────
+            st.markdown("---")
+            st.subheader("🖼️ Quick Preview Gallery")
+            st.caption("Click any thumbnail to open the video in a new tab.")
+
+            n_cols = 4
+            for i in range(0, len(candidates), n_cols):
+                cols = st.columns(n_cols)
+                for j in range(n_cols):
+                    if i + j < len(candidates):
+                        cand = candidates[i + j]
+                        thumb = cand.get("thumbnail")
+                        url = cand.get("page_url") or cand.get("url")
+                        title = cand.get("title", "Video")
+                        source = cand.get("source", "").upper()
+                        
+                        with cols[j]:
+                            if thumb:
+                                # Use HTML to make the image clickable
+                                st.markdown(
+                                    f'<a href="{url}" target="_blank">'
+                                    f'<img src="{thumb}" style="width:100%; border-radius:8px; aspect-ratio:16/9; object-fit:cover; border:1px solid #444;">'
+                                    f'</a>',
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                st.info("No preview available")
+                            
+                            st.markdown(f"**{source}** · {title[:40]}...")
 
             # Sync the edited Pick column back to shot["selected_results"].
             # Row order matches `candidates` exactly. We only mutate the
