@@ -12,7 +12,7 @@ from core.direct_downloader import download_direct_video
 # Per-task auto-retry cap (manager-level; the underlying downloaders also
 # have their own internal retries). After this, the user must change
 # settings or the URL or wait — preventing accidental infinite loops.
-MAX_RETRIES = 3
+MAX_RETRIES = 999
 
 
 def link_or_copy(src: str, dst: str) -> bool:
@@ -168,25 +168,46 @@ class DownloadManager:
         defensive net for unexpected exceptions, and the place where we
         compute the user-facing ``error_summary``.
         """
-        if state.get('status') == 'cancelled':
-            return
-        try:
-            if state['source'] == 'youtube':
-                download_video(
-                    state['url'], state['output_path'], state['quality'], state,
-                    max_size_mb=state.get('max_size_mb'),
-                    strict_quality=state.get('strict_quality'),
-                    normalize=state.get('normalize'),
-                )
-            else:
-                download_direct_video(
-                    state['url'], state['output_path'], state,
-                    max_size_mb=state.get('max_size_mb'),
-                    normalize=state.get('normalize'),
-                )
-        except Exception as e:
-            state['status']    = 'error'
-            state['error_msg'] = str(e)
+        MAX_AUTO_RETRIES = 3
+        for attempt in range(MAX_AUTO_RETRIES):
+            if state.get('status') == 'cancelled':
+                return
+            
+            try:
+                if state['source'] == 'youtube':
+                    download_video(
+                        state['url'], state['output_path'], state['quality'], state,
+                        max_size_mb=state.get('max_size_mb'),
+                        strict_quality=state.get('strict_quality'),
+                        normalize=state.get('normalize'),
+                    )
+                else:
+                    download_direct_video(
+                        state['url'], state['output_path'], state,
+                        max_size_mb=state.get('max_size_mb'),
+                        normalize=state.get('normalize'),
+                    )
+                # If we get here, it succeeded
+                break
+            except Exception as e:
+                # If cancelled, don't retry
+                if state.get('status') == 'cancelled':
+                    return
+                
+                # Check if it's a non-retryable error (like size limit)
+                err_msg = str(e).lower()
+                if "exceeds limit" in err_msg or "404" in err_msg:
+                    state['status']    = 'error'
+                    state['error_msg'] = str(e)
+                    break
+                
+                # Otherwise, if we have attempts left, wait and retry (resume)
+                if attempt < MAX_AUTO_RETRIES - 1:
+                    time.sleep(3) # Wait before resuming
+                    continue
+                else:
+                    state['status']    = 'error'
+                    state['error_msg'] = str(e)
 
         if state['status'] == 'error' and state.get('error_msg'):
             state['error_summary'] = _summarize_error(state['error_msg'])
@@ -244,9 +265,10 @@ class DownloadManager:
             for k, v in overrides.items():
                 if k in state and v is not None:
                     state[k] = v
-        # Critical: drop any partial file so the next attempt doesn't
-        # try to "resume" with a wrong byte offset and corrupt the merge.
-        if os.path.exists(state['output_path']):
+        # Only delete file if it was a size limit error (corrupt/oversized)
+        # or if it's a fresh retry. Otherwise, let it resume.
+        err_msg = str(state.get('error_msg') or "").lower()
+        if "exceeds limit" in err_msg and os.path.exists(state['output_path']):
             try:
                 os.remove(state['output_path'])
             except Exception:

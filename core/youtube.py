@@ -185,6 +185,20 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         'fragment_retries': 15,
         'file_access_retries': 5,
         'http_chunk_size': 10485760, # 10MB
+        'nocheckcertificate': True,
+        'geo_bypass': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+            'Sec-Fetch-Mode': 'navigate',
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios'],
+                'skip': ['hls', 'dash']
+            }
+        },
         # Premiere Pro compatibility: ensure standard MP4 container
         'postprocessors': [{
             'key': 'FFmpegVideoConvertor',

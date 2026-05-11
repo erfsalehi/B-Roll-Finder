@@ -1804,7 +1804,21 @@ elif app_mode == "Director":
                         dur_str = f"{dur}s" if dur else ""
                         
                         with cols[j_g]:
-                            is_picked = cand.get("url") in sel_urls
+                            cand_url = cand.get("url")
+                            is_picked = cand_url in sel_urls
+                            
+                            # Check if selected in OTHER shots
+                            other_slots = [sid for sid in global_pick_map.get(cand_url, []) if str(sid) != str(slot_id)]
+                            others_tag = ""
+                            if other_slots:
+                                others_tag = (
+                                    f'<div style="position: absolute; bottom: 5px; left: 5px; z-index: 10; '
+                                    f'background: #ffcc00; color: black; padding: 2px 6px; border-radius: 4px; '
+                                    f'font-size: 10px; font-weight: bold; border: 1px solid black;">'
+                                    f'USED IN {", ".join(map(str, other_slots))}'
+                                    f'</div>'
+                                )
+
                             # Use a unique class for the card to target with CSS
                             st.markdown('<div class="gallery-card">', unsafe_allow_html=True)
                             with st.container(border=True):
@@ -1815,6 +1829,7 @@ elif app_mode == "Director":
                                     st.markdown(
                                         f'<div style="position: relative; border: {"3px solid #00ff00" if is_picked else "1px solid #444"}; border-radius: 6px; overflow: hidden;">' 
                                         f'{selection_overlay}'
+                                        f'{others_tag}'
                                         f'<img src="{thumb}" style="width:100%; aspect-ratio:16/9; object-fit:cover;">' 
                                         f'<div class="watch-btn-overlay" style="position: absolute; top: 5px; right: 5px; z-index: 10;">' 
                                         f'<a href="{url}" target="_blank" style="text-decoration: none; background: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 4px; color: white; font-size: 12px; font-weight: bold;">📺 WATCH</a>' 
@@ -2126,18 +2141,14 @@ elif app_mode == "Director":
                             st.markdown(f"**{os.path.basename(ft['output_path'])}**{extras_lbl}")
                             st.caption(
                                 f"⚠ {ft.get('error_summary') or ft.get('error_msg') or 'Unknown error'} · "
-                                f"attempt {ft.get('attempts', 0)}/{MAX_RETRIES}"
+                                f"attempt {ft.get('attempts', 0)}"
                             )
                         with top2:
-                            can_retry = st.session_state.dm.can_retry(ft["id"])
-                            if st.button(
-                                "↻ Retry" if can_retry else "Max retries",
+                             if st.button(
+                                "↻ Retry",
                                 key=f"retry_{ft['id']}",
-                                disabled=not can_retry,
                                 use_container_width=True,
-                                help=("Retry with the current Quality / Max Size settings."
-                                      if can_retry else
-                                      "Maximum retry attempts reached. Edit settings or remove this task."),
+                                help="Retry with the current Quality / Max Size settings.",
                             ):
                                 st.session_state.dm.retry_failed(ft["id"], overrides={
                                     "quality": d_quality, "max_size_mb": d_max_size,

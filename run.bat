@@ -46,6 +46,6 @@ if %errorlevel% neq 0 (
 
 :: Run Streamlit
 echo [INFO] Starting B-Roll Finder...
-streamlit run app.py
+streamlit run app.py --server.port 8080
 
 pause
