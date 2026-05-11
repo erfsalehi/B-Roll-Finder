@@ -1083,22 +1083,47 @@ elif app_mode in ["Director", "Smart Mode"]:
         
         st.info("💡 **The AI searches for visual meaning, not just keywords.**")
 
-        with st.expander("📚 AI Visual Search Manager", expanded=False):
-            col_lib1, col_lib2 = st.columns([3, 1])
-            with col_lib1:
-                lib_url = st.text_input("Ingest YouTube URL to Library", placeholder="https://youtube.com/watch?v=...", key="lib_url")
-            with col_lib2:
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("Index Video", use_container_width=True):
-                    if lib_url:
-                        with st.status(f"Indexing {lib_url}...") as status:
-                            def _prog(p, msg): status.update(label=msg, state="running")
-                            count = indexer.download_and_index_youtube(lib_url, progress_cb=_prog)
-                            status.update(label=f"Done! Added {count} scenes.", state="complete")
+        with st.expander("📚 AI Visual Search Manager (Feed the AI)", expanded=False):
+            st.markdown("### Build Your Foundation")
+            st.caption("Point the AI to your local footage or high-quality YouTube compilations to build your cinematic brain.")
+            
+            tab_yt, tab_local = st.tabs(["Bulk YouTube", "Local Folder"])
+            
+            with tab_yt:
+                lib_urls = st.text_area("Paste YouTube URLs (one per line)", placeholder="https://youtube.com/watch?v=...\nhttps://youtube.com/watch?v=...", height=100, key="lib_urls_bulk")
+                if st.button("🚀 Start Bulk Ingestion", use_container_width=True):
+                    urls = [u.strip() for u in lib_urls.split("\n") if u.strip()]
+                    if urls:
+                        with st.status(f"Ingesting {len(urls)} videos...") as status:
+                            for i, url in enumerate(urls):
+                                def _prog(p, msg): status.update(label=f"[{i+1}/{len(urls)}] {msg}", state="running")
+                                count = indexer.download_and_index_youtube(url, progress_cb=_prog)
+                                st.write(f"✅ Indexed {count} scenes from video {i+1}")
+                            status.update(label=f"Done! Bulk ingestion complete.", state="complete")
                             st.rerun()
                     else:
-                        st.warning("Enter a URL first.")
+                        st.warning("Paste some URLs first.")
             
+            with tab_local:
+                local_dir = st.text_input("Local Folder Path", placeholder="C:/Users/Name/Videos/MyStock", key="lib_local_dir")
+                if st.button("🔍 Index Local Folder", use_container_width=True):
+                    if os.path.isdir(local_dir):
+                        video_files = [f for f in os.listdir(local_dir) if f.lower().endswith(('.mp4', '.mov', '.mkv', '.avi'))]
+                        if video_files:
+                            with st.status(f"Indexing {len(video_files)} local videos...") as status:
+                                for i, vf in enumerate(video_files):
+                                    v_path = os.path.join(local_dir, vf)
+                                    def _prog(p, msg): status.update(label=f"[{i+1}/{len(video_files)}] {msg}", state="running")
+                                    count = indexer.index_video(v_path, progress_cb=_prog)
+                                    st.write(f"✅ Indexed {count} scenes from {vf}")
+                                status.update(label="Local indexing complete.", state="complete")
+                                st.rerun()
+                        else:
+                            st.error("No video files found in that folder.")
+                    else:
+                        st.error("Invalid folder path.")
+            
+            st.divider()
             stats = searcher.get_library_stats()
             st.caption(f"Library Status: **{stats['unique_videos']}** videos | **{stats['total_segments']}** indexed scenes with Scene-Level Understanding.")
             if st.button("🗑 Clear Library", type="secondary"):
