@@ -2051,7 +2051,7 @@ elif app_mode == "Director":
                         st.rerun()
 
         st.divider()
-        fa1, fa2, fa3, fa4, fa5 = st.columns([1, 1, 1, 2, 1])
+        fa1, fa2, fa_text, fa_input, fa4, fa5 = st.columns([1.2, 1.2, 1.5, 1, 2.5, 1.2])
         with fa1:
             if st.button(
                 "◀ Prev", key="d_prev_bot",
@@ -2067,7 +2067,9 @@ elif app_mode == "Director":
                 shot["selected_results"] = []
                 save_cache()
                 st.rerun()
-        with fa3:
+        with fa_text:
+            st.markdown(f"<div style='text-align: right; margin-top: 8px; font-size: 14px;'>Shot {idx+1}/{len(review_shots)} ➔</div>", unsafe_allow_html=True)
+        with fa_input:
             new_idx_bot = st.number_input("Jump to", min_value=1, max_value=len(review_shots), value=idx+1, label_visibility="collapsed", key="d_jump_bot")
             if new_idx_bot - 1 != idx:
                 save_cache()
