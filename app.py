@@ -149,6 +149,36 @@ def perform_chunk_regeneration(chunk_idx):
         
     st.session_state.director_shots = combined
     save_cache()
+
+def ensure_shots_have_chunk_ids():
+    """Repairs shots that are missing a chunk_id by inferring it from timestamps."""
+    if not st.session_state.get("director_shots") or not st.session_state.get("transcription_chunks"):
+        return
+    
+    chunks = st.session_state.transcription_chunks
+    changed = False
+    for shot in st.session_state.director_shots:
+        if shot.get("chunk_id") is None:
+            ts = shot.get("timestamp", 0)
+            # Find the chunk index by checking segment boundaries
+            found = False
+            for i, chunk in enumerate(chunks):
+                if not chunk.get("segments"):
+                    continue
+                c_start = chunk["segments"][0].get("start", 0)
+                c_end = chunk["segments"][-1].get("end", 99999)
+                if c_start <= ts <= c_end:
+                    shot["chunk_id"] = i
+                    changed = True
+                    found = True
+                    break
+            if not found:
+                # If timestamp is outside all chunks, default to 0
+                shot["chunk_id"] = 0
+                changed = True
+    if changed:
+        save_cache()
+
 if not st.session_state.slots and os.path.exists(CACHE_FILE):
     load_cache()
 
@@ -1039,6 +1069,7 @@ def render_classic_mode():
 if app_mode == "Classic Finder":
     render_classic_mode()
 elif app_mode == "Director":
+    ensure_shots_have_chunk_ids()
     from core.director_search import fetch_director_footage
     from core.director_rank import rank_shot_candidates
     from core.director_youtube import generate_youtube_keywords_for_shots, seed_youtube_keywords
@@ -1975,12 +2006,6 @@ elif app_mode == "Director":
             
             # Find all shots in this chunk
             chunk_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") == chunk_id]
-            
-            # If still empty (e.g. ALL shots have missing chunk_id), just show all shots 
-            # if we are looking at Chunk 1.
-            if not chunk_shots and chunk_id == 0:
-                chunk_shots = st.session_state.director_shots
-
             
             # Build a small editor for their queries
             c_rows = []
