@@ -1709,21 +1709,22 @@ elif app_mode in ["Director", "Smart Mode"]:
                             query = shot.get("shot_intent", "")
                             if query and (not retry_clicked or not shot.get("video_results")):
                                 smart_hits = ss.search(query, k=int(smart_num))
-                                for hit in smart_hits:
-                                    reason = ss.generate_match_reason(query, hit, os.getenv("GROQ_API_KEY"))
-                                    cand = {
-                                        "title": hit.get("video_title"),
-                                        "url": hit.get("video_url") or hit.get("video_path"),
-                                        "source": "smart_library",
-                                        "thumbnail": None,
-                                        "duration": hit.get("duration"),
-                                        "matched_query": query,
-                                        "score": hit.get("score"),
-                                        "segment_path": hit.get("segment_path"),
-                                        "smart_reason": reason
-                                    }
-                                    if "video_results" not in shot: shot["video_results"] = []
-                                    shot["video_results"].append(cand)
+                                if smart_hits:
+                                    reasons = ss.generate_match_reasons_batched(query, smart_hits, os.getenv("GROQ_API_KEY"))
+                                    for hit, reason in zip(smart_hits, reasons):
+                                        cand = {
+                                            "title": hit.get("video_title"),
+                                            "url": hit.get("video_url") or hit.get("video_path"),
+                                            "source": "smart_library",
+                                            "thumbnail": None,
+                                            "duration": hit.get("duration"),
+                                            "matched_query": query,
+                                            "score": hit.get("score"),
+                                            "segment_path": hit.get("segment_path"),
+                                            "smart_reason": reason
+                                        }
+                                        if "video_results" not in shot: shot["video_results"] = []
+                                        shot["video_results"].append(cand)
                             pbar2.progress(0.9 + (0.1 * (i+1)/len(updated_subset)))
                     
                     if chunk_to_fetch is not None:

@@ -36,34 +36,43 @@ class SmartSearch:
         
         return filtered
 
-    def generate_match_reason(self, query_text, hit_metadata, api_key):
-        """Uses Groq to explain why this visual segment matches the narration."""
-        if not api_key:
-            return "Matches narration intent based on visual embeddings."
+    def generate_match_reasons_batched(self, query_text, hits_metadata, api_key):
+        """Sends all hits to Groq in a single request to avoid rate limits."""
+        if not api_key or not hits_metadata:
+            return ["Matches narration intent." for _ in hits_metadata]
             
         try:
             from groq import Groq
             client = Groq(api_key=api_key)
             
-            prompt = f"""
-            Identify the visual connection between this narration and this video clip.
-            Narration: "{query_text}"
-            Video Title: "{hit_metadata.get('video_title')}"
+            hit_list = "\n".join([f"{i+1}. {h.get('video_title')}" for i, h in enumerate(hits_metadata)])
             
-            Write a short (1 sentence) explanation for a video editor. 
-            Format: "Matches [topic] with [visual description]."
-            Example: "Matches narration about urban commuting with aerial footage of crowded city traffic."
+            prompt = f"""
+            Narration: "{query_text}"
+            
+            Video Clips:
+            {hit_list}
+            
+            Explain why each clip matches the narration visually.
+            Return a JSON object with a key "reasons" containing an array of {len(hits_metadata)} strings.
+            Format for each string: "Matches [topic] with [visual description]."
             """
             
             resp = client.chat.completions.create(
                 model="llama3-8b-8192",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=50,
-                temperature=0.3
+                response_format={"type": "json_object"}
             )
-            return resp.choices[0].message.content.strip()
+            import json
+            data = json.loads(resp.choices[0].message.content)
+            reasons = data.get("reasons", [])
+            
+            # Ensure we return the correct number of reasons even if LLM fails
+            if len(reasons) < len(hits_metadata):
+                reasons.extend(["High semantic relevance."] * (len(hits_metadata) - len(reasons)))
+            return reasons[:len(hits_metadata)]
         except Exception:
-            return "High semantic relevance detected."
+            return ["High semantic relevance detected." for _ in hits_metadata]
 
     def get_library_stats(self):
         """Returns statistics about the indexed library."""
