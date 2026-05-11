@@ -1926,31 +1926,11 @@ elif app_mode in ["Director", "Smart Mode"]:
                     q_md = " &nbsp;·&nbsp; ".join(f"`{q}`" for q in queries)
                     st.markdown(f"🔎 **Keywords:** {q_md}")
 
-            # CSS for clickable images
+            # CSS for gallery cards
             st.markdown("""
                 <style>
-                /* Container for the whole gallery card */
                 .gallery-card {
-                    position: relative !important;
-                    overflow: hidden; /* Keep the overlay within the card */
                     border-radius: 8px;
-                }
-                
-                /* Target the status button at the bottom and expand its clickable area */
-                .gallery-card [data-testid="stButton"] button {
-                    position: relative;
-                    z-index: 2;
-                }
-                
-                .gallery-card [data-testid="stButton"] button::after {
-                    content: "";
-                    position: absolute;
-                    top: -600px; /* Cover the whole card above the button */
-                    left: -100px;
-                    right: -100px;
-                    bottom: -100px;
-                    z-index: 1;
-                    cursor: pointer;
                 }
 
                 .watch-btn-overlay {
