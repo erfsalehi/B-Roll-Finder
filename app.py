@@ -1771,23 +1771,30 @@ elif app_mode == "Director":
         n_skipped  = sum(1 for s in review_shots if s.get("skipped"))
         n_pending  = len(review_shots) - n_selected - n_skipped
 
-        nav1, nav2, nav3 = st.columns([1, 4, 1])
+        nav1, nav2, nav3, nav4 = st.columns([1.2, 2, 4, 1.2])
         with nav1:
             if st.button("◀ Prev", key="d_prev", disabled=idx == 0, use_container_width=True):
                 save_cache()
                 st.session_state.d_review_idx -= 1
                 st.rerun()
         with nav2:
+            options = [f"Shot {i+1} / {len(review_shots)}" for i in range(len(review_shots))]
+            selected = st.selectbox("Jump", options=options, index=idx, label_visibility="collapsed", key="d_jump_top")
+            new_idx_top = int(selected.split(" ")[1]) - 1
+            if new_idx_top != idx:
+                save_cache()
+                st.session_state.d_review_idx = new_idx_top
+                st.rerun()
+        with nav3:
             st.markdown(
-                f"<div style='text-align:center; padding-top:0.4em;'>"
-                f"<strong>Shot {idx + 1} of {len(review_shots)}</strong>"
-                f" &nbsp;·&nbsp; ✅ {n_selected} selected"
+                f"<div style='text-align:center; padding-top:0.4em; font-size:14px;'>"
+                f"✅ {n_selected} selected"
                 f" &nbsp;·&nbsp; ⏭ {n_skipped} skipped"
                 f" &nbsp;·&nbsp; ⏳ {n_pending} pending"
                 f"</div>",
                 unsafe_allow_html=True,
             )
-        with nav3:
+        with nav4:
             if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1, use_container_width=True):
                 save_cache()
                 st.session_state.d_review_idx += 1
@@ -2051,7 +2058,7 @@ elif app_mode == "Director":
                         st.rerun()
 
         st.divider()
-        fa1, fa2, fa_text, fa_input, fa4, fa5 = st.columns([1.2, 1.2, 1.5, 1, 2.5, 1.2])
+        fa1, fa2, fa3, fa4, fa5 = st.columns([1.2, 1.2, 2.5, 2.5, 1.2])
         with fa1:
             if st.button(
                 "◀ Prev", key="d_prev_bot",
@@ -2067,13 +2074,13 @@ elif app_mode == "Director":
                 shot["selected_results"] = []
                 save_cache()
                 st.rerun()
-        with fa_text:
-            st.markdown(f"<div style='text-align: right; margin-top: 8px; font-size: 14px;'>Shot {idx+1}/{len(review_shots)} ➔</div>", unsafe_allow_html=True)
-        with fa_input:
-            new_idx_bot = st.number_input("Jump to", min_value=1, max_value=len(review_shots), value=idx+1, label_visibility="collapsed", key="d_jump_bot")
-            if new_idx_bot - 1 != idx:
+        with fa3:
+            options = [f"Shot {i+1} / {len(review_shots)}" for i in range(len(review_shots))]
+            selected = st.selectbox("Jump", options=options, index=idx, label_visibility="collapsed", key="d_jump_bot")
+            new_idx_bot = int(selected.split(" ")[1]) - 1
+            if new_idx_bot != idx:
                 save_cache()
-                st.session_state.d_review_idx = new_idx_bot - 1
+                st.session_state.d_review_idx = new_idx_bot
                 st.rerun()
         with fa4:
             if idx < len(review_shots) - 1:
