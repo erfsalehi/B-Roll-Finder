@@ -1992,47 +1992,63 @@ elif app_mode == "Director":
         # ── Footer action bar ────────────────────────────────────────────
         # Prev | Skip | Save & Next (primary) | Next — gives the editor
         # quick navigation without scrolling back up to the top nav.
-        # ── Redo Chunk Action ────────────────────────────────────────────
+        # ── Refetch Shot Action ──────────────────────────────────────────
         st.markdown("---")
-        chunk_id = shot.get("chunk_id")
-        if chunk_id is None:
-            chunk_id = 0
+        with st.expander("♻️ Tweak & Refetch THIS Shot", expanded=False):
+            st.caption("Edit the keywords and fetch new candidates for this shot only.")
             
-        with st.expander(f"♻️ Not happy with Chunk {chunk_id+1}? Tweak & Redo", expanded=False):
-            # Find all shots in this chunk
-            chunk_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") == chunk_id]
-            st.caption(f"Debug: CID={chunk_id}, Count={len(chunk_shots)}")
+            # Stock queries (Pexels/Pixabay)
+            curr_queries = " | ".join(shot.get("search_queries", []))
+            new_queries_str = st.text_input("Stock Queries (Pexels/Pixabay)", value=curr_queries, key=f"refetch_q_{slot_id}", help="Separate with ' | '")
             
-            # Build a small editor for their queries
-            c_rows = []
-            for cs in chunk_shots:
-                c_rows.append({
-                    "Shot #": cs.get("slot_id"),
-                    "Queries": " | ".join(cs.get("search_queries", [])),
-                })
-            c_df = pd.DataFrame(c_rows)
-            edited_c = st.data_editor(
-                c_df,
-                column_config={
-                    "Shot #": st.column_config.NumberColumn("Shot #", width="small", disabled=True),
-                    "Queries": st.column_config.TextColumn("Queries (use ' | ' to separate)", width="large"),
-                },
-                hide_index=True,
-                use_container_width=True,
-                key=f"redo_editor_{chunk_id}"
-            )
+            # YouTube keywords
+            curr_yt = " | ".join(shot.get("youtube_keywords", []))
+            new_yt_str = st.text_input("YouTube Keywords", value=curr_yt, key=f"refetch_yt_{slot_id}", help="Separate with ' | '")
             
-            if st.button(f"Regenerate Chunk {chunk_id+1}", key=f"redo_btn_s5_{chunk_id}", type="primary", use_container_width=True):
-                # Apply edited queries back to session state first
-                for i_c, cs in enumerate(chunk_shots):
-                    new_q_raw = str(edited_c.iloc[i_c]["Queries"] or "")
-                    new_q = [q.strip() for q in new_q_raw.split("|") if q.strip()]
-                    cs["search_queries"] = new_q
+            if st.button("Refetch Candidates", key=f"refetch_btn_{slot_id}", type="primary", use_container_width=True):
+                # Update shot
+                shot["search_queries"] = [q.strip() for q in new_queries_str.split("|") if q.strip()]
+                shot["youtube_keywords"] = [q.strip() for q in new_yt_str.split("|") if q.strip()]
+                save_cache()
                 
-                with st.spinner(f"Regenerating Chunk {chunk_id+1}..."):
-                    perform_chunk_regeneration(chunk_id)
-                    st.success(f"Chunk {chunk_id+1} regenerated.")
-                    st.rerun()
+                with st.spinner("Fetching new candidates for this shot..."):
+                    from core.director_search import fetch_director_footage
+                    d_fetch_errors = []
+                    
+                    # Read settings from Step 3 (or use defaults)
+                    use_pex = st.session_state.get("d_pex_cb", bool(os.getenv("PEXELS_API_KEY")))
+                    pex_n = st.session_state.get("d_pex_nr", 3)
+                    use_pix = st.session_state.get("d_pix_cb", bool(os.getenv("PIXABAY_API_KEY")))
+                    pix_n = st.session_state.get("d_pix_nr", 3)
+                    use_yt_api = st.session_state.get("d_yt_api_cb", bool(os.getenv("YOUTUBE_API_KEY")))
+                    yt_api_n = st.session_state.get("d_ytapi_nr", 3)
+                    use_yts = st.session_state.get("d_yt_search_cb", True)
+                    yts_n = st.session_state.get("d_yts_nr", 3)
+
+                    updated_subset = fetch_director_footage(
+                        [shot],
+                        use_pexels=use_pex,
+                        use_pixabay=use_pix,
+                        use_youtube=use_yts,
+                        pexels_num_results=pex_n,
+                        pixabay_num_results=pix_n,
+                        youtube_api_num_results=yt_api_n,
+                        youtube_search_num_results=yts_n,
+                        use_youtube_api=use_yt_api,
+                        use_youtube_search=use_yts,
+                        progress_callback=None,
+                        errors=d_fetch_errors,
+                        retry_only=False,
+                    )
+                    
+                    if updated_subset:
+                        for s in st.session_state.director_shots:
+                            if s["slot_id"] == slot_id:
+                                s.update(updated_subset[0])
+                                break
+                        save_cache()
+                        st.success("Refetched successfully!")
+                        st.rerun()
 
         st.divider()
         fa1, fa2, fa3, fa4 = st.columns([1, 1, 2, 1])
