@@ -2152,8 +2152,75 @@ elif app_mode == "Director":
 
         total_selected_files = sum(len(s.get("selected_results", [])) for s in selected_shots)
 
-        if st.button(f"⬇ Download {total_selected_files} selected videos",
-                     key="d_dl_start", type="primary", use_container_width=True):
+        col_dl1, col_dl2 = st.columns([2, 1])
+        with col_dl1:
+            start_dl = st.button(f"⬇ Download {total_selected_files} selected videos",
+                                key="d_dl_start", type="primary", use_container_width=True)
+        with col_dl2:
+            if st.button("📄 Export Manifest", key="d_manifest", use_container_width=True, help="Generate a text file listing all shots, grouped by chunk."):
+                def _safe_for_fs(text: str, max_len: int = 30) -> str:
+                    if not text: return ""
+                    cleaned = "".join(c if (c.isalnum() or c in " -_") else " " for c in text)
+                    cleaned = "-".join(cleaned.split()).lower()
+                    return cleaned[:max_len].strip("-") or ""
+
+                indices = st.session_state.get("active_chunk_indices", [0])
+                chunk_str = "_".join(str(i+1) for i in sorted(indices))
+
+                manifest = [
+                    "B-ROLL FINDER - SHOT MANIFEST",
+                    "=============================",
+                    f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"Chunks Included: {chunk_str}",
+                    ""
+                ]
+                
+                all_shots = st.session_state.get("director_shots", [])
+                from itertools import groupby
+                # Sort first to be absolutely sure for groupby
+                sorted_shots = sorted(all_shots, key=lambda x: x.get("slot_id", 0))
+                
+                for cid, group in groupby(sorted_shots, key=lambda x: x.get("chunk_id", 0)):
+                    chunk_shots = list(group)
+                    manifest.append(f"\nCHUNK {cid + 1}")
+                    manifest.append("-" * 20)
+                    
+                    for i, shot in enumerate(chunk_shots):
+                        slot_id = shot.get("slot_id", "?")
+                        start   = shot.get("timestamp_start_str", "00:00")
+                        end     = shot.get("timestamp_end_str", "00:00")
+                        intent  = shot.get("shot_intent", "No intent")
+                        is_last = "  <-- LAST SHOT OF CHUNK" if i == len(chunk_shots) - 1 else ""
+                        
+                        manifest.append(f"  Shot {slot_id}: [{start} - {end}] - {intent}{is_last}")
+                        
+                        # List selected files for this shot
+                        sel = shot.get("selected_results", [])
+                        if sel:
+                            seen_filenames = set() # collision detector for manifest naming
+                            for res in sel:
+                                source = res.get("source", "stock")
+                                kw     = _safe_for_fs(res.get("matched_query", ""), 30) or "clip"
+                                base   = f"{chunk_str}-{slot_id}-{source}-{kw}"
+                                filename = f"{base}.mp4"
+                                n = 1
+                                while filename in seen_filenames:
+                                    n += 1
+                                    filename = f"{base}-{n}.mp4"
+                                seen_filenames.add(filename)
+                                manifest.append(f"    ↳ File: {filename}")
+                        else:
+                            manifest.append("    (No clip selected)")
+                        manifest.append("")
+
+                out_txt = "\n".join(manifest)
+                out_path = os.path.join("downloads", "director", "shot_manifest.txt")
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(out_txt)
+                st.success(f"Manifest exported! Saved to: `{out_path}`")
+
+        if start_dl:
             if not check_network():
                 st.error("No network connection detected.")
             else:
