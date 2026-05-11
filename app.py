@@ -2051,7 +2051,7 @@ elif app_mode == "Director":
                         st.rerun()
 
         st.divider()
-        fa1, fa2, fa3, fa4 = st.columns([1, 1, 2, 1])
+        fa1, fa2, fa3, fa4, fa5 = st.columns([1, 1, 1, 2, 1])
         with fa1:
             if st.button(
                 "◀ Prev", key="d_prev_bot",
@@ -2068,6 +2068,12 @@ elif app_mode == "Director":
                 save_cache()
                 st.rerun()
         with fa3:
+            new_idx_bot = st.number_input("Jump to", min_value=1, max_value=len(review_shots), value=idx+1, label_visibility="collapsed", key="d_jump_bot")
+            if new_idx_bot - 1 != idx:
+                save_cache()
+                st.session_state.d_review_idx = new_idx_bot - 1
+                st.rerun()
+        with fa4:
             if idx < len(review_shots) - 1:
                 if st.button(
                     "Save & Next ▶", key="d_save_next",
@@ -2083,7 +2089,7 @@ elif app_mode == "Director":
                 ):
                     save_cache()
                     st.success("Review complete! Scroll down to Step 6 to start downloads.")
-        with fa4:
+        with fa5:
             if st.button(
                 "Next ▶", key="d_next_bot",
                 disabled=idx == len(review_shots) - 1, use_container_width=True,
