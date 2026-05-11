@@ -100,6 +100,50 @@ def toggle_global_pick(url):
     else:
         st.session_state.picked_global_urls.add(url)
     save_cache()
+
+def perform_chunk_regeneration(chunk_idx):
+    """Regenerates the shot list for a specific chunk, preserving selected videos."""
+    if not os.getenv("GROQ_API_KEY"):
+        st.error("Set Groq API Key.")
+        return
+
+    # 1. Collect preserved selections
+    preserved_results = []
+    seen_urls = set()
+    for s in st.session_state.director_shots:
+        if s.get("chunk_id") == chunk_idx:
+            for res in s.get("selected_results", []):
+                if res.get("url") not in seen_urls:
+                    preserved_results.append(res)
+                    seen_urls.add(res.get("url"))
+    
+    # 2. Generate new shots
+    from core.director import generate_shot_list_from_transcription
+    chunk = st.session_state.transcription_chunks[chunk_idx]
+    new_shots = generate_shot_list_from_transcription(
+        chunk.get("segments", []),
+        os.getenv("GROQ_API_KEY"),
+        custom_instructions=st.session_state.get("d_style", ""),
+        video_topic=st.session_state.get("d_video_topic", ""),
+        chunk_id=chunk_idx
+    )
+    
+    # 3. Add preserved results to new shots
+    for ns in new_shots:
+        ns["video_results"] = preserved_results + ns.get("video_results", [])
+        ns["selected_results"] = [r for r in preserved_results]
+    
+    # 4. Splice back into global list
+    other_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") != chunk_idx]
+    combined = other_shots + new_shots
+    combined.sort(key=lambda x: (x.get("chunk_id", 0), x.get("timestamp", 0)))
+    
+    # 5. Re-index slot_ids
+    for idx, s in enumerate(combined):
+        s["slot_id"] = idx + 1
+        
+    st.session_state.director_shots = combined
+    save_cache()
 if not st.session_state.slots and os.path.exists(CACHE_FILE):
     load_cache()
 
@@ -1300,53 +1344,10 @@ elif app_mode == "Director":
                 for c_idx, chunk_idx in enumerate(active_indices[r_idx:r_idx+4]):
                     with chunk_cols[c_idx]:
                         if st.button(f"♻️ Redo Chunk {chunk_idx+1}", key=f"redo_chunk_{chunk_idx}", use_container_width=True):
-                            if not os.getenv("GROQ_API_KEY"):
-                                st.error("Set Groq API Key.")
-                            else:
-                                with st.spinner(f"Redoing Chunk {chunk_idx+1}..."):
-                                    # 1. Collect preserved selections
-                                    preserved_results = []
-                                    seen_urls = set()
-                                    for s in st.session_state.director_shots:
-                                        if s.get("chunk_id") == chunk_idx:
-                                            for res in s.get("selected_results", []):
-                                                if res.get("url") not in seen_urls:
-                                                    preserved_results.append(res)
-                                                    seen_urls.add(res.get("url"))
-                                    
-                                    # 2. Generate new shots
-                                    from core.director import generate_shot_list_from_transcription
-                                    chunk = st.session_state.transcription_chunks[chunk_idx]
-                                    new_shots = generate_shot_list_from_transcription(
-                                        chunk.get("segments", []),
-                                        os.getenv("GROQ_API_KEY"),
-                                        custom_instructions=custom_instructions,
-                                        video_topic=d_video_topic,
-                                        chunk_id=chunk_idx
-                                    )
-                                    
-                                    # 3. Add preserved results to new shots
-                                    for ns in new_shots:
-                                        ns["video_results"] = preserved_results + ns.get("video_results", [])
-                                        # Also keep them selected if they were selected? 
-                                        # User said "remain in the new suggested videos".
-                                        # I'll keep them as selected_results too if they were there.
-                                        ns["selected_results"] = [r for r in preserved_results]
-                                    
-                                    # 4. Splice back into global list
-                                    other_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") != chunk_idx]
-                                    combined = other_shots + new_shots
-                                    # Sort by timestamp (or chunk_id then timestamp)
-                                    combined.sort(key=lambda x: (x.get("chunk_id", 0), x.get("timestamp", 0)))
-                                    
-                                    # 5. Re-index slot_ids
-                                    for idx, s in enumerate(combined):
-                                        s["slot_id"] = idx + 1
-                                        
-                                    st.session_state.director_shots = combined
-                                    save_cache()
-                                    st.success(f"Chunk {chunk_idx+1} regenerated. Check Step 5 to review.")
-                                    st.rerun()
+                            with st.spinner(f"Redoing Chunk {chunk_idx+1}..."):
+                                perform_chunk_regeneration(chunk_idx)
+                                st.success(f"Chunk {chunk_idx+1} regenerated. Check Step 5 to review.")
+                                st.rerun()
 
         st.subheader("Shot List")
         st.caption(
@@ -1971,6 +1972,46 @@ elif app_mode == "Director":
         # ── Footer action bar ────────────────────────────────────────────
         # Prev | Skip | Save & Next (primary) | Next — gives the editor
         # quick navigation without scrolling back up to the top nav.
+        # ── Redo Chunk Action ────────────────────────────────────────────
+        st.markdown("---")
+        chunk_id = shot.get("chunk_id", 0)
+        with st.expander(f"♻️ Not happy with Chunk {chunk_id+1}? Tweak & Redo", expanded=False):
+            st.caption("You can edit the search queries for all shots in this chunk here, then regenerate the suggestions.")
+            
+            # Find all shots in this chunk
+            chunk_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") == chunk_id]
+            
+            # Build a small editor for their queries
+            c_rows = []
+            for cs in chunk_shots:
+                c_rows.append({
+                    "Shot #": cs.get("slot_id"),
+                    "Queries": " | ".join(cs.get("search_queries", [])),
+                })
+            c_df = pd.DataFrame(c_rows)
+            edited_c = st.data_editor(
+                c_df,
+                column_config={
+                    "Shot #": st.column_config.NumberColumn("Shot #", width="small", disabled=True),
+                    "Queries": st.column_config.TextColumn("Queries (use ' | ' to separate)", width="large"),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key=f"redo_editor_{chunk_id}"
+            )
+            
+            if st.button(f"Regenerate Chunk {chunk_id+1}", key=f"redo_btn_s5_{chunk_id}", type="primary", use_container_width=True):
+                # Apply edited queries back to session state first
+                for i_c, cs in enumerate(chunk_shots):
+                    new_q_raw = str(edited_c.iloc[i_c]["Queries"] or "")
+                    new_q = [q.strip() for q in new_q_raw.split("|") if q.strip()]
+                    cs["search_queries"] = new_q
+                
+                with st.spinner(f"Regenerating Chunk {chunk_id+1}..."):
+                    perform_chunk_regeneration(chunk_id)
+                    st.success(f"Chunk {chunk_id+1} regenerated.")
+                    st.rerun()
+
         st.divider()
         fa1, fa2, fa3, fa4 = st.columns([1, 1, 2, 1])
         with fa1:
