@@ -147,59 +147,67 @@ def _call_groq_json(client: Groq, system_prompt: str, block: str,
 
 def _call_openrouter_json(system_prompt: str, user_content: str,
                           temperature: float = 0.7, max_tokens: int = 2000) -> dict:
-    """Calls OpenRouter with fallback between multiple keys if provided."""
+    """Calls OpenRouter with per-key exponential backoff for rate limit handling."""
+    import time
     keys = [os.getenv("OPENROUTER_API_KEY", ""), os.getenv("OPENROUTER_API_KEY_2", "")]
     active_keys = [k.strip() for k in keys if k and k.strip()]
     
     if not active_keys:
         raise ValueError("No OpenRouter API keys found. Add at least one in Setup.")
 
+    payload = {
+        "model":       OPENROUTER_MODEL,
+        "temperature": temperature,
+        "max_tokens":  max_tokens,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_content},
+        ],
+    }
+    if "llama" in OPENROUTER_MODEL.lower():
+        payload["response_format"] = {"type": "json_object"}
+
     last_error = None
+    # Try each key with exponential backoff: wait 5s, 10s, 20s between retries
+    backoff_delays = [5, 10, 20]
+
     for i, api_key in enumerate(active_keys):
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type":  "application/json",
         }
-        payload = {
-            "model":       OPENROUTER_MODEL,
-            "temperature": temperature,
-            "max_tokens":  max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_content},
-            ],
-        }
-        # Only request JSON mode for models that support it
-        if "llama" in OPENROUTER_MODEL.lower():
-            payload["response_format"] = {"type": "json_object"}
-        try:
-            resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
-            resp.raise_for_status()
-            return json.loads(resp.json()["choices"][0]["message"]["content"])
-        except Exception as e:
-            last_error = e
-            status_code = getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
-            
-            # If it's a rate limit or provider error, try the next key
-            if status_code == 429 or status_code >= 500:
-                print(f"OpenRouter Key {i+1} failed with status {status_code}. Trying next key...")
-                continue
-            
-            # If it's a 401/403/400, it's a configuration error, don't try next key unless we want to
-            if status_code in (401, 403):
-                print(f"OpenRouter Key {i+1} authentication error. Trying next key...")
-                continue
-                
-            raise e
-            
+        for attempt, delay in enumerate(backoff_delays):
+            try:
+                resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
+                resp.raise_for_status()
+                return json.loads(resp.json()["choices"][0]["message"]["content"])
+            except Exception as e:
+                last_error = e
+                status_code = getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
+
+                if status_code == 429 or status_code >= 500:
+                    if attempt < len(backoff_delays) - 1:
+                        print(f"OpenRouter Key {i+1} attempt {attempt+1} hit {status_code}. Waiting {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        print(f"OpenRouter Key {i+1} exhausted retries. Trying next key...")
+                        break  # Move to next key
+
+                if status_code in (400, 401, 403):
+                    print(f"OpenRouter Key {i+1} config error ({status_code}). Trying next key...")
+                    break  # Move to next key immediately
+
+                raise e  # Unknown error, raise immediately
+
     if last_error:
-        # Re-wrap error for better reporting
         if hasattr(last_error, "response"):
             try:
                 msg = last_error.response.json().get("error", {}).get("message", str(last_error))
             except:
                 msg = last_error.response.text or str(last_error)
             raise HTTPError(f"OpenRouter all keys failed. Last error ({last_error.response.status_code}): {msg}")
+
         raise last_error
 
 
