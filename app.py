@@ -1714,7 +1714,35 @@ elif app_mode in ["Director", "Smart Mode"]:
                         retry_only=retry_clicked,
                     )
 
-                    if use_smart:
+                    # ── Smart Mode: Low-Res Proxy Fetch (hijacks YouTube search) ──────────
+                    if use_smart and app_mode == "Smart Mode":
+                        status2.text("🧠 Smart Mode: Fetching low-res proxies & analyzing scenes…")
+                        from core.proxy_fetcher import ProxyFetcher
+                        pf = ProxyFetcher()
+                        for i, shot in enumerate(updated_subset):
+                            if retry_clicked and shot.get("video_results"):
+                                continue
+                            shot_p_start = 0.9 + (0.1 * i / max(len(updated_subset), 1))
+                            def _proxy_cb(p, msg, _i=i):
+                                pbar2.progress(0.9 + (0.1 * (_i + p) / max(len(updated_subset), 1)))
+                                status2.text(f"[Shot {_i+1}/{len(updated_subset)}] {msg}")
+                            try:
+                                proxy_cands = pf.fetch_for_shot(shot, max_videos=2, top_k_per_video=2, progress_cb=_proxy_cb)
+                                if proxy_cands:
+                                    # Generate Match Reasons in one batched Groq call
+                                    from core.smart_search import SmartSearch
+                                    ss_temp = SmartSearch()
+                                    query = shot.get("shot_intent", "")
+                                    reasons = ss_temp.generate_match_reasons_batched(query, proxy_cands, os.getenv("GROQ_API_KEY"))
+                                    for cand, reason in zip(proxy_cands, reasons):
+                                        cand["smart_reason"] = reason
+                                    if "video_results" not in shot:
+                                        shot["video_results"] = []
+                                    shot["video_results"].extend(proxy_cands)
+                            except Exception as e:
+                                print(f"[ProxyFetch] Shot {i} failed: {e}")
+                    elif use_smart:
+                        # Classic Smart Library search (non-YouTube sources)
                         status2.text("Searching local library semantically…")
                         from core.smart_search import SmartSearch
                         ss = SmartSearch()
@@ -1736,10 +1764,11 @@ elif app_mode in ["Director", "Smart Mode"]:
                                             "segment_path": hit.get("segment_path"),
                                             "smart_reason": reason
                                         }
-                                        if "video_results" not in shot: shot["video_results"] = []
+                                        if "video_results" not in shot:
+                                            shot["video_results"] = []
                                         shot["video_results"].append(cand)
                             pbar2.progress(0.9 + (0.1 * (i+1)/len(updated_subset)))
-                    
+
                     if chunk_to_fetch is not None:
                         update_map = {s["slot_id"]: s for s in updated_subset}
                         for s in st.session_state.director_shots:
@@ -2401,6 +2430,44 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 continue
                         # If we couldn't materialize from cache, fall
                         # through to a fresh download below.
+
+                    # ── smart_proxy: timestamp-precise section download ──────────
+                    # Look up the candidate metadata so we have timestamps & source
+                    res_meta = None
+                    for shot in selected_shots:
+                        for res in shot.get("selected_results", []):
+                            if res.get("url") == url and res.get("source") == "smart_proxy":
+                                res_meta = res
+                                break
+                        if res_meta:
+                            break
+
+                    if res_meta:
+                        try:
+                            from core.indexer import VideoIndexer
+                            _vi = VideoIndexer()
+                            quality_val = d_quality.replace("p", "") if d_quality not in ("Best", "Worst") else "1080"
+                            _vi.download_section(
+                                url=url,
+                                start_time=res_meta.get("timestamp_start", 0),
+                                end_time=res_meta.get("timestamp_end", 30),
+                                quality=quality_val,
+                                output_path=primary_path,
+                            )
+                            # Auto-index into permanent Smart Library
+                            if os.path.exists(primary_path):
+                                _vi.embed_and_index(
+                                    video_path=primary_path,
+                                    video_url=url,
+                                    video_title=res_meta.get("title"),
+                                    timestamp_start=res_meta.get("timestamp_start"),
+                                )
+                            for ext in extras:
+                                link_or_copy(primary_path, ext)
+                            added += 1
+                        except Exception as e:
+                            st.error(f"Smart section download failed for Shot {group['shots'][0]}: {e}")
+                        continue  # skip the regular dm.add_download below
 
                     try:
                         task_id = st.session_state.dm.add_download(

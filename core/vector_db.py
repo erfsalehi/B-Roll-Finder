@@ -3,85 +3,100 @@ import json
 import faiss
 import numpy as np
 
+# Global Smart Library lives in the user's home directory so it persists
+# across all projects and survives .cache/ wipes.
+SMART_LIBRARY_DIR = os.path.join(os.path.expanduser("~"), ".broll_director")
+
+
 class VectorDB:
-    def __init__(self, index_path=".cache/index/faiss.index", meta_path=".cache/index/metadata.json"):
-        self.index_path = index_path
-        self.meta_path = meta_path
-        self.dimension = 512 # Standard for CLIP ViT-B/32
-        self.index = None
+    def __init__(self, permanent=True, index_path=None, meta_path=None):
+        """
+        permanent=True  → persistent Smart Library in ~/.broll_director/
+        permanent=False → in-memory only (temporary proxy session index)
+        """
+        self.permanent = permanent
+        self.dimension = 512  # CLIP ViT-B/32
+
+        if permanent:
+            os.makedirs(SMART_LIBRARY_DIR, exist_ok=True)
+            self.index_path = index_path or os.path.join(SMART_LIBRARY_DIR, "smart_library.index")
+            self.meta_path  = meta_path  or os.path.join(SMART_LIBRARY_DIR, "metadata.json")
+        else:
+            # No disk paths — everything stays in RAM
+            self.index_path = None
+            self.meta_path  = None
+
+        self.index    = None
         self.metadata = []
-        
-        os.makedirs(os.path.dirname(index_path), exist_ok=True)
         self.load()
 
     def load(self):
-        """Loads the FAISS index and metadata from disk."""
-        if os.path.exists(self.index_path):
+        """Loads the FAISS index and metadata from disk (permanent mode only)."""
+        if self.index_path and os.path.exists(self.index_path):
             try:
                 self.index = faiss.read_index(self.index_path)
             except Exception:
                 self.index = faiss.IndexFlatIP(self.dimension)
         else:
-            # IndexFlatIP + normalize_L2 = Cosine Similarity
             self.index = faiss.IndexFlatIP(self.dimension)
-            
-        if os.path.exists(self.meta_path):
-            with open(self.meta_path, 'r') as f:
+
+        if self.meta_path and os.path.exists(self.meta_path):
+            with open(self.meta_path, "r") as f:
                 self.metadata = json.load(f)
 
     def save(self):
-        """Persists the index and metadata to disk."""
+        """Persists the index and metadata to disk (permanent mode only)."""
+        if not self.permanent:
+            return  # Temporary index — never write to disk
         faiss.write_index(self.index, self.index_path)
-        with open(self.meta_path, 'w') as f:
+        with open(self.meta_path, "w") as f:
             json.dump(self.metadata, f, indent=2)
 
     def add_vectors(self, vectors, meta_list):
         """
         Adds vectors and their corresponding metadata to the database.
-        vectors: np.array of shape (N, dimension)
-        meta_list: list of dictionaries of length N
+        vectors: list of np.array of shape (dimension,)
+        meta_list: list of dicts of the same length
         """
-        if len(vectors) == 0:
+        if not vectors:
             return
-            
-        vectors = np.array(vectors).astype('float32')
-        # Normalize for cosine similarity
-        faiss.normalize_L2(vectors)
-        
-        self.index.add(vectors)
+
+        vecs = np.array(vectors, dtype="float32")
+        faiss.normalize_L2(vecs)
+        self.index.add(vecs)
         self.metadata.extend(meta_list)
         self.save()
 
     def search(self, query_vector, k=10):
         """
         Searches for the top K most similar vectors.
-        Returns a list of metadata dictionaries with an added 'score' field.
+        Returns metadata dicts with an added 'score' field.
         """
         if self.index is None or self.index.ntotal == 0:
             return []
-            
-        query_vector = np.array([query_vector]).astype('float32')
+
+        query_vector = np.array([query_vector], dtype="float32")
         faiss.normalize_L2(query_vector)
-        
-        distances, indices = self.index.search(query_vector, k)
-        
+
+        actual_k = min(k, self.index.ntotal)
+        distances, indices = self.index.search(query_vector, actual_k)
+
         results = []
         for i, idx in enumerate(indices[0]):
             if idx == -1 or idx >= len(self.metadata):
                 continue
             meta = self.metadata[idx].copy()
-            meta['score'] = float(distances[0][i])
+            meta["score"] = float(distances[0][i])
             results.append(meta)
-            
-        # Deduplicate results that point to the same file and similar timestamps if needed,
-        # but for now we'll return raw hits.
+
         return results
 
     def clear(self):
         """Resets the entire database."""
-        self.index = faiss.IndexFlatIP(self.dimension)
+        self.index    = faiss.IndexFlatIP(self.dimension)
         self.metadata = []
         self.save()
 
     def get_total_count(self):
         return len(self.metadata)
+
