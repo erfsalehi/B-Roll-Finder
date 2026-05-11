@@ -1145,6 +1145,20 @@ elif app_mode == "Director":
         )
 
         if audio_file:
+            # ── Project Isolation & Auto-Reset ───────────────────────────
+            # If the audio filename changes, we treat it as a new project
+            # and clear out all previous director-mode state to prevent
+            # mixing shots from different scripts.
+            current_project = audio_file.name
+            if st.session_state.get("project_name") and st.session_state.project_name != current_project:
+                st.session_state.director_shots = []
+                st.session_state.transcription_segments = []
+                st.session_state.transcription_chunks = []
+                st.session_state.active_chunk_indices = [0]
+                st.session_state.script_text = ""
+                st.session_state.d_review_idx = 0
+            st.session_state.project_name = current_project
+
             audio_path = os.path.join(
                 ".cache", "temp_audio_director" + os.path.splitext(audio_file.name)[1]
             )
@@ -2164,12 +2178,14 @@ elif app_mode == "Director":
                     cleaned = "-".join(cleaned.split()).lower()
                     return cleaned[:max_len].strip("-") or ""
 
+                proj_folder = _safe_for_fs(st.session_state.get("project_name", "default"), 50)
                 indices = st.session_state.get("active_chunk_indices", [0])
                 chunk_str = "_".join(str(i+1) for i in sorted(indices))
 
                 manifest = [
                     "B-ROLL FINDER - SHOT MANIFEST",
                     "=============================",
+                    f"Project: {st.session_state.get('project_name', 'Unnamed')}",
                     f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
                     f"Chunks Included: {chunk_str}",
                     ""
@@ -2214,7 +2230,7 @@ elif app_mode == "Director":
                         manifest.append("")
 
                 out_txt = "\n".join(manifest)
-                out_path = os.path.join("downloads", "director", "shot_manifest.txt")
+                out_path = os.path.join("downloads", "director", proj_folder, "shot_manifest.txt")
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 with open(out_path, "w", encoding="utf-8") as f:
                     f.write(out_txt)
@@ -2229,19 +2245,6 @@ elif app_mode == "Director":
                 st.session_state.dm.clear_and_reset()
 
                 # ── Group selected clips by URL across all shots ─────────
-                # When the same clip is picked for multiple shots we want to
-                # download it once and hardlink it into the other per-shot
-                # filenames. Without this grouping we'd transfer the same
-                # MP4 multiple times through the user's network.
-                #
-                # Filename format: {chunk}-{shot}-{source}-{keyword}.mp4
-                # where chunk is the active chunk index (1-based), shot is
-                # the slot_id within that chunk, source is pexels/pixabay/
-                # youtube, and keyword is the matched search query that
-                # surfaced this clip (sanitized for the filesystem). If a
-                # second pick in the same shot collides on keyword (e.g.
-                # two Pexels results from one query), we suffix -2, -3 etc.
-                # only the duplicates.
                 def _safe_for_fs(text: str, max_len: int = 30) -> str:
                     if not text:
                         return ""
@@ -2250,6 +2253,7 @@ elif app_mode == "Director":
                     cleaned = "-".join(cleaned.split()).lower()
                     return cleaned[:max_len].strip("-") or ""
 
+                proj_folder = _safe_for_fs(st.session_state.get("project_name", "default"), 50)
                 indices = st.session_state.get("active_chunk_indices", [0])
                 chunk_str = "_".join(str(i+1) for i in sorted(indices))
 
@@ -2271,7 +2275,7 @@ elif app_mode == "Director":
                             filename = f"{base}-{n}.mp4"
                         seen_filenames.add(filename)
 
-                        output_path = os.path.join("downloads", "director", filename)
+                        output_path = os.path.join("downloads", "director", proj_folder, filename)
                         dm_source   = "direct" if source in ("pexels", "pixabay") else "youtube"
                         if url not in url_groups:
                             url_groups[url] = {
