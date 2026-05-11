@@ -1081,6 +1081,8 @@ elif app_mode in ["Director", "Smart Mode"]:
         indexer = VideoIndexer()
         searcher = SmartSearch()
         
+        st.info("💡 **The AI searches for visual meaning, not just keywords.**")
+
         with st.expander("📚 Smart Library Manager", expanded=False):
             col_lib1, col_lib2 = st.columns([3, 1])
             with col_lib1:
@@ -1708,6 +1710,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                             if query and (not retry_clicked or not shot.get("video_results")):
                                 smart_hits = ss.search(query, k=int(smart_num))
                                 for hit in smart_hits:
+                                    reason = ss.generate_match_reason(query, hit, os.getenv("GROQ_API_KEY"))
                                     cand = {
                                         "title": hit.get("video_title"),
                                         "url": hit.get("video_url") or hit.get("video_path"),
@@ -1716,7 +1719,8 @@ elif app_mode in ["Director", "Smart Mode"]:
                                         "duration": hit.get("duration"),
                                         "matched_query": query,
                                         "score": hit.get("score"),
-                                        "segment_path": hit.get("segment_path")
+                                        "segment_path": hit.get("segment_path"),
+                                        "smart_reason": reason
                                     }
                                     if "video_results" not in shot: shot["video_results"] = []
                                     shot["video_results"].append(cand)
@@ -2038,6 +2042,10 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 
                                 # Metadata & Watch Link
                                 st.markdown(f"**{source_display}**")
+                                reason = cand.get("smart_reason")
+                                if reason:
+                                    st.caption(f"🤖 _{reason}_")
+
                                 if source_val == "SMART_LIBRARY":
                                     if st.button("👁 Preview", key=f"prev_{slot_id}_{i_g+j_g}"):
                                         st.video(cand.get("segment_path"))

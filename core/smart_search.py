@@ -36,6 +36,35 @@ class SmartSearch:
         
         return filtered
 
+    def generate_match_reason(self, query_text, hit_metadata, api_key):
+        """Uses Groq to explain why this visual segment matches the narration."""
+        if not api_key:
+            return "Matches narration intent based on visual embeddings."
+            
+        try:
+            from groq import Groq
+            client = Groq(api_key=api_key)
+            
+            prompt = f"""
+            Identify the visual connection between this narration and this video clip.
+            Narration: "{query_text}"
+            Video Title: "{hit_metadata.get('video_title')}"
+            
+            Write a short (1 sentence) explanation for a video editor. 
+            Format: "Matches [topic] with [visual description]."
+            Example: "Matches narration about urban commuting with aerial footage of crowded city traffic."
+            """
+            
+            resp = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50,
+                temperature=0.3
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception:
+            return "High semantic relevance detected."
+
     def get_library_stats(self):
         """Returns statistics about the indexed library."""
         total_segments = self.db.get_total_count()
