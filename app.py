@@ -2214,13 +2214,21 @@ elif app_mode == "Director":
                     # network entirely and just hardlink/copy from the
                     # cached file to all expected per-shot paths.
                     cached = download_cache.lookup_path(url)
-                    if cached and cached != primary_path:
-                        ok_primary = link_or_copy(cached, primary_path)
-                        for ext in extras:
-                            link_or_copy(cached, ext)
-                        if ok_primary:
+                    if cached:
+                        if cached == primary_path:
+                            # Already exactly where we want it. Just link any extras.
+                            for ext in extras:
+                                link_or_copy(cached, ext)
                             cached_hits += 1
                             continue
+                        else:
+                            # Cached under a different filename, copy/link it over.
+                            ok_primary = link_or_copy(cached, primary_path)
+                            for ext in extras:
+                                link_or_copy(cached, ext)
+                            if ok_primary:
+                                cached_hits += 1
+                                continue
                         # If we couldn't materialize from cache, fall
                         # through to a fresh download below.
 
