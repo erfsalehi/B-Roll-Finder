@@ -186,12 +186,11 @@ if not st.session_state.slots and os.path.exists(CACHE_FILE):
 st.sidebar.title("App Mode")
 app_mode = st.sidebar.radio(
     "Select Mode",
-    ["Director", "Classic Finder"],
+    ["Director", "Smart Mode", "Classic Finder"],
     help=(
-        "**Director** is the recommended workflow — upload a voiceover, "
-        "auto-transcribe, generate shot lists, fetch + rank candidates, "
-        "review with checkboxes, download. **Classic Finder** is the older "
-        "keyword-based path; kept for compatibility."
+        "**Director** is the standard workflow. "
+        "**Smart Mode** adds AI-powered semantic search across your local library. "
+        "**Classic Finder** is the legacy keyword-based path."
     ),
 )
 
@@ -1068,13 +1067,42 @@ def render_classic_mode():
 
 if app_mode == "Classic Finder":
     render_classic_mode()
-elif app_mode == "Director":
+elif app_mode in ["Director", "Smart Mode"]:
     ensure_shots_have_chunk_ids()
     from core.director_search import fetch_director_footage
     from core.director_rank import rank_shot_candidates
     from core.director_youtube import generate_youtube_keywords_for_shots, seed_youtube_keywords
     from core.output import generate_fcpxml, generate_shot_list_txt
-    st.title("🎬 B-Roll Director")
+    st.title(f"🎬 B-Roll {app_mode}")
+    
+    if app_mode == "Smart Mode":
+        from core.indexer import VideoIndexer
+        from core.smart_search import SmartSearch
+        indexer = VideoIndexer()
+        searcher = SmartSearch()
+        
+        with st.expander("📚 Smart Library Manager", expanded=False):
+            col_lib1, col_lib2 = st.columns([3, 1])
+            with col_lib1:
+                lib_url = st.text_input("Ingest YouTube URL", placeholder="https://youtube.com/watch?v=...", key="lib_url")
+            with col_lib2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("Index Video", use_container_width=True):
+                    if lib_url:
+                        with st.status(f"Indexing {lib_url}...") as status:
+                            def _prog(p, msg): status.update(label=msg, state="running")
+                            count = indexer.download_and_index_youtube(lib_url, progress_cb=_prog)
+                            status.update(label=f"Done! Added {count} segments.", state="complete")
+                            st.rerun()
+                    else:
+                        st.warning("Enter a URL first.")
+            
+            stats = searcher.get_library_stats()
+            st.caption(f"Library Status: **{stats['unique_videos']}** videos | **{stats['total_segments']}** searchable clips indexed.")
+            if st.button("🗑 Clear Library", type="secondary"):
+                indexer.db.clear()
+                st.success("Library cleared.")
+                st.rerun()
 
     # ── Setup: API keys (collapsible, auto-collapses once Groq key is present) ──
     _key_status = {
@@ -1554,7 +1582,7 @@ elif app_mode == "Director":
     if st.session_state.director_shots:
         st.header("Step 3: Fetch Candidates")
 
-        col_s2a, col_s2b, col_s2c, col_s2d = st.columns(4)
+        col_s2a, col_s2b, col_s2c, col_s2d, col_s2e = st.columns(5)
         with col_s2a:
             use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb", on_change=save_cache)
             pex_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pex_nr", on_change=save_cache) if use_pexels else 0
@@ -1588,6 +1616,9 @@ elif app_mode == "Director":
                 ),
             )
             yt_search_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_yts_nr", on_change=save_cache) if use_youtube_search else 0
+        with col_s2e:
+            use_smart = st.checkbox("Smart Library", value=True, key="d_smart_cb", disabled=app_mode != "Smart Mode")
+            smart_num = st.number_input("Results/query", value=5, min_value=1, max_value=20, key="d_smart_nr") if use_smart else 0
 
         if use_youtube_search:
             yt_calls = sum(
@@ -1663,10 +1694,33 @@ elif app_mode == "Director":
                         youtube_search_num_results=yt_search_num,
                         use_youtube_api=use_youtube_api,
                         use_youtube_search=use_youtube_search,
-                        progress_callback=lambda p: pbar2.progress(p),
+                        progress_callback=lambda p: pbar2.progress(p * 0.9),
                         errors=d_fetch_errors,
                         retry_only=retry_clicked,
                     )
+
+                    if use_smart:
+                        status2.text("Searching local library semantically…")
+                        from core.smart_search import SmartSearch
+                        ss = SmartSearch()
+                        for i, shot in enumerate(updated_subset):
+                            query = shot.get("shot_intent", "")
+                            if query and (not retry_clicked or not shot.get("video_results")):
+                                smart_hits = ss.search(query, k=int(smart_num))
+                                for hit in smart_hits:
+                                    cand = {
+                                        "title": hit.get("video_title"),
+                                        "url": hit.get("video_url") or hit.get("video_path"),
+                                        "source": "smart_library",
+                                        "thumbnail": None,
+                                        "duration": hit.get("duration"),
+                                        "matched_query": query,
+                                        "score": hit.get("score"),
+                                        "segment_path": hit.get("segment_path")
+                                    }
+                                    if "video_results" not in shot: shot["video_results"] = []
+                                    shot["video_results"].append(cand)
+                            pbar2.progress(0.9 + (0.1 * (i+1)/len(updated_subset)))
                     
                     if chunk_to_fetch is not None:
                         update_map = {s["slot_id"]: s for s in updated_subset}
@@ -1971,25 +2025,25 @@ elif app_mode == "Director":
                                 if thumb:
                                     # 1. The Image with overlays
                                     selection_overlay = f'<div style="position: absolute; top: 5px; left: 5px; z-index: 10; background: #00ff00; color: black; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 2px solid black;">✓</div>' if is_picked else ""
-                                    
+                                    border_class = "selection-border-active" if is_picked else ""
                                     st.markdown(
-                                        f'<div style="position: relative; border: {"3px solid #00ff00" if is_picked else "1px solid #444"}; border-radius: 6px; overflow: hidden;">' 
-                                        f'{selection_overlay}'
-                                        f'{others_tag}'
-                                        f'<img src="{thumb}" style="width:100%; aspect-ratio:16/9; object-fit:cover;">' 
-                                        f'<div class="watch-btn-overlay" style="position: absolute; top: 5px; right: 5px; z-index: 10;">' 
-                                        f'<a href="{url}" target="_blank" style="text-decoration: none; background: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 4px; color: white; font-size: 12px; font-weight: bold;">📺 WATCH</a>' 
-                                        f'</div>' 
+                                        f'<div class="{border_class}" style="position: relative;">' 
+                                        f'<img src="{thumb}" style="width:100%; border-radius:4px; aspect-ratio:16/9; object-fit:cover;">' 
                                         f'</div>',
                                         unsafe_allow_html=True
                                     )
-                                else:
-                                    st.info("No preview")
-
-                                st.markdown(f"**{source}** · {res_str} · {dur_str}")
-                                st.caption(title[:60] + ("..." if len(title) > 60 else ""))
+                                elif source_val == "SMART_LIBRARY":
+                                    # For smart library, we might not have a thumbnail yet, show a placeholder or the video
+                                    st.info("Local Segment")
                                 
-                                # 3. The Status Button (Also serves as the full-card click trigger)
+                                # Metadata & Watch Link
+                                st.markdown(f"**{source_display}**")
+                                if source_val == "SMART_LIBRARY":
+                                    if st.button("👁 Preview", key=f"prev_{slot_id}_{i_g+j_g}"):
+                                        st.video(cand.get("segment_path"))
+                                else:
+                                    st.markdown(f'<div class="watch-btn-overlay"><a href="{url}" target="_blank" style="text-decoration: none; background: #333; padding: 2px 8px; border-radius: 4px; color: white; font-size: 12px; font-weight: bold;">📺 WATCH</a></div>', unsafe_allow_html=True)
+                                
                                 btn_label = "✅ SELECTED" if is_picked else "⬜ PICK CLIP"
                                 if st.button(btn_label, key=f"galpick_{slot_id}_{hash(cand.get('url'))}", use_container_width=True, type="primary" if is_picked else "secondary"):
                                     toggle_pick(cand.get("url"), cand, shot)
