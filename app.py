@@ -159,22 +159,22 @@ def ensure_shots_have_chunk_ids():
     changed = False
     for shot in st.session_state.director_shots:
         if shot.get("chunk_id") is None:
-            ts = shot.get("timestamp", 0)
-            # Find the chunk index by checking segment boundaries
+            ts = float(shot.get("timestamp", 0))
             found = False
             for i, chunk in enumerate(chunks):
                 if not chunk.get("segments"):
                     continue
-                c_start = chunk["segments"][0].get("start", 0)
-                c_end = chunk["segments"][-1].get("end", 99999)
-                if c_start <= ts <= c_end:
+                # Use float to ensure safe comparison
+                c_end = float(chunk["segments"][-1].get("end", 99999))
+                # Add a small buffer (e.g. 5 seconds) to catch edge cases
+                if ts <= (c_end + 5.0):
                     shot["chunk_id"] = i
                     changed = True
                     found = True
                     break
             if not found:
-                # If timestamp is outside all chunks, default to 0
-                shot["chunk_id"] = 0
+                # If timestamp is outside all chunks, default to the last chunk
+                shot["chunk_id"] = max(0, len(chunks) - 1)
                 changed = True
     if changed:
         save_cache()
@@ -1996,16 +1996,12 @@ elif app_mode == "Director":
         st.markdown("---")
         chunk_id = shot.get("chunk_id")
         if chunk_id is None:
-            # Fallback for older shots: try to infer or just default to 0
-            # If we have transcription chunks, we could compare timestamps, 
-            # but for now let's just default to 0 so the editor isn't empty.
             chunk_id = 0
             
         with st.expander(f"♻️ Not happy with Chunk {chunk_id+1}? Tweak & Redo", expanded=False):
-            st.caption("You can edit the search queries for all shots in this chunk here, then regenerate the suggestions.")
-            
             # Find all shots in this chunk
             chunk_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") == chunk_id]
+            st.caption(f"Debug: CID={chunk_id}, Count={len(chunk_shots)}")
             
             # Build a small editor for their queries
             c_rows = []
