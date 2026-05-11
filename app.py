@@ -1865,7 +1865,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                 st.rerun()
         with nav2:
             options = [f"Shot {i+1} / {len(review_shots)}" for i in range(len(review_shots))]
-            selected = st.selectbox("Jump", options=options, index=idx, label_visibility="collapsed", key="d_jump_top")
+            # Force selectbox to reflect current idx — prevents it from overriding button navigation
+            st.session_state["d_jump_top"] = options[idx]
+            selected = st.selectbox("Jump", options=options, label_visibility="collapsed", key="d_jump_top")
             new_idx_top = int(selected.split(" ")[1]) - 1
             if new_idx_top != idx:
                 save_cache()
@@ -2170,7 +2172,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                 st.rerun()
         with fa3:
             options = [f"Shot {i+1} / {len(review_shots)}" for i in range(len(review_shots))]
-            selected = st.selectbox("Jump", options=options, index=idx, label_visibility="collapsed", key=f"d_jump_bot_{slot_id}")
+            # Force selectbox to reflect current idx — prevents it from overriding button navigation
+            st.session_state[f"d_jump_bot_{slot_id}"] = options[idx]
+            selected = st.selectbox("Jump", options=options, label_visibility="collapsed", key=f"d_jump_bot_{slot_id}")
             new_idx_bot = int(selected.split(" ")[1]) - 1
             if new_idx_bot != idx:
                 save_cache()
