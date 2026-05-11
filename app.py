@@ -189,7 +189,7 @@ app_mode = st.sidebar.radio(
     ["Director", "Smart Mode", "Classic Finder"],
     help=(
         "**Director** is the standard workflow. "
-        "**Smart Mode** adds AI-powered semantic search across your local library. "
+        "**Smart Mode** enables Scene-Level Understanding across your local library. "
         "**Classic Finder** is the legacy keyword-based path."
     ),
 )
@@ -1083,10 +1083,10 @@ elif app_mode in ["Director", "Smart Mode"]:
         
         st.info("💡 **The AI searches for visual meaning, not just keywords.**")
 
-        with st.expander("📚 Smart Library Manager", expanded=False):
+        with st.expander("📚 AI Visual Search Manager", expanded=False):
             col_lib1, col_lib2 = st.columns([3, 1])
             with col_lib1:
-                lib_url = st.text_input("Ingest YouTube URL", placeholder="https://youtube.com/watch?v=...", key="lib_url")
+                lib_url = st.text_input("Ingest YouTube URL to Library", placeholder="https://youtube.com/watch?v=...", key="lib_url")
             with col_lib2:
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("Index Video", use_container_width=True):
@@ -1094,13 +1094,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                         with st.status(f"Indexing {lib_url}...") as status:
                             def _prog(p, msg): status.update(label=msg, state="running")
                             count = indexer.download_and_index_youtube(lib_url, progress_cb=_prog)
-                            status.update(label=f"Done! Added {count} segments.", state="complete")
+                            status.update(label=f"Done! Added {count} scenes.", state="complete")
                             st.rerun()
                     else:
                         st.warning("Enter a URL first.")
             
             stats = searcher.get_library_stats()
-            st.caption(f"Library Status: **{stats['unique_videos']}** videos | **{stats['total_segments']}** searchable clips indexed.")
+            st.caption(f"Library Status: **{stats['unique_videos']}** videos | **{stats['total_segments']}** indexed scenes with Scene-Level Understanding.")
             if st.button("🗑 Clear Library", type="secondary"):
                 indexer.db.clear()
                 st.success("Library cleared.")
@@ -2001,11 +2001,17 @@ elif app_mode in ["Director", "Smart Mode"]:
                         thumb = cand.get("thumbnail")
                         url = cand.get("page_url") or cand.get("url")
                         title = cand.get("title", "Video")
-                        source = cand.get("source", "").upper()
+                        source_val = cand.get("source", "").upper()
+                        # Branding: SMART_LIBRARY -> AI VISUAL SEARCH
+                        source_display = "🤖 AI VISUAL SEARCH" if source_val == "SMART_LIBRARY" else f"🌐 {source_val}"
+                        score = cand.get("score")
+                        if score:
+                            source_display += f" · {score*100:.0f}% match"
+                        
                         w, h = cand.get("width"), cand.get("height")
                         dur = cand.get("duration")
                         res_str = f"{w}x{h}" if w and h else "Resolution Unknown"
-                        dur_str = f"{dur}s" if dur else ""
+                        dur_str = f"{int(dur)}s" if dur else ""
                         
                         with cols[j_g]:
                             cand_url = cand.get("url")
