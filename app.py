@@ -1932,20 +1932,23 @@ elif app_mode in ["Director", "Smart Mode"]:
                 /* Container for the whole gallery card */
                 .gallery-card {
                     position: relative !important;
+                    overflow: hidden; /* Keep the overlay within the card */
+                    border-radius: 8px;
                 }
                 
                 /* Target the status button at the bottom and expand its clickable area */
                 .gallery-card [data-testid="stButton"] button {
                     position: relative;
+                    z-index: 2;
                 }
                 
                 .gallery-card [data-testid="stButton"] button::after {
                     content: "";
                     position: absolute;
-                    top: -450px; /* Pull up to cover image and metadata */
-                    left: -20px;
-                    right: -20px;
-                    bottom: -20px;
+                    top: -600px; /* Cover the whole card above the button */
+                    left: -100px;
+                    right: -100px;
+                    bottom: -100px;
                     z-index: 1;
                     cursor: pointer;
                 }
@@ -2168,7 +2171,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         fa1, fa2, fa3, fa4, fa5 = st.columns([1.2, 1.2, 2.5, 2.5, 1.2])
         with fa1:
             if st.button(
-                "◀ Prev", key="d_prev_bot",
+                "◀ Prev", key=f"d_prev_bot_{slot_id}",
                 disabled=idx == 0, use_container_width=True,
             ):
                 save_cache()
@@ -2183,7 +2186,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 st.rerun()
         with fa3:
             options = [f"Shot {i+1} / {len(review_shots)}" for i in range(len(review_shots))]
-            selected = st.selectbox("Jump", options=options, index=idx, label_visibility="collapsed", key="d_jump_bot")
+            selected = st.selectbox("Jump", options=options, index=idx, label_visibility="collapsed", key=f"d_jump_bot_{slot_id}")
             new_idx_bot = int(selected.split(" ")[1]) - 1
             if new_idx_bot != idx:
                 save_cache()
@@ -2192,7 +2195,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         with fa4:
             if idx < len(review_shots) - 1:
                 if st.button(
-                    "Save & Next ▶", key="d_save_next",
+                    "Save & Next ▶", key=f"d_save_next_{slot_id}",
                     type="primary", use_container_width=True,
                 ):
                     save_cache()
@@ -2200,14 +2203,14 @@ elif app_mode in ["Director", "Smart Mode"]:
                     st.rerun()
             else:
                 if st.button(
-                    "✅ Finish Review", key="d_finish",
+                    "✅ Finish Review", key=f"d_finish_{slot_id}",
                     type="primary", use_container_width=True,
                 ):
                     save_cache()
                     st.success("Review complete! Scroll down to Step 6 to start downloads.")
         with fa5:
             if st.button(
-                "Next ▶", key="d_next_bot",
+                "Next ▶", key=f"d_next_bot_{slot_id}",
                 disabled=idx == len(review_shots) - 1, use_container_width=True,
             ):
                 save_cache()
