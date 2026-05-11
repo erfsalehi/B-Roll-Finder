@@ -2061,7 +2061,14 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     st.info("Local Segment")
                                 
                                 # Metadata & Watch Link
-                                st.markdown(f"**{source_display}**")
+                                st.markdown(f"**{title}**")
+                                st.caption(f"{source_display} · {dur_str} · {res_str}")
+                                
+                                desc = cand.get("description")
+                                if desc:
+                                    with st.expander("📄 Description", expanded=False):
+                                        st.write(desc)
+
                                 reason = cand.get("smart_reason")
                                 if reason:
                                     st.caption(f"🤖 _{reason}_")
