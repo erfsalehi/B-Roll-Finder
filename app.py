@@ -2526,6 +2526,30 @@ elif app_mode in ["Director", "Smart Mode"]:
                         icon = "✅" if h["status"] == "completed" else "⏭"
                         st.write(f"{icon} {os.path.basename(h['output_path'])}")
 
+            # ── Auto-Index on Completion ───────────────────────────────────
+            if completed == total_t and total_t > 0:
+                current_batch_ids = [t["id"] for t in tasks if t["status"] == "completed"]
+                if current_batch_ids:
+                    indexed_batch_ids = st.session_state.get("d_indexed_batches", set())
+                    batch_key = tuple(sorted(current_batch_ids))
+                    
+                    if batch_key not in indexed_batch_ids:
+                        with st.status("🧠 Auto-indexing new footage for AI Visual Search...") as status:
+                            from core.indexer import VideoIndexer
+                            indexer = VideoIndexer()
+                            count = 0
+                            for t in tasks:
+                                if t["status"] == "completed" and os.path.exists(t["output_path"]):
+                                    status.update(label=f"Indexing {os.path.basename(t['output_path'])}...", state="running")
+                                    indexer.index_video(t["output_path"], video_url=t.get("url"))
+                                    count += 1
+                            status.update(label=f"Done! Auto-indexed {count} scenes into your library.", state="complete")
+                        
+                        if "d_indexed_batches" not in st.session_state:
+                             st.session_state.d_indexed_batches = set()
+                        st.session_state.d_indexed_batches.add(batch_key)
+                        save_cache()
+
             # Auto-refresh while anything is still moving (downloading, queued,
             # paused, or post-download processing).
             in_motion = (stats["downloading"] + stats["queued"]
