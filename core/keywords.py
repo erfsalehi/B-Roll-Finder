@@ -7,7 +7,7 @@ from groq import Groq, RateLimitError as GroqRateLimitError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type, retry_if_exception
 
 GROQ_MODEL       = "llama-3.3-70b-versatile"
-OPENROUTER_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
+OPENROUTER_MODEL = "google/gemini-2.5-flash-preview:free"
 OPENROUTER_BASE  = "https://openrouter.ai/api/v1/chat/completions"
 
 def load_prompt() -> str:
@@ -161,15 +161,17 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
             "Content-Type":  "application/json",
         }
         payload = {
-            "model":           OPENROUTER_MODEL,
-            "temperature":     temperature,
-            "max_tokens":      max_tokens,
-            "response_format": {"type": "json_object"} if "llama" in OPENROUTER_MODEL.lower() else None,
+            "model":       OPENROUTER_MODEL,
+            "temperature": temperature,
+            "max_tokens":  max_tokens,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_content},
             ],
         }
+        # Only request JSON mode for models that support it
+        if "llama" in OPENROUTER_MODEL.lower():
+            payload["response_format"] = {"type": "json_object"}
         try:
             resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
             resp.raise_for_status()
