@@ -1242,34 +1242,46 @@ elif app_mode == "Director":
             if not indices:
                 st.error("Select at least one chunk in Step 1.")
             else:
-                chunk_segments = []
-                for i in sorted(indices):
-                    chunk_segments.extend(chunks[i].get("segments", []))
-
-                pbar = st.progress(0)
-                status = st.empty()
-                c_dur = sum(chunks[i]['end'] - chunks[i]['start'] for i in indices)
-                idx_str = ", ".join(str(i+1) for i in sorted(indices))
-                status.info(
-                    f"Generating shot list for **Chunk(s) {idx_str}** "
-                    f"({len(chunk_segments)} segments, "
-                    f"{c_dur / 60:.1f} min)…"
-                )
-
                 try:
+                    chunks = st.session_state.transcription_chunks
+                    indices = sorted(st.session_state.get("active_chunk_indices", []))
+                    
+                    pbar = st.progress(0)
+                    status = st.empty()
+                    status.text("Generating shot list...")
+                    
+                    all_new_shots = []
+                    total_to_gen = len(indices)
+                    
                     from core.director import generate_shot_list_from_transcription
-                    st.session_state.director_shots = generate_shot_list_from_transcription(
-                        chunk_segments,
-                        os.getenv("GROQ_API_KEY"),
-                        progress_callback=lambda p: pbar.progress(p),
-                        custom_instructions=custom_instructions,
-                        video_topic=d_video_topic,
-                    )
+                    
+                    for i, chunk_idx in enumerate(indices):
+                        status.info(f"Generating shots for Chunk {chunk_idx+1}...")
+                        chunk = chunks[chunk_idx]
+                        chunk_segments = chunk.get("segments", [])
+                        
+                        if not chunk_segments:
+                            continue
+                            
+                        shot_list = generate_shot_list_from_transcription(
+                            chunk_segments,
+                            os.getenv("GROQ_API_KEY"),
+                            custom_instructions=custom_instructions,
+                            video_topic=d_video_topic,
+                            chunk_id=chunk_idx
+                        )
+                        all_new_shots.extend(shot_list)
+                        pbar.progress((i + 1) / total_to_gen)
+                    
+                    # Re-index all shots to be sequential
+                    for idx, shot in enumerate(all_new_shots):
+                        shot["slot_id"] = idx + 1
+                    
+                    st.session_state.director_shots = all_new_shots
                     pbar.progress(1.0)
                     status.empty()
                     st.success(
-                        f"Shot list generated for Chunk(s) {idx_str} — "
-                        f"{len(st.session_state.director_shots)} shot(s). Continue to Step 2.5 or Step 3."
+                        f"Shot list generated — {len(st.session_state.director_shots)} shot(s) across {len(indices)} chunk(s)."
                     )
                     save_cache()
                 except Exception as e:
@@ -1277,6 +1289,65 @@ elif app_mode == "Director":
 
     # ── Generated shot list (editable) ──────────────────────────────────────
     if st.session_state.director_shots:
+        st.subheader("Step 2.2: Selective Regeneration")
+        st.caption("If you're unhappy with a specific chunk, redo it here. Selections from the old version are preserved.")
+        
+        active_indices = sorted(st.session_state.get("active_chunk_indices", []))
+        if active_indices:
+            # Group into rows of 4 for space
+            for r_idx in range(0, len(active_indices), 4):
+                chunk_cols = st.columns(4)
+                for c_idx, chunk_idx in enumerate(active_indices[r_idx:r_idx+4]):
+                    with chunk_cols[c_idx]:
+                        if st.button(f"♻️ Redo Chunk {chunk_idx+1}", key=f"redo_chunk_{chunk_idx}", use_container_width=True):
+                            if not os.getenv("GROQ_API_KEY"):
+                                st.error("Set Groq API Key.")
+                            else:
+                                with st.spinner(f"Redoing Chunk {chunk_idx+1}..."):
+                                    # 1. Collect preserved selections
+                                    preserved_results = []
+                                    seen_urls = set()
+                                    for s in st.session_state.director_shots:
+                                        if s.get("chunk_id") == chunk_idx:
+                                            for res in s.get("selected_results", []):
+                                                if res.get("url") not in seen_urls:
+                                                    preserved_results.append(res)
+                                                    seen_urls.add(res.get("url"))
+                                    
+                                    # 2. Generate new shots
+                                    from core.director import generate_shot_list_from_transcription
+                                    chunk = st.session_state.transcription_chunks[chunk_idx]
+                                    new_shots = generate_shot_list_from_transcription(
+                                        chunk.get("segments", []),
+                                        os.getenv("GROQ_API_KEY"),
+                                        custom_instructions=custom_instructions,
+                                        video_topic=d_video_topic,
+                                        chunk_id=chunk_idx
+                                    )
+                                    
+                                    # 3. Add preserved results to new shots
+                                    for ns in new_shots:
+                                        ns["video_results"] = preserved_results + ns.get("video_results", [])
+                                        # Also keep them selected if they were selected? 
+                                        # User said "remain in the new suggested videos".
+                                        # I'll keep them as selected_results too if they were there.
+                                        ns["selected_results"] = [r for r in preserved_results]
+                                    
+                                    # 4. Splice back into global list
+                                    other_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") != chunk_idx]
+                                    combined = other_shots + new_shots
+                                    # Sort by timestamp (or chunk_id then timestamp)
+                                    combined.sort(key=lambda x: (x.get("chunk_id", 0), x.get("timestamp", 0)))
+                                    
+                                    # 5. Re-index slot_ids
+                                    for idx, s in enumerate(combined):
+                                        s["slot_id"] = idx + 1
+                                        
+                                    st.session_state.director_shots = combined
+                                    save_cache()
+                                    st.success(f"Chunk {chunk_idx+1} regenerated. Check Step 5 to review.")
+                                    st.rerun()
+
         st.subheader("Shot List")
         st.caption(
             "Edit **Intent**, **Priority**, or **Queries** inline. After editing queries, "
@@ -1509,7 +1580,19 @@ elif app_mode == "Director":
         with col_btn2:
             retry_clicked = st.button("Retry Failed/Empty", disabled=st.session_state.is_fetching, key="d_retry", use_container_width=True, help="Only searches for shots that currently have 0 candidates. Preserves existing successful searches.")
 
-        if fetch_clicked or retry_clicked:
+        st.subheader("Step 3.2: Selective Fetching")
+        st.caption("Fetch candidates for a specific chunk only. Useful after tweaking queries above.")
+        active_indices = sorted(st.session_state.get("active_chunk_indices", []))
+        chunk_to_fetch = None
+        if active_indices:
+            for r_idx in range(0, len(active_indices), 4):
+                f_cols = st.columns(4)
+                for c_idx, chunk_idx in enumerate(active_indices[r_idx:r_idx+4]):
+                    with f_cols[c_idx]:
+                        if st.button(f"🔎 Fetch Chunk {chunk_idx+1}", key=f"fetch_chunk_{chunk_idx}", use_container_width=True, disabled=st.session_state.is_fetching):
+                            chunk_to_fetch = chunk_idx
+
+        if fetch_clicked or retry_clicked or chunk_to_fetch is not None:
             if not check_network():
                 st.error("No network connection detected.")
             elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
@@ -1525,9 +1608,17 @@ elif app_mode == "Director":
                 try:
                     pbar2 = st.progress(0)
                     status2 = st.empty()
-                    status2.text("Fetching candidates…")
-                    st.session_state.director_shots = fetch_director_footage(
-                        st.session_state.director_shots,
+                    
+                    target_shots = st.session_state.director_shots
+                    if chunk_to_fetch is not None:
+                        target_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") == chunk_to_fetch]
+                        status2.info(f"Fetching candidates for Chunk {chunk_to_fetch+1}…")
+                    else:
+                        status2.text("Fetching candidates…")
+                    
+                    from core.director_search import fetch_director_footage
+                    updated_subset = fetch_director_footage(
+                        target_shots,
                         use_pexels=use_pexels,
                         use_pixabay=use_pixabay,
                         use_youtube=use_youtube_search,
@@ -1541,6 +1632,15 @@ elif app_mode == "Director":
                         errors=d_fetch_errors,
                         retry_only=retry_clicked,
                     )
+                    
+                    if chunk_to_fetch is not None:
+                        update_map = {s["slot_id"]: s for s in updated_subset}
+                        for s in st.session_state.director_shots:
+                            if s["slot_id"] in update_map:
+                                s.update(update_map[s["slot_id"]])
+                    else:
+                        st.session_state.director_shots = updated_subset
+                        
                     pbar2.progress(1.0)
                     total_found = sum(len(s.get("video_results", [])) for s in st.session_state.director_shots)
                     status2.text("Done.")

@@ -121,7 +121,8 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
 
 def generate_shot_list_from_transcription(segments: list, api_key: str, progress_callback=None,
                                           custom_instructions: str = "",
-                                          video_topic: str = "") -> list:
+                                          video_topic: str = "",
+                                          chunk_id: int = 0) -> list:
     """
     Uses precise transcription segments to generate a shot list.
     """
@@ -169,6 +170,7 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
                 
                 all_shots.append({
                     "slot_id": slot_id,
+                    "chunk_id": chunk_id,
                     "timestamp": int(float(s_time)),
                     "end_timestamp": int(float(e_time)),
                     "timestamp_start_str": format_time(int(float(s_time))),
