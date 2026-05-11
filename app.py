@@ -1672,19 +1672,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             fetch_clicked = st.button("Fetch", disabled=st.session_state.is_fetching, key="d_fetch", use_container_width=True)
         with col_btn2:
             retry_clicked = st.button("Retry Empty", disabled=st.session_state.is_fetching, key="d_retry", use_container_width=True, help="Only searches for shots that currently have 0 candidates. Preserves existing successful searches.")
-
-        st.subheader("Step 3.2: Selective Fetching")
-        st.caption("Fetch candidates for a specific chunk only. Useful after tweaking queries above.")
-        active_indices = sorted(st.session_state.get("active_chunk_indices", []))
         chunk_to_fetch = None
-        if active_indices:
-            for r_idx in range(0, len(active_indices), 4):
-                f_cols = st.columns(4)
-                for c_idx, chunk_idx in enumerate(active_indices[r_idx:r_idx+4]):
-                    with f_cols[c_idx]:
-                        if st.button(f"🔎 Fetch Chunk {chunk_idx+1}", key=f"fetch_chunk_{chunk_idx}", use_container_width=True, disabled=st.session_state.is_fetching):
-                            chunk_to_fetch = chunk_idx
-
         if fetch_clicked or retry_clicked or chunk_to_fetch is not None:
             if not check_network():
                 st.error("No network connection detected.")
