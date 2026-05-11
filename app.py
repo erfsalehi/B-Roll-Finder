@@ -134,7 +134,12 @@ def perform_chunk_regeneration(chunk_idx):
         ns["selected_results"] = [r for r in preserved_results]
     
     # 4. Splice back into global list
-    other_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") != chunk_idx]
+    # If chunk_id is missing, we treat it as 0 for backwards compatibility.
+    def get_cid(s):
+        cid = s.get("chunk_id")
+        return 0 if cid is None else cid
+
+    other_shots = [s for s in st.session_state.director_shots if get_cid(s) != chunk_idx]
     combined = other_shots + new_shots
     combined.sort(key=lambda x: (x.get("chunk_id", 0), x.get("timestamp", 0)))
     
@@ -1331,23 +1336,7 @@ elif app_mode == "Director":
                 except Exception as e:
                     st.error(f"Error generating shot list: {e}")
 
-    # ── Generated shot list (editable) ──────────────────────────────────────
-    if st.session_state.director_shots:
-        st.subheader("Step 2.2: Selective Regeneration")
-        st.caption("If you're unhappy with a specific chunk, redo it here. Selections from the old version are preserved.")
-        
-        active_indices = sorted(st.session_state.get("active_chunk_indices", []))
-        if active_indices:
-            # Group into rows of 4 for space
-            for r_idx in range(0, len(active_indices), 4):
-                chunk_cols = st.columns(4)
-                for c_idx, chunk_idx in enumerate(active_indices[r_idx:r_idx+4]):
-                    with chunk_cols[c_idx]:
-                        if st.button(f"♻️ Redo Chunk {chunk_idx+1}", key=f"redo_chunk_{chunk_idx}", use_container_width=True):
-                            with st.spinner(f"Redoing Chunk {chunk_idx+1}..."):
-                                perform_chunk_regeneration(chunk_idx)
-                                st.success(f"Chunk {chunk_idx+1} regenerated. Check Step 5 to review.")
-                                st.rerun()
+
 
         st.subheader("Shot List")
         st.caption(
@@ -1577,9 +1566,9 @@ elif app_mode == "Director":
 
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            fetch_clicked = st.button("Fetch Candidates", disabled=st.session_state.is_fetching, key="d_fetch", use_container_width=True)
+            fetch_clicked = st.button("Fetch", disabled=st.session_state.is_fetching, key="d_fetch", use_container_width=True)
         with col_btn2:
-            retry_clicked = st.button("Retry Failed/Empty", disabled=st.session_state.is_fetching, key="d_retry", use_container_width=True, help="Only searches for shots that currently have 0 candidates. Preserves existing successful searches.")
+            retry_clicked = st.button("Retry Empty", disabled=st.session_state.is_fetching, key="d_retry", use_container_width=True, help="Only searches for shots that currently have 0 candidates. Preserves existing successful searches.")
 
         st.subheader("Step 3.2: Selective Fetching")
         st.caption("Fetch candidates for a specific chunk only. Useful after tweaking queries above.")
@@ -1974,12 +1963,24 @@ elif app_mode == "Director":
         # quick navigation without scrolling back up to the top nav.
         # ── Redo Chunk Action ────────────────────────────────────────────
         st.markdown("---")
-        chunk_id = shot.get("chunk_id", 0)
+        chunk_id = shot.get("chunk_id")
+        if chunk_id is None:
+            # Fallback for older shots: try to infer or just default to 0
+            # If we have transcription chunks, we could compare timestamps, 
+            # but for now let's just default to 0 so the editor isn't empty.
+            chunk_id = 0
+            
         with st.expander(f"♻️ Not happy with Chunk {chunk_id+1}? Tweak & Redo", expanded=False):
             st.caption("You can edit the search queries for all shots in this chunk here, then regenerate the suggestions.")
             
             # Find all shots in this chunk
             chunk_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") == chunk_id]
+            
+            # If still empty (e.g. ALL shots have missing chunk_id), just show all shots 
+            # if we are looking at Chunk 1.
+            if not chunk_shots and chunk_id == 0:
+                chunk_shots = st.session_state.director_shots
+
             
             # Build a small editor for their queries
             c_rows = []
