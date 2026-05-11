@@ -62,6 +62,10 @@ if "dm" not in st.session_state:
     st.session_state.dm = DownloadManager()
 if "is_fetching" not in st.session_state:
     st.session_state.is_fetching = False
+if "d_video_topic" not in st.session_state:
+    st.session_state.d_video_topic = ""
+if "d_style" not in st.session_state:
+    st.session_state.d_style = ""
 
 # Attempt to load from cache
 def load_cache():

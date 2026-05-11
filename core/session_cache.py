@@ -11,7 +11,9 @@ SESSION_KEYS = (
     "global_themes",
     "transcription_segments",
     "transcription_chunks",
-    "active_chunk_idx",
+    "active_chunk_indices",
+    "d_video_topic",
+    "d_style",
 )
 
 
@@ -23,7 +25,9 @@ DEFAULTS = {
     "global_themes": [],
     "transcription_segments": [],
     "transcription_chunks": [],
-    "active_chunk_idx": 0,
+    "active_chunk_indices": [0],
+    "d_video_topic": "",
+    "d_style": "",
 }
 
 
