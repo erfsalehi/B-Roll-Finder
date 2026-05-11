@@ -2060,14 +2060,18 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     # For smart library, we might not have a thumbnail yet, show a placeholder or the video
                                     st.info("Local Segment")
                                 
-                                # Metadata & Watch Link
+                                # Metadata & Description
                                 st.markdown(f"**{title}**")
                                 st.caption(f"{source_display} · {dur_str} · {res_str}")
                                 
+                                # Priority: tags for stock, description for others
+                                tags = cand.get("tags")
                                 desc = cand.get("description")
-                                if desc:
-                                    with st.expander("📄 Description", expanded=False):
-                                        st.write(desc)
+                                extra_info = tags if (source_val != "YOUTUBE" and tags) else desc
+                                
+                                if extra_info:
+                                    with st.expander("📄 Details", expanded=False):
+                                        st.write(extra_info)
 
                                 reason = cand.get("smart_reason")
                                 if reason:
