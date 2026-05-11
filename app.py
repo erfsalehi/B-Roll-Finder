@@ -1947,7 +1947,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             """, unsafe_allow_html=True)
 
             # Bulk Actions & Quality Filter
-            ba1, ba2, ba3, ba4 = st.columns([1, 1, 1.5, 1.5])
+            ba1, ba2, ba3 = st.columns([1, 1, 2])
             with ba1:
                 # Use global quality filter key
                 q_filter_key = "director_global_q_filter"
@@ -2016,42 +2016,46 @@ elif app_mode in ["Director", "Smart Mode"]:
                             
                             # Check if selected in OTHER shots
                             other_slots = [sid for sid in global_pick_map.get(cand_url, []) if str(sid) != str(slot_id)]
-                            others_tag = ""
-                            if other_slots:
-                                others_tag = (
-                                    f'<div style="position: absolute; bottom: 5px; left: 5px; z-index: 10; '
-                                    f'background: #ffcc00; color: black; padding: 2px 6px; border-radius: 4px; '
-                                    f'font-size: 10px; font-weight: bold; border: 1px solid black;">'
-                                    f'USED IN {", ".join(map(str, other_slots))}'
-                                    f'</div>'
-                                )
 
                             # Use a unique class for the card to target with CSS
                             st.markdown('<div class="gallery-card">', unsafe_allow_html=True)
                             with st.container(border=True):
                                 if thumb:
-                                    # 1. The Image with overlays
-                                    selection_overlay = f'<div style="position: absolute; top: 5px; left: 5px; z-index: 10; background: #00ff00; color: black; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 2px solid black;">✓</div>' if is_picked else ""
-                                    border_class = "selection-border-active" if is_picked else ""
+                                    # Build overlay badges
+                                    selected_badge = (
+                                        '<div style="position:absolute;top:6px;left:6px;z-index:10;'
+                                        'background:#00cc44;color:white;border-radius:50%;width:26px;height:26px;'
+                                        'display:flex;align-items:center;justify-content:center;'
+                                        'font-weight:bold;font-size:14px;border:2px solid white;">✓</div>'
+                                    ) if is_picked else ""
+
+                                    used_badge = (
+                                        f'<div style="position:absolute;bottom:6px;left:6px;z-index:10;'
+                                        f'background:#ffcc00;color:black;padding:2px 6px;border-radius:4px;'
+                                        f'font-size:10px;font-weight:bold;border:1px solid #999;">'
+                                        f'USED IN {", ".join(map(str, other_slots))}</div>'
+                                    ) if other_slots else ""
+
+                                    border_style = "border: 3px solid #00cc44; border-radius:6px;" if is_picked else ""
+
                                     st.markdown(
-                                        f'<div class="{border_class}" style="position: relative;">' 
-                                        f'<img src="{thumb}" style="width:100%; border-radius:4px; aspect-ratio:16/9; object-fit:cover;">' 
+                                        f'<div style="position:relative;{border_style}">'
+                                        f'<img src="{thumb}" style="width:100%;border-radius:4px;aspect-ratio:16/9;object-fit:cover;display:block;">'
+                                        f'{selected_badge}{used_badge}'
                                         f'</div>',
                                         unsafe_allow_html=True
                                     )
                                 elif source_val == "SMART_LIBRARY":
-                                    # For smart library, we might not have a thumbnail yet, show a placeholder or the video
                                     st.info("Local Segment")
                                 
                                 # Metadata & Description
                                 st.markdown(f"**{title}**")
                                 st.caption(f"{source_display} · {dur_str} · {res_str}")
                                 
-                                # Priority: tags for stock, description for others
+                                # Tags for stock, description for YouTube/library
                                 tags = cand.get("tags")
                                 desc = cand.get("description")
-                                extra_info = tags if (source_val != "YOUTUBE" and tags) else desc
-                                
+                                extra_info = tags if (source_val not in ("YOUTUBE", "SMART_LIBRARY") and tags) else desc
                                 if extra_info:
                                     with st.expander("📄 Details", expanded=False):
                                         st.write(extra_info)
@@ -2064,7 +2068,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     if st.button("👁 Preview", key=f"prev_{slot_id}_{i_g+j_g}"):
                                         st.video(cand.get("segment_path"))
                                 else:
-                                    st.markdown(f'<div class="watch-btn-overlay"><a href="{url}" target="_blank" style="text-decoration: none; background: #333; padding: 2px 8px; border-radius: 4px; color: white; font-size: 12px; font-weight: bold;">📺 WATCH</a></div>', unsafe_allow_html=True)
+                                    st.markdown(f'<a href="{url}" target="_blank" style="text-decoration:none;font-size:12px;">📺 Watch</a>', unsafe_allow_html=True)
                                 
                                 btn_label = "✅ SELECTED" if is_picked else "⬜ PICK CLIP"
                                 if st.button(btn_label, key=f"galpick_{slot_id}_{hash(cand.get('url'))}", use_container_width=True, type="primary" if is_picked else "secondary"):
