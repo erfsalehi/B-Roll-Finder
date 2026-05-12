@@ -11,7 +11,8 @@ from core.youtube import fetch_youtube_results
 from core.stock_apis import search_pexels, search_pixabay
 from core.output import (
     generate_keywords_txt, generate_youtube_txt, generate_srt,
-    generate_transcription_srt, generate_failed_downloads_txt
+    generate_transcription_srt, generate_failed_downloads_txt,
+    _safe_for_fs
 )
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
 from core import download_cache
@@ -979,7 +980,7 @@ elif app_mode in ["Director", "Smart Mode"]:
     from core.director_search import fetch_director_footage
     from core.director_rank import rank_shot_candidates
     from core.director_youtube import generate_youtube_keywords_for_shots, seed_youtube_keywords
-    from core.output import generate_fcpxml, generate_shot_list_txt
+    from core.output import generate_fcpxml, generate_shot_list_txt, _safe_for_fs
     st.title(f"🎬 B-Roll {app_mode}")
     
     if app_mode == "Smart Mode":
