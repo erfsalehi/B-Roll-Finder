@@ -124,7 +124,8 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
                                           video_topic: str = "",
                                           chunk_id: int = 0) -> list:
     """
-    Uses precise transcription segments to generate a shot list.
+    Uses precise transcription segments to generate a shot list for the
+    whole video in one pass (no chunking).
     """
     import json
     if not api_key:

@@ -2,6 +2,7 @@ import concurrent.futures
 import os
 import re
 import shutil
+import time
 import uuid
 from typing import Optional
 
@@ -167,12 +168,24 @@ class DownloadManager:
         'error' / 'completed' / 'cancelled' themselves; this is just a
         defensive net for unexpected exceptions, and the place where we
         compute the user-facing ``error_summary``.
+
+        Error classification:
+          - Permanent (no retry): 404, size limit exceeded, video removed/private.
+          - Rate-limited (long backoff): 403 Forbidden — YouTube temporarily
+            throttles IPs when too many concurrent downloads hit at once.
+            Waiting 30-60 s is usually enough for the block to lift.
+          - Transient (short backoff): network drops, timeouts, SSL glitches.
         """
         MAX_AUTO_RETRIES = 3
+        # Backoff durations per attempt (index 0 = after 1st failure).
+        # 403 uses its own longer schedule defined below.
+        _TRANSIENT_BACKOFF = [5, 15]   # seconds between attempts 1→2 and 2→3
+        _RATELIMIT_BACKOFF = [30, 60]  # longer wait for 403 rate-limit
+
         for attempt in range(MAX_AUTO_RETRIES):
             if state.get('status') == 'cancelled':
                 return
-            
+
             try:
                 if state['source'] == 'youtube':
                     download_video(
@@ -187,27 +200,44 @@ class DownloadManager:
                         max_size_mb=state.get('max_size_mb'),
                         normalize=state.get('normalize'),
                     )
-                # If we get here, it succeeded
+                # Succeeded — exit retry loop
                 break
+
             except Exception as e:
-                # If cancelled, don't retry
                 if state.get('status') == 'cancelled':
                     return
-                
-                # Check if it's a non-retryable error (like size limit)
-                err_msg = str(e).lower()
-                if "exceeds limit" in err_msg or "404" in err_msg:
+
+                err_str = str(e)
+                err_low = err_str.lower()
+
+                # ── Permanent errors — fail immediately, no retry ──────────
+                is_permanent = (
+                    "exceeds limit" in err_low
+                    or "exceeded limit" in err_low
+                    or re.search(r'\b404\b', err_str) is not None
+                    or "video unavailable" in err_low
+                    or "private video" in err_low
+                    or "has been removed" in err_low
+                )
+                if is_permanent:
                     state['status']    = 'error'
-                    state['error_msg'] = str(e)
+                    state['error_msg'] = err_str
                     break
-                
-                # Otherwise, if we have attempts left, wait and retry (resume)
-                if attempt < MAX_AUTO_RETRIES - 1:
-                    time.sleep(3) # Wait before resuming
-                    continue
-                else:
+
+                if attempt >= MAX_AUTO_RETRIES - 1:
+                    # Exhausted retries
                     state['status']    = 'error'
-                    state['error_msg'] = str(e)
+                    state['error_msg'] = err_str
+                    break
+
+                # ── 403 = temporary rate-limit — long backoff ─────────────
+                is_rate_limited = (
+                    re.search(r'\b403\b', err_str) is not None
+                    or "forbidden" in err_low
+                )
+                wait = (_RATELIMIT_BACKOFF if is_rate_limited else _TRANSIENT_BACKOFF)[attempt]
+                state['error_msg'] = f"[attempt {attempt+1}] {err_str} — retrying in {wait}s…"
+                time.sleep(wait)
 
         if state['status'] == 'error' and state.get('error_msg'):
             state['error_summary'] = _summarize_error(state['error_msg'])

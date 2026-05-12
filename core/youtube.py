@@ -174,6 +174,10 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                     if size_mb > max_size_mb:
                         raise ValueError(f"Skipped: Video size ({size_mb:.1f}MB) exceeds limit ({max_size_mb}MB)")
                 
+    # Auto-detect cookies.txt in the project root — dramatically reduces 403s
+    # for users who are logged into YouTube in their browser.
+    _cookie_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cookies.txt')
+
     ydl_opts = {
         'format': format_selector,
         'outtmpl': output_path,
@@ -181,22 +185,24 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         'quiet': True,
         'no_warnings': True,
         'merge_output_format': 'mp4',
-        'retries': 15,
-        'fragment_retries': 15,
+        'retries': 10,
+        'fragment_retries': 10,
+        'extractor_retries': 5,
         'file_access_retries': 5,
-        'http_chunk_size': 10485760, # 10MB
+        'http_chunk_size': 10485760,  # 10 MB
         'nocheckcertificate': True,
         'geo_bypass': True,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-            'Sec-Fetch-Mode': 'navigate',
+            # Keep the UA in sync with player_client='web' below
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
         },
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios'],
-                'skip': ['hls', 'dash']
+                # 'web' is the most compatible client and least likely to get
+                # 403-blocked. 'tv_embedded' is a solid fallback. 'android'
+                # and 'ios' are increasingly rate-limited by YouTube (2024+).
+                'player_client': ['web', 'tv_embedded', 'android'],
             }
         },
         # Premiere Pro compatibility: ensure standard MP4 container
@@ -205,6 +211,10 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             'preferedformat': 'mp4',
         }],
     }
+
+    # Inject cookies if available (nearly eliminates 403s for logged-in users)
+    if os.path.exists(_cookie_file):
+        ydl_opts['cookiefile'] = _cookie_file
     
     try:
         task_state['status'] = 'downloading'

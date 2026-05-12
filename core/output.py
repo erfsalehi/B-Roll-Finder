@@ -129,31 +129,131 @@ def generate_shot_list_txt(shots: list) -> str:
         lines.append("")
     return "\n".join(lines)
 
-def generate_fcpxml(shots: list) -> str:
-    # A basic FCPXML wrapper for markers
+def _safe_for_fs(text: str, max_len: int = 30) -> str:
+    if not text:
+        return ""
+    cleaned = "".join(c if (c.isalnum() or c in " -_") else " "
+                      for c in text)
+    cleaned = "-".join(cleaned.split()).lower()
+    return cleaned[:max_len].strip("-") or ""
+
+def generate_fcpxml(shots: list, project_name: str = "default") -> str:
+    """
+    Generates a Final Cut Pro XML (v1.9) that Premiere Pro can import.
+    Creates a sequence with all selected video clips placed on the timeline
+    at their respective timestamps, with gaps closed to match the SRT.
+    """
+    proj_folder = _safe_for_fs(project_name, 50)
+    # We use absolute paths for the 'src' attribute so Premiere can find them instantly.
+    base_dir = os.path.abspath(os.path.join("downloads", "director", proj_folder))
+    
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<!DOCTYPE fcpxml>')
     xml.append('<fcpxml version="1.9">')
-    xml.append('  <library>')
-    xml.append('    <event name="B-Roll Director Markers">')
-    xml.append('      <project name="Generated Markers">')
-    xml.append('        <sequence format="r1" tcStart="0s" tcFormat="NDF">')
-    xml.append('          <spine>')
-    xml.append('            <gap name="Master" duration="3600s" start="0s">')
     
+    # ── Resources ────────────────────────────────────────────────────────────
+    xml.append('  <resources>')
+    xml.append('    <format id="r1" name="FFVideoFormat1080p2398" frameDuration="1001/24000s" width="1920" height="1080"/>')
+    
+    asset_map = {} # url -> asset_id
+    next_asset_id = 1
+    
+    # Pre-scan for unique assets (selected clips)
+    seen_filenames = set()
     for shot in shots:
-        start_sec = shot.get('timestamp', 0)
-        intent = _xml_attr(shot.get('shot_intent', ''))
-        queries = _xml_attr(" | ".join(shot.get('search_queries', [])))
-        marker_name = f"{intent} ({queries})"
+        sel = shot.get("selected_results", [])
+        if not sel:
+            continue
         
-        xml.append(f'              <marker start="{start_sec}s" duration="1s" value="{marker_name}"/>')
+        # We only assign the FIRST selected clip to the timeline for this shot
+        res = sel[0]
+        url = res.get("url")
+        if not url:
+            continue
+            
+        if url not in asset_map:
+            slot_id = shot.get("slot_id", "X")
+            keyword = _safe_for_fs(res.get("matched_query", ""), 30) or "clip"
+            # Filename logic must match app.py EXACTLY: {slot_id}-1-{keyword}.mp4
+            # (since we only use the 1st selected clip for the timeline)
+            base = f"{slot_id}-1-{keyword}"
+            filename = f"{base}.mp4"
+            
+            # Collision handling (rare for 1-1 naming but for safety)
+            n = 1
+            while filename in seen_filenames:
+                n += 1
+                filename = f"{base}-{n}.mp4"
+            seen_filenames.add(filename)
+            
+            asset_id = f"a{next_asset_id}"
+            asset_map[url] = {
+                "id": asset_id,
+                "filename": filename,
+                "path": os.path.join(base_dir, filename)
+            }
+            
+            file_url = "file://" + _xml_attr(asset_map[url]["path"].replace("\\", "/"))
+            xml.append(f'    <asset id="{asset_id}" name="{_xml_attr(filename)}" src="{file_url}" start="0s" duration="3600s" hasVideo="1" hasAudio="1"/>')
+            next_asset_id += 1
+            
+    xml.append('  </resources>')
+    
+    # ── Library & Event ──────────────────────────────────────────────────────
+    xml.append('  <library>')
+    xml.append(f'    <event name="B-Roll Director - {_xml_attr(project_name)}">')
+    xml.append('      <project name="B-Roll Sequence">')
+    # Defaulting to 23.98fps (1001/24000) as it's standard for cinematic edits
+    xml.append('        <sequence format="r1" tcStart="0s" tcFormat="NDF" duration="3600s">')
+    xml.append('          <spine>')
+    
+    # ── Timeline ─────────────────────────────────────────────────────────────
+    current_timeline_pos = 0.0
+    
+    for i, shot in enumerate(shots):
+        start_sec = float(shot.get('timestamp', 0))
         
-    xml.append('            </gap>')
+        # Calculate duration by looking ahead (matching SRT logic)
+        if i < len(shots) - 1:
+            end_val = float(shots[i+1].get('timestamp', start_sec + 5))
+        else:
+            end_val = float(shot.get('end_timestamp', start_sec + 5))
+        
+        duration = end_val - start_sec
+        if duration <= 0:
+            duration = 1.0
+            
+        # If there's a gap between current_timeline_pos and start_sec, add a gap resource
+        if start_sec > current_timeline_pos:
+            gap_dur = start_sec - current_timeline_pos
+            xml.append(f'            <gap name="Gap" offset="{current_timeline_pos}s" duration="{gap_dur}s" start="3600s"/>')
+        
+        sel = shot.get("selected_results", [])
+        asset_info = None
+        if sel and sel[0].get("url") in asset_map:
+            asset_info = asset_map[sel[0]["url"]]
+            
+        if asset_info:
+            # Place the clip
+            clip_name = _xml_attr(asset_info["filename"])
+            # Start at 0s of the clip, or if it's a smart_proxy, we might want to offset.
+            # But usually the downloader trims it. For now, assume 0s start.
+            xml.append(f'            <asset-clip name="{clip_name}" offset="{start_sec}s" ref="{asset_info["id"]}" duration="{duration}s" start="0s">')
+            # Add a marker with the shot intent inside the clip for convenience
+            intent = _xml_attr(shot.get('shot_intent', ''))
+            xml.append(f'              <marker start="0s" duration="1s" value="Shot {shot.get("slot_id")}: {intent}"/>')
+            xml.append('            </asset-clip>')
+        else:
+            # Placeholder gap if no clip selected
+            xml.append(f'            <gap name="MISSING: Shot {shot.get("slot_id")}" offset="{start_sec}s" duration="{duration}s" start="3600s"/>')
+            
+        current_timeline_pos = start_sec + duration
+        
     xml.append('          </spine>')
     xml.append('        </sequence>')
     xml.append('      </project>')
     xml.append('    </event>')
     xml.append('  </library>')
     xml.append('</fcpxml>')
+    
     return "\n".join(xml)
