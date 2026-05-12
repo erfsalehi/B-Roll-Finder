@@ -510,7 +510,7 @@ def render_classic_mode():
                         unique_errors = list(dict.fromkeys(fetch_errors))
                         with st.expander(f"âš ï¸ {len(unique_errors)} search error(s) ââ‚¬â€ click to see details"):
                             for err in unique_errors[:20]:
-                                st.write(f"ââ‚¬¢ {err}")
+                                st.write(f"• {err}")
                             if len(unique_errors) > 20:
                                 st.write(f"... and {len(unique_errors) - 20} more.")
                         ssl_keywords = ("ssl", "certificate", "eof occurred", "handshake", "tlsv1")
@@ -860,7 +860,7 @@ def render_classic_mode():
                         unique_g_errors = list(dict.fromkeys(fetch_errors_g))
                         with st.expander(f"âš ï¸ {len(unique_g_errors)} search error(s)"):
                             for err in unique_g_errors[:20]:
-                                st.write(f"ââ‚¬¢ {err}")
+                                st.write(f"• {err}")
                         ssl_keywords = ("ssl", "certificate", "eof occurred", "handshake", "tlsv1")
                         if any(kw in e.lower() for e in unique_g_errors for kw in ssl_keywords):
                             st.warning("YouTube SSL errors detected. Try running `yt-dlp -U` in your terminal to update yt-dlp, then restart the app.")
@@ -989,7 +989,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         searcher = SmartSearch()
         
         st.info("💡 **The AI searches for visual meaning, not just keywords.**")
-        with st.expander("ðŸ"š AI Visual Search Manager (Feed the AI)", expanded=False):
+        with st.expander("📦 AI Visual Search Manager (Feed the AI)", expanded=False):
             st.markdown("### Build Your Foundation")
             st.caption("Point the AI to your local footage or high-quality YouTube compilations to build your cinematic brain.")
             
@@ -997,7 +997,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             
             with tab_yt:
                 lib_urls = st.text_area("Paste YouTube URLs (one per line)", placeholder="https://youtube.com/watch?v=...\nhttps://youtube.com/watch?v=...", height=100, key="lib_urls_bulk")
-                if st.button("ðŸšâ‚¬ Start Bulk Ingestion", use_container_width=True):
+                if st.button("🚀 Start Bulk Ingestion", use_container_width=True):
                     urls = [u.strip() for u in lib_urls.split("\n") if u.strip()]
                     if urls:
                         with st.status(f"Ingesting {len(urls)} videos...") as status:
@@ -1177,7 +1177,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         with s1: st.metric("Length", f"{dur/60:.1f} min")
         with s2: st.metric("Words",  f"{wds:,}")
         with s3: st.metric("Speaking rate", f"{wps:.2f} wps")
-        with st.expander("ðŸ" View full transcription", expanded=False):
+        with st.expander("📄 View full transcription", expanded=False):
             for seg in segs:
                 m = int(seg["start"] // 60); s = int(seg["start"] % 60)
                 st.write(f"**[{m:02d}:{s:02d}]** {seg['text']}")
@@ -1547,7 +1547,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                         unique_fe = list(dict.fromkeys(d_fetch_errors))
                         with st.expander(f"âš ï¸ {len(unique_fe)} fetch error(s)"):
                             for e in unique_fe[:20]:
-                                st.write(f"ââ‚¬¢ {e}")
+                                st.write(f"• {e}")
                     save_cache()
                 finally:
                     st.session_state.is_fetching = False
@@ -1563,7 +1563,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         # with the same key).
         d_video_topic = st.session_state.get("d_video_topic", "")
         if d_video_topic:
-            st.caption(f"ðŸ"Å’ Using video topic: **{d_video_topic}** (edit in Step 2 above to change)")
+            st.caption(f"📌 Using video topic: **{d_video_topic}** (edit in Step 2 above to change)")
         else:
             st.warning("âš ï¸ No video topic set. Set one in Step 2 above for the ranker to filter off-topic clips effectively.")
         if st.button("Rank Candidates with AI", key="d_rank"):
@@ -1598,7 +1598,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                         unique_re = list(dict.fromkeys(d_rank_errors))
                         with st.expander(f"âš ï¸ {len(unique_re)} ranking error(s)"):
                             for e in unique_re[:20]:
-                                st.write(f"ââ‚¬¢ {e}")
+                                st.write(f"• {e}")
                     save_cache()
                 except Exception as e:
                     st.error(f"Ranking error: {e}")
@@ -1837,7 +1837,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         _cache_stats = download_cache.stats()
         if _cache_stats["count"]:
             with st.expander(
-                f"ðŸ"¦ Download cache ââ‚¬â€ {_cache_stats['count']} clip(s), "
+                f"📄¦ Download cache ââ‚¬â€ {_cache_stats['count']} clip(s), "
                 f"{_cache_stats['size_bytes'] / (1024 * 1024):.1f} MB"
                 + (f"  ·  {_cache_stats['stale']} stale" if _cache_stats['stale'] else "")
             ):
@@ -2145,7 +2145,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                        if t["status"] in ("completed", "cancelled")
                        and t["id"] not in {x["id"] for x in tasks}]  # exclude current batch
             if history:
-                with st.expander(f"ðŸ"Å“ History ââ‚¬â€ {len(history)} task(s) from earlier batches"):
+                with st.expander(f"📄Å“ History ââ‚¬â€ {len(history)} task(s) from earlier batches"):
                     h_completed = sum(1 for h in history if h["status"] == "completed")
                     h_cancelled = sum(1 for h in history if h["status"] == "cancelled")
                     st.caption(f"✅ {h_completed} completed · â­ {h_cancelled} cancelled")
