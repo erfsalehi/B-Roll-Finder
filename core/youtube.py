@@ -12,7 +12,7 @@ import glob
 # searches in the same session (very common for popular B-roll topics).
 _meta_cache: dict = {}
 _meta_cache_lock = threading.Lock()
-_META_CACHE_MAXSIZE = 300
+_META_CACHE_MAXSIZE = 2000
 
 def _fetch_full_info_cached(url: str) -> dict:
     """Like _fetch_full_info but backed by an in-process LRU-style cache."""

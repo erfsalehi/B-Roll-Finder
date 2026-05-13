@@ -206,12 +206,14 @@ def fetch_director_footage(
         active_shots.append(shot)
 
     work_shots = [s for s in active_shots if s is not None]
-    total = len(shots)
-    completed = [0]          # mutable counter shared across threads
+    # Use work_shots as the denominator so the bar fills smoothly over
+    # real work; skipped shots (priority=none / retry) don't artificially
+    # compress progress into a fraction of the range.
+    progress_total = max(len(work_shots), 1)
+    completed = [0]
     completed_lock = threading.Lock()
 
     # Per-shot inner concurrency: one thread per (query × source) job.
-    # Typical shot has ≤9 jobs (3 queries × 3 sources); cap at max_workers.
     inner_workers = max_workers
 
     def _run_shot(shot: dict) -> None:
@@ -233,13 +235,13 @@ def fetch_director_footage(
             inner_workers=inner_workers,
         )
         if progress_callback:
+            # Hold the lock for the callback so concurrent shot completions
+            # are serialized — Streamlit's DeltaGenerator is not thread-safe.
             with completed_lock:
                 completed[0] += 1
-                frac = completed[0] / total
-            progress_callback(frac)
+                progress_callback(completed[0] / progress_total)
 
-    # Outer parallelism: all shots at once.
-    # Use enough workers to saturate the shot list without starving the OS.
+    # Outer parallelism: all shots concurrently.
     outer_workers = min(len(work_shots), max(max_workers, 16))
     if work_shots:
         with concurrent.futures.ThreadPoolExecutor(max_workers=outer_workers) as executor:
@@ -251,11 +253,7 @@ def fetch_director_footage(
                     shot = futures[future]
                     errors.append(f"Shot {shot.get('slot_id')} fetch failed: {e}")
 
-    # Fire progress callbacks for skipped shots (priority=none / retry_only skips).
-    skipped = total - len(work_shots)
-    if skipped and progress_callback:
-        with completed_lock:
-            completed[0] = total
+    if progress_callback:
         progress_callback(1.0)
 
     return shots

@@ -1,7 +1,22 @@
 import re
+import time
+import random
 import requests
 import traceback
 from urllib.parse import urlparse
+
+
+def _http_get_with_retry(url, *, headers=None, params=None, timeout=10, max_attempts=3):
+    """GET with exponential backoff on 429 / 503 rate-limit responses."""
+    for attempt in range(max_attempts):
+        response = requests.get(url, headers=headers, params=params, timeout=timeout)
+        if response.status_code in (429, 503) and attempt < max_attempts - 1:
+            time.sleep(2 ** attempt + random.uniform(0, 1))
+            continue
+        response.raise_for_status()
+        return response
+    response.raise_for_status()
+    return response
 
 
 def _pexels_slug_to_text(page_url: str) -> str:
@@ -34,8 +49,7 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
 
     results = []
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
+        response = _http_get_with_retry(url, headers=headers, params=params, timeout=10)
         data = response.json()
 
         for video in data.get('videos', []):
@@ -93,8 +107,7 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
 
     results = []
     try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
+        response = _http_get_with_retry(url, params=params, timeout=10)
         data = response.json()
 
         for hit in data.get('hits', []):
@@ -193,8 +206,7 @@ def search_youtube_data_api(keyword: str, api_key: str, num_results: int = 3,
 
     results = []
     try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
+        response = _http_get_with_retry(url, params=params, timeout=10)
         data = response.json()
 
         for item in data.get("items", []):
