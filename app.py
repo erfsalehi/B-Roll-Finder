@@ -210,6 +210,7 @@ def render_classic_mode():
         ("Pixabay Api.txt",   "PIXABAY_API_KEY"),
         ("YT Api.txt",        "YOUTUBE_API_KEY"),
         ("Openrouter Api.txt","OPENROUTER_API_KEY"),
+        ("Freesound Api.txt", "FREESOUND_API_KEY"),
     ]:
         if not os.getenv(env_key) and os.path.exists(txt_file):
             try:
@@ -227,6 +228,7 @@ def render_classic_mode():
         "Pixabay":    bool(os.getenv("PIXABAY_API_KEY")),
         "YouTube":    bool(os.getenv("YOUTUBE_API_KEY")),
         "OpenRouter": bool(os.getenv("OPENROUTER_API_KEY")),
+        "Freesound":  bool(os.getenv("FREESOUND_API_KEY")),
     }
     _pill = " · ".join(f"{'✅' if v else '○'} {k}" for k, v in _key_status.items())
     with st.expander(f"⚙️  Setup — API keys  ·  {_pill}",
@@ -261,6 +263,10 @@ def render_classic_mode():
                                              value=os.getenv("OPENROUTER_API_KEY", ""),
                                              type="password",
                                              help="Optional fallback when Groq returns rate-limit errors.")
+            freesound_input  = st.text_input("Freesound API Key",
+                                             value=os.getenv("FREESOUND_API_KEY", ""),
+                                             type="password",
+                                             help="Required for automatic sound effects downloads.")
             st.markdown("&nbsp;")
         if st.button("Save API Keys", type="primary"):
             if groq_input:
@@ -272,6 +278,7 @@ def render_classic_mode():
                 if pexels_input:     set_key(ENV_FILE, "PEXELS_API_KEY",     pexels_input)
                 if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
                 if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
+                if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
             else:
@@ -1082,6 +1089,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         "Pixabay":    bool(os.getenv("PIXABAY_API_KEY")),
         "YouTube":    bool(os.getenv("YOUTUBE_API_KEY")),
         "OpenRouter": bool(os.getenv("OPENROUTER_API_KEY")),
+        "Freesound":  bool(os.getenv("FREESOUND_API_KEY")),
     }
     _pill = " · ".join(f"{'✅' if v else '○'} {k}" for k, v in _key_status.items())
     with st.expander(f"⚙️  Setup —  API keys  ·  {_pill}",
@@ -1119,6 +1127,10 @@ elif app_mode in ["Director", "Smart Mode"]:
                                                value=os.getenv("OPENROUTER_API_KEY_2", ""),
                                                type="password", key="d_or_2",
                                                help="Second fallback key if the first OpenRouter key is also limited.")
+            freesound_input  = st.text_input("Freesound API Key",
+                                             value=os.getenv("FREESOUND_API_KEY", ""),
+                                             type="password", key="d_free",
+                                             help="Required for automatic sound effects downloads.")
             st.markdown("&nbsp;")  # vertical spacer to align rows
         if st.button("Save API Keys", key="d_save_keys", type="primary"):
             if groq_input:
@@ -1129,6 +1141,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
                 if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
                 if openrouter_2_input: set_key(ENV_FILE, "OPENROUTER_API_KEY_2", openrouter_2_input)
+                if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
             else:
