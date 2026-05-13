@@ -97,6 +97,7 @@ class DownloadManager:
     def add_download(self, url: str, output_path: str, quality: str,
                      source: str = 'youtube', max_size_mb: float = None,
                      strict_quality: bool = False, normalize: bool = False,
+                     no_audio: bool = True,
                      extra_paths: Optional[list] = None) -> str:
         """Queue a download.
 
@@ -139,6 +140,7 @@ class DownloadManager:
             'max_size_mb':     max_size_mb,
             'strict_quality':  strict_quality,
             'normalize':       normalize,
+            'no_audio':        no_audio,
             'speed':           None,
             'eta':             None,
             'attempts':        0,
@@ -193,6 +195,7 @@ class DownloadManager:
                         max_size_mb=state.get('max_size_mb'),
                         strict_quality=state.get('strict_quality'),
                         normalize=state.get('normalize'),
+                        no_audio=state.get('no_audio', True),
                     )
                 else:
                     download_direct_video(

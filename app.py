@@ -1965,13 +1965,20 @@ elif app_mode in ["Director", "Smart Mode"]:
                     st.success("Cache cleared. The actual files in `downloads/` are untouched.")
                     st.rerun()
         # Live-bound settings — read on each render so retry/new-download both see them.
-        col_dv1, col_dv2, col_dv3 = st.columns(3)
+        col_dv1, col_dv2, col_dv3, col_dv4 = st.columns(4)
         with col_dv1:
             d_quality  = st.selectbox("Quality", ["1080p", "720p", "480p", "Best", "Worst"], key="d_vq")
         with col_dv2:
             d_max_size = st.number_input("Max Size (MB)", value=200, min_value=1, key="d_maxsize")
         with col_dv3:
             d_workers  = st.slider("Concurrent", 1, 10, 3, key="d_workers")
+        with col_dv4:
+            d_no_audio = st.checkbox(
+                "Video only (no audio)",
+                value=True,
+                key="d_no_audio",
+                help="Download video stream only — skips audio mixing and reduces file size. Ideal for B-roll clips.",
+            )
         total_selected_files = sum(len(s.get("selected_results", [])) for s in selected_shots)
         col_dl1, col_dl2 = st.columns([2, 1])
         with col_dl1:
@@ -2137,6 +2144,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                         task_id = st.session_state.dm.add_download(
                             url, primary_path, d_quality,
                             source=primary_source, max_size_mb=d_max_size, normalize=False,
+                            no_audio=d_no_audio,
                             extra_paths=extras or None,
                         )
                         st.session_state.dm.start_download(task_id)
@@ -2216,6 +2224,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                     ):
                         st.session_state.dm.retry_all_failed(overrides={
                             "quality": d_quality, "max_size_mb": d_max_size,
+                            "no_audio": d_no_audio,
                         })
                         st.rerun()
                 for ft in failed:
@@ -2238,6 +2247,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                             ):
                                 st.session_state.dm.retry_failed(ft["id"], overrides={
                                     "quality": d_quality, "max_size_mb": d_max_size,
+                                    "no_audio": d_no_audio,
                                 })
                                 st.rerun()
                         # URL row — let the user copy or open the source page

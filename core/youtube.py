@@ -346,7 +346,7 @@ from core.ffmpeg_utils import normalize_video
 class DownloadInterrupt(Exception):
     pass
 
-def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False):
+def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True):
     """
     Downloads a video using yt-dlp with progress tracking and interruption support.
     Supports Premiere Pro compatibility, strict quality, and size limits.
@@ -366,28 +366,36 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         max_h = res_map.get(quality, 9999)
         q_filter = f"[height<={max_h}]"
 
-    # Format selector: prefer H.264+AAC for Premiere Pro compatibility, but fall
-    # back progressively so we never hit "Requested format is not available".
-    # We intentionally drop [ext=mp4]/[ext=m4a] constraints here — the
-    # FFmpegVideoConvertor postprocessor already re-muxes everything to mp4,
-    # so restricting the source container only causes unnecessary failures on
-    # videos that only offer VP9/WebM streams.
-    format_selector = (
-        f"bestvideo{q_filter}[vcodec^=avc1]+bestaudio[acodec^=mp4a]"   # ideal: H.264 + AAC
-        f"/bestvideo{q_filter}[vcodec^=avc1]+bestaudio"                 # H.264 + any audio
-        f"/bestvideo{q_filter}+bestaudio"                               # any codec at target res
-        f"/best{q_filter}"                                              # combined stream at target res
-        f"/best"                                                        # absolute fallback
-    )
-
-    if quality == 'Worst':
-        format_selector = 'worstvideo+worstaudio/worst'
-    elif quality == 'Best':
+    # Format selector: video-only by default (no_audio=True) — skips downloading
+    # a separate audio stream and the subsequent FFmpeg merge, roughly halving
+    # download time. Falls back progressively to avoid "format not available".
+    if no_audio:
         format_selector = (
-            'bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]'
-            '/bestvideo[vcodec^=avc1]+bestaudio'
-            '/bestvideo+bestaudio/best'
+            f"bestvideo{q_filter}[vcodec^=avc1]"   # H.264 video only (Premiere Pro ideal)
+            f"/bestvideo{q_filter}"                  # any codec at target res
+            f"/best{q_filter}"                       # combined stream fallback
+            f"/best"                                 # absolute fallback
         )
+        if quality == 'Worst':
+            format_selector = 'worstvideo/worst'
+        elif quality == 'Best':
+            format_selector = 'bestvideo[vcodec^=avc1]/bestvideo/best'
+    else:
+        format_selector = (
+            f"bestvideo{q_filter}[vcodec^=avc1]+bestaudio[acodec^=mp4a]"
+            f"/bestvideo{q_filter}[vcodec^=avc1]+bestaudio"
+            f"/bestvideo{q_filter}+bestaudio"
+            f"/best{q_filter}"
+            f"/best"
+        )
+        if quality == 'Worst':
+            format_selector = 'worstvideo+worstaudio/worst'
+        elif quality == 'Best':
+            format_selector = (
+                'bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]'
+                '/bestvideo[vcodec^=avc1]+bestaudio'
+                '/bestvideo+bestaudio/best'
+            )
 
     def my_hook(d):
         if task_state.get('status') == 'cancelled':
@@ -494,7 +502,8 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             # Chrome DPAPI broke cookie reading — disable and retry once without cookies
             _mark_cookies_broken()
             download_video(url, output_path, quality, task_state,
-                           max_size_mb=max_size_mb, strict_quality=strict_quality, normalize=normalize)
+                           max_size_mb=max_size_mb, strict_quality=strict_quality,
+                           normalize=normalize, no_audio=no_audio)
             return
         task_state['status'] = 'error'
         task_state['error_msg'] = str(e)
