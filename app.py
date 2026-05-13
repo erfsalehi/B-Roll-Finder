@@ -12,8 +12,9 @@ from core.stock_apis import search_pexels, search_pixabay
 from core.output import (
     generate_keywords_txt, generate_youtube_txt, generate_srt,
     generate_transcription_srt, generate_failed_downloads_txt,
-    _safe_for_fs
+    generate_fcpxml, generate_shot_list_txt, _safe_for_fs
 )
+from core.captions import extract_highlights, create_text_overlay
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
 from core import download_cache
 from core.app_utils import check_network, format_speed, format_eta
@@ -48,6 +49,17 @@ if "audio_duration" not in st.session_state:
 if "transcription_segments" not in st.session_state:
     st.session_state.transcription_segments = []
 if "transcription_chunks" not in st.session_state:
+    st.session_state.transcription_chunks = []
+if "text_overlays" not in st.session_state:
+    st.session_state.text_overlays = []
+if "overlay_settings" not in st.session_state:
+    st.session_state.overlay_settings = {
+        "color": "#FFFFFF",
+        "shadow": "#000000",
+        "size": 120,
+        "y": 800,
+        "animation": "Fade In/Out"
+    }
     st.session_state.transcription_chunks = []
 if "active_chunk_indices" not in st.session_state:
     st.session_state.active_chunk_indices = [0]
@@ -2236,13 +2248,84 @@ elif app_mode in ["Director", "Smart Mode"]:
                          + stats.get("paused", 0) + stats.get("processing", 0))
             if in_motion > 0:
                 time.sleep(1); st.rerun()
+
+    # ── Step 6 — AI Text Overlays ───────────────────────────────────────────
+    if st.session_state.director_shots:
+        st.header("Step 6: AI Text Overlays (On-Screen Captions)")
+        with st.expander("✨ Generate High-Impact Overlays", expanded=False):
+            st.write("Extract money, stats, and key headings from your script automatically.")
+            if st.button("Extract Highlights with AI"):
+                if not st.session_state.script_text:
+                    st.error("Please upload a script first.")
+                else:
+                    with st.spinner("Analyzing script for highlights..."):
+                        st.session_state.text_overlays = extract_highlights(
+                            st.session_state.script_text, 
+                            os.getenv("GROQ_API_KEY")
+                        )
+                        st.success(f"Extracted {len(st.session_state.text_overlays)} highlights!")
+            
+            if st.session_state.text_overlays:
+                # Data Editor for fine-tuning
+                df_ov = pd.DataFrame(st.session_state.text_overlays)
+                edited_df = st.data_editor(df_ov, num_rows="dynamic", use_container_width=True, key="ov_editor")
+                st.session_state.text_overlays = edited_df.to_dict('records')
+                
+                st.divider()
+                st.subheader("Visual Settings")
+                c_v1, c_v2, c_v3 = st.columns(3)
+                with c_v1:
+                    st.session_state.overlay_settings["color"] = st.color_picker("Text Color", st.session_state.overlay_settings["color"])
+                    st.session_state.overlay_settings["size"] = st.slider("Font Size", 50, 250, st.session_state.overlay_settings["size"])
+                with c_v2:
+                    st.session_state.overlay_settings["shadow"] = st.color_picker("Shadow Color", st.session_state.overlay_settings["shadow"])
+                    st.session_state.overlay_settings["y"] = st.slider("Vertical Position (0-1080)", 0, 1080, st.session_state.overlay_settings["y"])
+                with c_v3:
+                    st.session_state.overlay_settings["animation"] = st.selectbox("Animation Style", ["None", "Fade In/Out"], index=1)
+                    
+                if st.button("Generate & Preview Overlays", type="primary"):
+                    p_name = st.session_state.get("project_name", "default")
+                    proj_folder = _safe_for_fs(p_name, 50)
+                    ov_dir = os.path.abspath(os.path.join("downloads", "director", proj_folder, "overlays"))
+                    os.makedirs(ov_dir, exist_ok=True)
+                    
+                    def ts_to_sec(ts):
+                        if isinstance(ts, (int, float)): return float(ts)
+                        # HH:MM:SS,mmm or HH:MM:SS
+                        parts = re.split('[:.,]', str(ts))
+                        if len(parts) >= 3:
+                            h, m, s = map(int, parts[:3])
+                            ms = int(parts[3]) if len(parts) > 3 else 0
+                            return h * 3600 + m * 60 + s + ms / 1000.0
+                        return float(ts or 0)
+
+                    with st.spinner("Generating transparent PNGs..."):
+                        for idx, ov in enumerate(st.session_state.text_overlays):
+                            fname = os.path.join(ov_dir, f"overlay_{idx+1}.png")
+                            create_text_overlay(
+                                str(ov.get("highlight_text", "")),
+                                fname,
+                                font_size=st.session_state.overlay_settings["size"],
+                                color=st.session_state.overlay_settings["color"],
+                                shadow_color=st.session_state.overlay_settings["shadow"],
+                                y_position=st.session_state.overlay_settings["y"]
+                            )
+                            ov["filepath"] = fname
+                            ov["animation"] = st.session_state.overlay_settings["animation"]
+                            ov["start_sec"] = ts_to_sec(ov.get("start_time", 0))
+                            ov["end_sec"] = ts_to_sec(ov.get("end_time", ov.get("start_time", 0) + 3))
+                        st.success(f"Generated {len(st.session_state.text_overlays)} PNG overlays in {ov_dir}")
     # ── Step 7 — Export ──────────────────────────────────────────────────────
     if st.session_state.director_shots:
         st.header("Step 7: Export")
         shot_list_json = json.dumps(st.session_state.director_shots, indent=2)
         shot_list_txt  = generate_shot_list_txt(st.session_state.director_shots)
         p_name = st.session_state.get("project_name", "default")
-        fcpxml = generate_fcpxml(st.session_state.director_shots, project_name=p_name)
+        fcpxml = generate_fcpxml(
+            st.session_state.director_shots, 
+            project_name=p_name,
+            overlays=st.session_state.text_overlays
+        )
         
         # Auto-save XML to the downloads folder for easy import
         proj_folder = _safe_for_fs(p_name, 50)

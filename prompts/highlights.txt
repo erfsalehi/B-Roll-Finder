@@ -1,0 +1,26 @@
+Analyze the following video script and timestamps. Identify key moments worth highlighting on screen to keep the audience engaged. 
+
+Categories to look for:
+- HEADINGS: Major topic shifts or chapter titles.
+- MONEY/PRICING: Mention of specific dollar amounts or financial gains/losses.
+- STATISTICS: Important numbers, percentages, or data points.
+- CORE CONCEPTS: Powerful 1-3 word phrases that summarize a key takeaway.
+
+Constraint:
+- highlight_text MUST be short (under 5 words).
+- start_time and end_time MUST be in HH:MM:SS,mmm format if provided in the script, or seconds.
+- original_caption MUST be the relevant snippet from the script.
+
+Return a JSON array of objects under a top-level "highlights" key.
+Example:
+{
+  "highlights": [
+    {
+      "start_time": "00:00:15,000",
+      "end_time": "00:00:18,500",
+      "original_caption": "We managed to save over ten thousand dollars on this engine rebuild.",
+      "highlight_text": "$10,000 SAVED",
+      "category": "money"
+    }
+  ]
+}

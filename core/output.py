@@ -169,7 +169,7 @@ def _safe_for_fs(text: str, max_len: int = 30) -> str:
     cleaned = "-".join(cleaned.split()).lower()
     return cleaned[:max_len].strip("-") or ""
 
-def generate_fcpxml(shots: list, project_name: str = "default") -> str:
+def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None) -> str:
     """
     Generates a bulletproof Legacy FCP 7 XML (<xmeml>) for Premiere Pro.
     Uses exact frame math and implicit gaps to guarantee compatibility.
@@ -329,7 +329,97 @@ def generate_fcpxml(shots: list, project_name: str = "default") -> str:
             xml.append('              </clipitem>')
 
     # ── Close XML ──
+    # ── Close Track 1 ──
     xml.append('            </track>')
+
+    # ── Track 2: Overlays ──
+    if overlays:
+        xml.append('            <track>')
+        for idx, ov in enumerate(overlays):
+            ov_path = ov.get("filepath")
+            if not ov_path or not os.path.exists(ov_path):
+                continue
+            
+            ov_filename = os.path.basename(ov_path)
+            ov_uri = _get_premiere_safe_pathurl(ov_path)
+            
+            s_sec = float(ov.get("start_sec", 0))
+            e_sec = float(ov.get("end_sec", s_sec + 3))
+            d_sec = e_sec - s_sec
+            
+            s_frame = sec_to_frames(s_sec, fps_exact)
+            d_frame = sec_to_frames(d_sec, fps_exact)
+            e_frame = s_frame + d_frame
+            
+            # Media duration (PNGs are usually 1 frame or infinite, but FCP7 likes a duration)
+            media_dur_frames = sec_to_frames(3600.0, fps_exact) # 1 hour fallback for stills
+            
+            file_id = f"file-ov-{idx}"
+            clip_id = f"clip-ov-{idx}"
+            
+            xml.append(f'              <clipitem id="{clip_id}">')
+            xml.append(f'                <name>{_xml_attr(ov_filename)}</name>')
+            xml.append(f'                <duration>{media_dur_frames}</duration>')
+            xml.append('                <rate>')
+            xml.append(f'                  <timebase>{timebase}</timebase>')
+            xml.append('                  <ntsc>TRUE</ntsc>')
+            xml.append('                </rate>')
+            xml.append(f'                <start>{s_frame}</start>')
+            xml.append(f'                <end>{e_frame}</end>')
+            xml.append('                <in>0</in>')
+            xml.append(f'                <out>{d_frame}</out>')
+            
+            xml.append(f'                <file id="{file_id}">')
+            xml.append(f'                  <name>{_xml_attr(ov_filename)}</name>')
+            xml.append(f'                  <pathurl>{_xml_attr(ov_uri)}</pathurl>')
+            xml.append('                  <rate>')
+            xml.append(f'                    <timebase>{timebase}</timebase>')
+            xml.append('                    <ntsc>TRUE</ntsc>')
+            xml.append('                  </rate>')
+            xml.append(f'                  <duration>{media_dur_frames}</duration>')
+            xml.append('                  <media>')
+            xml.append('                    <video>')
+            xml.append(f'                      <duration>{media_dur_frames}</duration>')
+            xml.append('                    </video>')
+            xml.append('                  </media>')
+            xml.append('                </file>')
+            
+            # Simple Fade In/Out if requested
+            if ov.get("animation") == "Fade In/Out":
+                xml.append('                <filter>')
+                xml.append('                  <effect>')
+                xml.append('                    <name>Opacity</name>')
+                xml.append('                    <effectid>opacity</effectid>')
+                xml.append('                    <parameter>')
+                xml.append('                      <parameterid>opacity</parameterid>')
+                xml.append('                      <name>Opacity</name>')
+                xml.append('                      <valuemin>0</valuemin>')
+                xml.append('                      <valuemax>100</valuemax>')
+                xml.append('                      <value>100</value>')
+                # Keyframes for fade
+                fade_frames = sec_to_frames(0.5, fps_exact)
+                xml.append('                      <keyframe>')
+                xml.append('                        <when>0</when>')
+                xml.append('                        <value>0</value>')
+                xml.append('                      </keyframe>')
+                xml.append('                      <keyframe>')
+                xml.append(f'                        <when>{fade_frames}</when>')
+                xml.append('                        <value>100</value>')
+                xml.append('                      </keyframe>')
+                xml.append('                      <keyframe>')
+                xml.append(f'                        <when>{d_frame - fade_frames}</when>')
+                xml.append('                        <value>100</value>')
+                xml.append('                      </keyframe>')
+                xml.append('                      <keyframe>')
+                xml.append(f'                        <when>{d_frame}</when>')
+                xml.append('                        <value>0</value>')
+                xml.append('                      </keyframe>')
+                xml.append('                    </parameter>')
+                xml.append('                  </effect>')
+                xml.append('                </filter>')
+                
+            xml.append('              </clipitem>')
+        xml.append('            </track>')
     xml.append('          </video>')
     xml.append('        </media>')
     xml.append('      </sequence>')
