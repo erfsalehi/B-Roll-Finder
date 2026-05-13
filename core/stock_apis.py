@@ -1,9 +1,17 @@
 import re
 import time
 import random
+import threading
 import requests
 import traceback
 from urllib.parse import urlparse
+
+
+# Per-API semaphores — cap concurrent in-flight requests so we don't trigger
+# rate-limit (429) or connection-reset (SSL EOF) responses from Pexels/Pixabay
+# when many shots are fetched in parallel.
+_PEXELS_SEM  = threading.Semaphore(5)
+_PIXABAY_SEM = threading.Semaphore(5)
 
 
 def _http_get_with_retry(url, *, headers=None, params=None, timeout=10, max_attempts=3):
@@ -47,7 +55,8 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
 
     results = []
     try:
-        response = _http_get_with_retry(url, headers=headers, params=params, timeout=10)
+        with _PEXELS_SEM:
+            response = _http_get_with_retry(url, headers=headers, params=params, timeout=10)
         data = response.json()
 
         for video in data.get('videos', []):
@@ -100,7 +109,8 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
 
     results = []
     try:
-        response = _http_get_with_retry(url, params=params, timeout=10)
+        with _PIXABAY_SEM:
+            response = _http_get_with_retry(url, params=params, timeout=10)
         data = response.json()
 
         for hit in data.get('hits', []):

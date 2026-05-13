@@ -4,6 +4,14 @@ import concurrent.futures
 from core.stock_apis import search_pexels, search_pixabay, search_youtube_data_api
 from core.youtube import search_youtube_single
 
+# Optional Streamlit context propagation — keeps st.* calls in worker threads
+# from emitting "missing ScriptRunContext" warnings.
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx as _get_st_ctx
+except ImportError:
+    _get_st_ctx      = lambda: None
+    add_script_run_ctx = lambda thread, ctx: None
+
 
 # ── Cross-shot query result cache ─────────────────────────────────────────────
 # Keyed by (source, query, num_results, min_height).  Multiple shots that share
@@ -216,10 +224,18 @@ def fetch_director_footage(
     completed = [0]
     completed_lock = threading.Lock()
 
+    # Capture Streamlit's ScriptRunContext from the calling (main) thread so
+    # worker threads can inherit it and avoid "missing ScriptRunContext" noise.
+    _st_ctx = _get_st_ctx()
+
     # Per-shot inner concurrency: one thread per (query × source) job.
     inner_workers = max_workers
 
     def _run_shot(shot: dict) -> None:
+        # Propagate Streamlit session context so st.* calls inside the
+        # progress_callback don't warn about missing ScriptRunContext.
+        if _st_ctx:
+            add_script_run_ctx(threading.current_thread(), _st_ctx)
         _process_shot(
             shot,
             use_pexels=use_pexels,
