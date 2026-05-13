@@ -7,19 +7,48 @@ import traceback
 from urllib.parse import urlparse
 
 
-# Per-API semaphores — cap concurrent in-flight requests so we don't trigger
-# rate-limit (429) or connection-reset (SSL EOF) responses from Pexels/Pixabay
-# when many shots are fetched in parallel.
-_PEXELS_SEM  = threading.Semaphore(5)
-_PIXABAY_SEM = threading.Semaphore(5)
+class _TokenBucket:
+    """Thread-safe token bucket — limits requests to `rate` per second."""
+    def __init__(self, rate: float):
+        self._rate   = rate
+        self._tokens = rate
+        self._last   = time.monotonic()
+        self._lock   = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._tokens = min(
+                    self._rate,
+                    self._tokens + (now - self._last) * self._rate,
+                )
+                self._last = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait = (1.0 - self._tokens) / self._rate
+            time.sleep(wait)
+
+    def __enter__(self):  self.acquire(); return self
+    def __exit__(self, *_): pass
 
 
-def _http_get_with_retry(url, *, headers=None, params=None, timeout=10, max_attempts=3):
-    """GET with exponential backoff on 429 / 503 rate-limit responses."""
+# Conservative per-API rate limiters.  Pexels / Pixabay both have per-minute
+# quotas; 3 req/s (180/min) stays safely under any paid-tier limit while still
+# processing a 200-shot run in ~1 minute for unique queries.
+_PEXELS_RL  = _TokenBucket(rate=3.0)
+_PIXABAY_RL = _TokenBucket(rate=3.0)
+
+
+def _http_get_with_retry(url, *, headers=None, params=None, timeout=10, max_attempts=4):
+    """GET with backoff on 429/503.  Respects Retry-After header when present."""
     for attempt in range(max_attempts):
         response = requests.get(url, headers=headers, params=params, timeout=timeout)
         if response.status_code in (429, 503) and attempt < max_attempts - 1:
-            time.sleep(2 ** attempt + random.uniform(0, 1))
+            retry_after = response.headers.get('Retry-After')
+            wait = float(retry_after) if retry_after else (2 ** attempt + random.uniform(0, 1))
+            time.sleep(wait)
             continue
         response.raise_for_status()
         return response
@@ -55,7 +84,7 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
 
     results = []
     try:
-        with _PEXELS_SEM:
+        with _PEXELS_RL:
             response = _http_get_with_retry(url, headers=headers, params=params, timeout=10)
         data = response.json()
 
@@ -109,7 +138,7 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
 
     results = []
     try:
-        with _PIXABAY_SEM:
+        with _PIXABAY_RL:
             response = _http_get_with_retry(url, params=params, timeout=10)
         data = response.json()
 

@@ -16,7 +16,8 @@ except ImportError:
 # ── Cross-shot query result cache ─────────────────────────────────────────────
 # Keyed by (source, query, num_results, min_height).  Multiple shots that share
 # the same stock query (e.g. "city street") hit the same API only once.
-_query_cache: dict = {}
+_query_cache:   dict = {}
+_query_pending: dict = {}   # cache_key -> threading.Event (in-flight guard)
 _query_cache_lock = threading.Lock()
 
 
@@ -26,24 +27,38 @@ def _fetch_query(query: str, source: str, api_key: str, num_results: int,
     # are virtually always 720p+ so we skip the resolution check there and
     # let the download-stage filter handle it instead.
     cache_key = (source, query, num_results, min_height)
-    with _query_cache_lock:
-        if cache_key in _query_cache:
-            return _query_cache[cache_key]
 
-    if source == 'pexels':
-        results = search_pexels(query, api_key, num_results, errors=errors)
-    elif source == 'pixabay':
-        results = search_pixabay(query, api_key, num_results, errors=errors)
-    elif source == 'youtube':
-        results = search_youtube_data_api(query, api_key, num_results, errors=errors, min_height=min_height)
-    else:
-        return []
+    # Cache with stampede protection: if an identical request is already
+    # in-flight, wait for its result instead of issuing a duplicate API call.
+    while True:
+        with _query_cache_lock:
+            if cache_key in _query_cache:
+                return _query_cache[cache_key]
+            if cache_key not in _query_pending:
+                # Claim ownership of this request.
+                evt = threading.Event()
+                _query_pending[cache_key] = evt
+                break
+            evt = _query_pending[cache_key]
+        # Another thread owns this request — wait then re-check the cache.
+        evt.wait(timeout=60)
 
-    for r in results:
-        r['matched_query'] = query
+    results = []
+    try:
+        if source == 'pexels':
+            results = search_pexels(query, api_key, num_results, errors=errors)
+        elif source == 'pixabay':
+            results = search_pixabay(query, api_key, num_results, errors=errors)
+        elif source == 'youtube':
+            results = search_youtube_data_api(query, api_key, num_results, errors=errors, min_height=min_height)
+        for r in results:
+            r['matched_query'] = query
+    finally:
+        with _query_cache_lock:
+            _query_cache[cache_key] = results
+            _query_pending.pop(cache_key, None)
+        evt.set()
 
-    with _query_cache_lock:
-        _query_cache[cache_key] = results
     return results
 
 
@@ -51,6 +66,7 @@ def clear_query_cache() -> None:
     """Reset the cross-shot query cache (call between Director runs)."""
     with _query_cache_lock:
         _query_cache.clear()
+        _query_pending.clear()
 
 
 def _normalize_youtube_url(url: str) -> str:
