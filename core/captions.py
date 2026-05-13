@@ -61,24 +61,35 @@ def create_text_overlay(text: str, filename: str, font_path: str = None,
         print(f"Font loading failed, using default: {e}")
         font = ImageFont.load_default()
 
-    # Calculate text placement
-    # textbbox is the modern Pillow method (v9.2.0+)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
-    
-    x = (1920 - text_w) / 2
-    y = y_position
-    
-    # Draw Shadow (offset)
-    if shadow_color:
-        offset = max(2, font_size // 20)
-        draw.text((x + offset, y + offset), text, font=font, fill=shadow_color)
-    
-    # Draw Main Text
-    draw.text((x, y), text, font=font, fill=color)
+    # Word-wrap: split into lines so text never overflows 1920px wide canvas
+    import textwrap
+    max_chars = max(10, int(1800 / max(1, font_size * 0.6)))
+    lines = textwrap.wrap(text, width=max_chars) or [text]
+
+    # Measure total block height so we can centre vertically around y_position
+    line_bboxes = [draw.textbbox((0, 0), ln, font=font) for ln in lines]
+    line_heights = [bb[3] - bb[1] for bb in line_bboxes]
+    line_gap = max(4, font_size // 8)
+    total_h = sum(line_heights) + line_gap * (len(lines) - 1)
+
+    y = y_position - total_h // 2
+    offset = max(2, font_size // 20)
+
+    for ln, bb, lh in zip(lines, line_bboxes, line_heights):
+        text_w = bb[2] - bb[0]
+        x = (1920 - text_w) / 2 - bb[0]  # bb[0] corrects for left-side bearing
+
+        # Draw Shadow (offset)
+        if shadow_color:
+            draw.text((x + offset, y + offset), ln, font=font, fill=shadow_color)
+
+        # Draw Main Text
+        draw.text((x, y), ln, font=font, fill=color)
+        y += lh + line_gap
     
     # Save
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    dir_part = os.path.dirname(filename)
+    if dir_part:
+        os.makedirs(dir_part, exist_ok=True)
     img.save(filename)
     return filename
