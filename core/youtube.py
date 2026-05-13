@@ -73,15 +73,33 @@ def _get_cookie_opts() -> dict:
     return {}
 
 
+class _QuietLogger:
+    """Suppress all yt-dlp output (including ERROR lines) for metadata-only calls."""
+    def debug(self, msg):   pass
+    def info(self, msg):    pass
+    def warning(self, msg): pass
+    def error(self, msg):   pass
+
+
+_YT_EXTRACTOR_ARGS = {
+    'youtube': {
+        # Prefer clients that serve traditional (non-SABR) formats so
+        # yt-dlp can inspect the format list without "format not available" errors.
+        'player_client': ['web', 'tv_embedded', 'android'],
+    }
+}
+
+
 def _fetch_full_info(url: str) -> dict:
     """Helper to fetch full metadata for a single video URL."""
     ydl_opts = {
+        'logger': _QuietLogger(),
         'quiet': True,
         'no_warnings': True,
-        'simulate': True,
         'skip_download': True,
         'extract_flat': False,
         'socket_timeout': 15,
+        'extractor_args': _YT_EXTRACTOR_ARGS,
         **_get_cookie_opts(),
     }
     try:
@@ -122,11 +140,13 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
     search_pool_size = max(need * pool_mult, need + 3)
 
     ydl_search_opts = {
+        'logger': _QuietLogger(),
         'extract_flat': True,
         'quiet': True,
         'no_warnings': True,
         'simulate': True,
         'socket_timeout': 20,
+        'extractor_args': _YT_EXTRACTOR_ARGS,
         **_get_cookie_opts(),
     }
 
