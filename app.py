@@ -1036,7 +1036,7 @@ if app_mode == "Classic Finder":
     render_classic_mode()
 elif app_mode in ["Director", "Smart Mode"]:
     ensure_shots_have_chunk_ids()
-    from core.director_search import fetch_director_footage
+    from core.director_search import fetch_director_footage, clear_query_cache
     from core.director_rank import rank_shot_candidates
     from core.director_youtube import generate_youtube_keywords_for_shots, seed_youtube_keywords
     from core.output import generate_fcpxml, generate_shot_list_txt, _safe_for_fs
@@ -1562,7 +1562,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                     else:
                         status2.text("Fetching candidates…")
                     
-                    from core.director_search import fetch_director_footage
+                    from core.director_search import fetch_director_footage, clear_query_cache
+                    if not retry_clicked:
+                        clear_query_cache()
                     updated_subset = fetch_director_footage(
                         target_shots,
                         use_pexels=use_pexels,
