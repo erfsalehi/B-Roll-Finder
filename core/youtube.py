@@ -7,6 +7,29 @@ import time
 import glob
 
 
+# ── In-process metadata cache ────────────────────────────────────────────────
+# Avoids re-fetching full info for the same video URL across multiple keyword
+# searches in the same session (very common for popular B-roll topics).
+_meta_cache: dict = {}
+_meta_cache_lock = threading.Lock()
+_META_CACHE_MAXSIZE = 300
+
+def _fetch_full_info_cached(url: str) -> dict:
+    """Like _fetch_full_info but backed by an in-process LRU-style cache."""
+    with _meta_cache_lock:
+        if url in _meta_cache:
+            return _meta_cache[url]
+    result = _fetch_full_info(url)
+    if result:
+        with _meta_cache_lock:
+            if len(_meta_cache) >= _META_CACHE_MAXSIZE:
+                # Evict the oldest entry (dict insertion order, Python 3.7+)
+                oldest = next(iter(_meta_cache))
+                del _meta_cache[oldest]
+            _meta_cache[url] = result
+    return result
+
+
 # ── Cookie helper ────────────────────────────────────────────────────────────
 def _get_cookie_opts() -> dict:
     """Return yt-dlp cookie options from the environment.
@@ -61,8 +84,20 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
         return []
 
     need = num_shorts + num_longs
-    # Over-fetch more candidates only when we need resolution filtering
-    pool_mult = 4 if min_height > 0 else 2
+    # Resolution-aware pool multiplier.
+    # 720p+ qualifies for ~90% of videos → 2× buffer is plenty.
+    # 1080p+ qualifies for ~70%           → 3× is safe.
+    # 1440p / 4K are rarer               → 4-5× needed.
+    if min_height == 0:
+        pool_mult = 2
+    elif min_height <= 720:
+        pool_mult = 2
+    elif min_height <= 1080:
+        pool_mult = 3
+    elif min_height <= 1440:
+        pool_mult = 4
+    else:
+        pool_mult = 5
     search_pool_size = max(need * pool_mult, need + 3)
 
     ydl_search_opts = {
@@ -117,62 +152,113 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
             return shorts_final + longs_final
 
         # ── Slow path: full per-video fetch to check actual resolution ────────
-        shorts_final, longs_final = [], []
-        stop_event = threading.Event()
+        # Rolling-window approach: keep MAX_CONCURRENT futures in-flight at once.
+        # As each completes, submit the next candidate only if we still need more
+        # results. This means we never run more fetches than (need + MAX_CONCURRENT - 1)
+        # in the happy path, vs. submitting all N candidates upfront.
+        #
+        # Pre-filter: if flat metadata already has a height hint that meets the
+        # requirement, accept the candidate without a full-info round-trip.
 
-        def _fetch_if_needed(url: str) -> dict:
-            """Fetch full info; bail immediately if we already have enough."""
-            if stop_event.is_set():
-                return {}
-            return _fetch_full_info(url)
+        MAX_CONCURRENT = min(need + 2, 6)  # e.g. need=3 → 5 concurrent max
 
-        max_threads = min(len(initial_candidates), 8)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
-            future_to_item = {
-                executor.submit(_fetch_if_needed, item['url']): item
-                for item in initial_candidates
-            }
-            for future in concurrent.futures.as_completed(future_to_item):
-                if stop_event.is_set():
-                    break
-                item = future_to_item[future]
-                try:
-                    full_info = future.result()
-                    if not full_info:
-                        continue
-                    h = full_info.get('height') or 0
-                    if h < min_height:
-                        continue
-                    dur  = full_info.get('duration')
-                    is_s = (
-                        (dur is not None and dur <= 60)
-                        or 'shorts' in item['url'].lower()
-                        or 'short'  in item['title'].lower()
+        shorts_final: list = []
+        longs_final:  list = []
+
+        def _have_enough() -> bool:
+            return len(shorts_final) >= num_shorts and len(longs_final) >= num_longs
+
+        def _process_item(item: dict, full_info: dict) -> None:
+            h = full_info.get('height') or 0
+            if h < min_height:
+                return
+            dur = full_info.get('duration')
+            is_s = (
+                (dur is not None and dur <= 60)
+                or 'shorts' in item['url'].lower()
+                or 'short'  in item['title'].lower()
+            )
+            thumbs = full_info.get('thumbnails') or []
+            item.update({
+                'duration':              dur,
+                'is_short':              is_s,
+                'width':                 full_info.get('width'),
+                'height':                h,
+                'resolution':            full_info.get('resolution'),
+                'available_resolutions': sorted(
+                    {f.get('height') for f in full_info.get('formats', []) if f.get('height')},
+                    reverse=True,
+                ),
+                'thumbnail': thumbs[-1].get('url') if thumbs else full_info.get('thumbnail', ''),
+            })
+            if is_s:
+                if len(shorts_final) < num_shorts:
+                    shorts_final.append(item)
+            else:
+                if len(longs_final) < num_longs:
+                    longs_final.append(item)
+
+        remaining = list(initial_candidates)
+
+        # ── Pre-filter pass: accept candidates whose flat height already qualifies ──
+        still_needed = []
+        for item in remaining:
+            if _have_enough():
+                break
+            flat_h = item.get('height') or 0
+            if flat_h >= min_height > 0:
+                # Flat metadata already confirms resolution — no full fetch needed
+                dur = item.get('duration')
+                is_s = (
+                    (dur is not None and dur <= 60)
+                    or 'shorts' in item['url'].lower()
+                    or 'short'  in item['title'].lower()
+                )
+                item['is_short'] = is_s
+                if is_s:
+                    if len(shorts_final) < num_shorts:
+                        shorts_final.append(item)
+                else:
+                    if len(longs_final) < num_longs:
+                        longs_final.append(item)
+            else:
+                still_needed.append(item)
+
+        # ── Rolling-window fetch for the rest ────────────────────────────────
+        if not _have_enough() and still_needed:
+            future_to_item: dict = {}
+            pending:        set  = set()
+
+            def _submit_next() -> None:
+                while still_needed and len(pending) < MAX_CONCURRENT and not _have_enough():
+                    item = still_needed.pop(0)
+                    f = executor.submit(_fetch_full_info_cached, item['url'])
+                    pending.add(f)
+                    future_to_item[f] = item
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as executor:
+                _submit_next()
+
+                while pending and not _have_enough():
+                    done, _ = concurrent.futures.wait(
+                        pending, return_when=concurrent.futures.FIRST_COMPLETED
                     )
-                    thumbs = full_info.get('thumbnails') or []
-                    item.update({
-                        'duration':             dur,
-                        'is_short':             is_s,
-                        'width':                full_info.get('width'),
-                        'height':               h,
-                        'resolution':           full_info.get('resolution'),
-                        'available_resolutions': sorted(
-                            {f.get('height') for f in full_info.get('formats', []) if f.get('height')},
-                            reverse=True,
-                        ),
-                        'thumbnail': thumbs[-1].get('url') if thumbs else full_info.get('thumbnail', ''),
-                    })
-                    if is_s:
-                        if len(shorts_final) < num_shorts:
-                            shorts_final.append(item)
-                    else:
-                        if len(longs_final) < num_longs:
-                            longs_final.append(item)
-                    if len(shorts_final) >= num_shorts and len(longs_final) >= num_longs:
-                        stop_event.set()  # signal other threads to exit early
-                        break
-                except Exception:
-                    continue
+                    for future in done:
+                        pending.discard(future)
+                        item = future_to_item.pop(future, None)
+                        if item is None:
+                            continue
+                        try:
+                            full_info = future.result()
+                            if full_info:
+                                _process_item(item, full_info)
+                        except Exception:
+                            pass
+                        _submit_next()
+
+                # Cancel futures we no longer need
+                for f in pending:
+                    f.cancel()
 
         return shorts_final + longs_final
 
