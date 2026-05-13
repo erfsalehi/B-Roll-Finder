@@ -8,6 +8,22 @@ def _xml_attr(value) -> str:
     return escape(str(value), {'"': "&quot;"})
 
 
+def _get_premiere_safe_pathurl(filepath: str) -> str:
+    """
+    Formats paths to prevent Premiere's Windows \\C:\ network drive bug.
+    Forces the file://localhost/C:/... format.
+    """
+    abs_path = os.path.abspath(filepath)
+    # Convert backslashes to forward slashes for XML URIs
+    forward_slash_path = abs_path.replace('\\', '/')
+    
+    # Ensure it starts with a slash before the drive letter
+    if not forward_slash_path.startswith('/'):
+        forward_slash_path = '/' + forward_slash_path
+        
+    return f"file://localhost{forward_slash_path}"
+
+
 def sec_to_frames(seconds: float, fps: float = 23.976) -> int:
     """Converts seconds to exact frame counts for Premiere Pro."""
     return int(round(seconds * fps))
@@ -160,7 +176,7 @@ def generate_fcpxml(shots: list, project_name: str = "default") -> str:
     """
     proj_folder = _safe_for_fs(project_name, 50)
     # We use absolute paths for the 'pathurl' attribute so Premiere can find them instantly.
-    base_dir = os.path.abspath(os.path.join("downloads", "director", proj_folder))
+    base_dir = os.path.abspath(os.path.join("downloads", proj_folder, "director"))
     
     fps_exact = 23.976
     timebase = 24  # Standard timebase for 23.98 in FCP7 XML
@@ -198,113 +214,119 @@ def generate_fcpxml(shots: list, project_name: str = "default") -> str:
     for i, shot in enumerate(shots):
         start_sec = float(shot.get('timestamp', 0))
         
-        # Calculate duration
+        # Calculate overall shot duration
         if i < len(shots) - 1:
             end_sec = float(shots[i+1].get('timestamp', start_sec + 5))
         else:
             end_sec = float(shot.get('end_timestamp', start_sec + 5))
             
-        duration_sec = end_sec - start_sec
-        if duration_sec <= 0:
-            duration_sec = 1.0
-
-        # Convert everything to absolute frames
-        start_frame = sec_to_frames(start_sec, fps_exact)
-        duration_frames = sec_to_frames(duration_sec, fps_exact)
-        end_frame = start_frame + duration_frames
+        total_duration_sec = end_sec - start_sec
+        if total_duration_sec <= 0:
+            total_duration_sec = 1.0
 
         sel = shot.get("selected_results", [])
         if not sel:
-            # If no clip exists for this shot, we just skip it. 
-            # FCP7 XML handles gaps implicitly by leaving empty timeline space!
             continue
             
-        res = sel[0]
-        url = res.get("url")
-        if not url:
-            continue
+        # Distribute the total duration among all selected candidates for this shot
+        num_clips = len(sel)
+        clip_duration_sec = total_duration_sec / num_clips
+        
+        for res_idx, res in enumerate(sel):
+            url = res.get("url")
+            if not url:
+                continue
+                
+            # Placement for this specific clip within the shot
+            clip_start_sec = start_sec + (res_idx * clip_duration_sec)
+            clip_end_sec = clip_start_sec + clip_duration_sec
+            
+            start_frame = sec_to_frames(clip_start_sec, fps_exact)
+            duration_frames = sec_to_frames(clip_duration_sec, fps_exact)
+            end_frame = start_frame + duration_frames
 
-        # File pathing logic
-        if url not in asset_map:
+            # File pathing logic - follow app.py naming exactly
             slot_id = shot.get("slot_id", "X")
             keyword = _safe_for_fs(res.get("matched_query", ""), 30) or "clip"
-            base = f"{slot_id}-1-{keyword}"
-            filename = f"{base}.mp4"
+            footage_num = res_idx + 1
+            filename = f"{slot_id}-{footage_num}-{keyword}.mp4"
             
+            # Deduplicate filename if necessary
             n = 1
-            while filename in seen_filenames:
+            temp_filename = filename
+            while temp_filename in seen_filenames:
                 n += 1
-                filename = f"{base}-{n}.mp4"
+                temp_filename = f"{slot_id}-{footage_num}-{keyword}-{n}.mp4"
+            filename = temp_filename
             seen_filenames.add(filename)
             
             filepath = os.path.join(base_dir, filename)
-            # Use Path.as_uri() for perfect file:/// URI formatting
-            file_uri = Path(filepath).as_uri()
+            file_uri = _get_premiere_safe_pathurl(filepath)
             
-            # Media duration
-            media_dur_sec = _get_media_duration(filepath, fallback_duration=duration_sec + 10.0)
-            media_dur_frames = sec_to_frames(media_dur_sec, fps_exact)
+            if filename not in asset_map:
+                # Media duration
+                media_dur_sec = _get_media_duration(filepath, fallback_duration=clip_duration_sec + 10.0)
+                media_dur_frames = sec_to_frames(media_dur_sec, fps_exact)
+                
+                asset_map[filename] = {
+                    "id": f"file-{next_asset_id}",
+                    "filename": filename,
+                    "uri": file_uri,
+                    "media_dur_frames": media_dur_frames
+                }
+                next_asset_id += 1
+
+            asset_info = asset_map[filename]
+            clip_id = f"clip-{i}-{res_idx}"
+
+            # ── Insert Clip on Timeline ──
+            xml.append(f'              <clipitem id="{clip_id}">')
+            xml.append(f'                <name>{_xml_attr(asset_info["filename"])}</name>')
+            xml.append(f'                <duration>{asset_info["media_dur_frames"]}</duration>')
+            xml.append('                <rate>')
+            xml.append(f'                  <timebase>{timebase}</timebase>')
+            xml.append('                  <ntsc>TRUE</ntsc>')
+            xml.append('                </rate>')
             
-            asset_map[url] = {
-                "id": f"file-{next_asset_id}",
-                "filename": filename,
-                "uri": file_uri,
-                "media_dur_frames": media_dur_frames
-            }
-            next_asset_id += 1
+            # Placement on timeline
+            xml.append(f'                <start>{start_frame}</start>')
+            xml.append(f'                <end>{end_frame}</end>')
+            
+            # Cut points on the source file
+            xml.append('                <in>0</in>')
+            xml.append(f'                <out>{duration_frames}</out>')
+            
+            # File Definition Block
+            if asset_info["id"] not in defined_files:
+                xml.append(f'                <file id="{asset_info["id"]}">')
+                xml.append(f'                  <name>{_xml_attr(asset_info["filename"])}</name>')
+                xml.append(f'                  <pathurl>{_xml_attr(asset_info["uri"])}</pathurl>')
+                xml.append('                  <rate>')
+                xml.append(f'                    <timebase>{timebase}</timebase>')
+                xml.append('                    <ntsc>TRUE</ntsc>')
+                xml.append('                  </rate>')
+                xml.append(f'                  <duration>{asset_info["media_dur_frames"]}</duration>')
+                xml.append('                  <media>')
+                xml.append('                    <video>')
+                xml.append(f'                      <duration>{asset_info["media_dur_frames"]}</duration>')
+                xml.append('                    </video>')
+                xml.append('                  </media>')
+                xml.append('                </file>')
+                defined_files.add(asset_info["id"])
+            else:
+                xml.append(f'                <file id="{asset_info["id"]}"/>')
 
-        asset_info = asset_map[url]
-        clip_id = f"clip-{i}"
+            # Add Marker
+            intent = _xml_attr(shot.get('shot_intent', ''))
+            if intent:
+                xml.append('                <marker>')
+                xml.append('                  <name>Shot Intent</name>')
+                xml.append(f'                  <comment>{intent}</comment>')
+                xml.append('                  <in>0</in>')
+                xml.append('                  <out>1</out>')
+                xml.append('                </marker>')
 
-        # ── Insert Clip on Timeline ──
-        xml.append(f'              <clipitem id="{clip_id}">')
-        xml.append(f'                <name>{_xml_attr(asset_info["filename"])}</name>')
-        xml.append(f'                <duration>{asset_info["media_dur_frames"]}</duration>')
-        xml.append('                <rate>')
-        xml.append(f'                  <timebase>{timebase}</timebase>')
-        xml.append('                  <ntsc>TRUE</ntsc>')
-        xml.append('                </rate>')
-        
-        # Placement on timeline
-        xml.append(f'                <start>{start_frame}</start>')
-        xml.append(f'                <end>{end_frame}</end>')
-        
-        # Cut points on the source file
-        xml.append('                <in>0</in>')
-        xml.append(f'                <out>{duration_frames}</out>')
-        
-        # File Definition Block
-        if asset_info["id"] not in defined_files:
-            xml.append(f'                <file id="{asset_info["id"]}">')
-            xml.append(f'                  <name>{_xml_attr(asset_info["filename"])}</name>')
-            xml.append(f'                  <pathurl>{_xml_attr(asset_info["uri"])}</pathurl>')
-            xml.append('                  <rate>')
-            xml.append(f'                    <timebase>{timebase}</timebase>')
-            xml.append('                    <ntsc>TRUE</ntsc>')
-            xml.append('                  </rate>')
-            xml.append(f'                  <duration>{asset_info["media_dur_frames"]}</duration>')
-            xml.append('                  <media>')
-            xml.append('                    <video>')
-            xml.append(f'                      <duration>{asset_info["media_dur_frames"]}</duration>')
-            xml.append('                    </video>')
-            xml.append('                  </media>')
-            xml.append('                </file>')
-            defined_files.add(asset_info["id"])
-        else:
-            # If we already defined the file metadata, just reference it
-            xml.append(f'                <file id="{asset_info["id"]}"/>')
-
-        # Add Marker to the clip
-        intent = _xml_attr(shot.get('shot_intent', ''))
-        if intent:
-            xml.append('                <marker>')
-            xml.append('                  <name>Shot Intent</name>')
-            xml.append(f'                  <comment>{intent}</comment>')
-            xml.append('                  <in>0</in>')
-            xml.append('                  <out>1</out>')
-            xml.append('                </marker>')
-
-        xml.append('              </clipitem>')
+            xml.append('              </clipitem>')
 
     # ── Close XML ──
     xml.append('            </track>')

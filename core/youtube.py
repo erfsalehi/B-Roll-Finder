@@ -6,10 +6,25 @@ import threading
 import time
 import glob
 
-def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3, errors: list = None) -> list:
+def _fetch_full_info(url: str) -> dict:
+    """Helper to fetch full metadata for a single video URL."""
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'simulate': True,
+        'skip_download': True,
+        'extract_flat': False,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    except Exception:
+        return {}
+
+def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3, errors: list = None, min_height: int = 0) -> list:
     """
     Uses yt-dlp to search for a single keyword and returns a mix of shorts and long videos.
-    Returns a list of dicts: [{'title': str, 'url': str, 'is_short': bool}, ...]
+    Now fetches full metadata (resolutions, etc.) and filters by min_height.
     """
     ydl_opts = {
         'extract_flat': True,
@@ -22,57 +37,89 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
     if not keyword or keyword.startswith("Error:") or keyword.startswith("No keywords generated"):
         return []
         
-    results = []
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Fetch more than we need to allow for filtering
-            total_needed = num_shorts + num_longs
-            query = f"ytsearch{total_needed * 3}:{keyword}"
+            # If filtering, we fetch a larger pool initially
+            search_pool_size = (num_shorts + num_longs) * 5 if min_height > 0 else (num_shorts + num_longs) * 3
+            query = f"ytsearch{search_pool_size}:{keyword}"
             info = ydl.extract_info(query, download=False)
             
-            shorts_found = []
-            longs_found = []
-            
+            initial_candidates = []
             if 'entries' in info:
                 for entry in info['entries']:
-                    title = entry.get('title', 'Unknown Title')
                     url = entry.get('url')
-                    # duration might be missing, assume long if missing to be safe, or just check
-                    duration = entry.get('duration')
-                    
-                    if not url:
+                    if not url: continue
+                    initial_candidates.append({
+                        'title': entry.get('title', 'Unknown Title'),
+                        'url': url,
+                        'duration': entry.get('duration')
+                    })
+
+        if initial_candidates:
+            shorts_final = []
+            longs_final = []
+            
+            # Fetch full info in batches to check resolution
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(initial_candidates), 10)) as executor:
+                future_to_item = {
+                    executor.submit(_fetch_full_info, item['url']): item 
+                    for item in initial_candidates
+                }
+                
+                for future in concurrent.futures.as_completed(future_to_item):
+                    item = future_to_item[future]
+                    try:
+                        full_info = future.result()
+                        if not full_info: continue
+                        
+                        h = full_info.get('height', 0)
+                        if min_height > 0 and h < min_height:
+                            continue
+                            
+                        # Success: met resolution. Now categorize as short/long.
+                        dur = full_info.get('duration')
+                        is_short = False
+                        if dur is not None and dur <= 60:
+                            is_short = True
+                        elif 'shorts' in item['url'].lower() or 'short' in item['title'].lower():
+                            is_short = True
+                            
+                        item['is_short'] = is_short
+                        item['duration'] = dur
+                        item['width'] = full_info.get('width')
+                        item['height'] = h
+                        item['resolution'] = full_info.get('resolution')
+                        formats = full_info.get('formats', [])
+                        res_list = sorted(list(set(f.get('height') for f in formats if f.get('height'))), reverse=True)
+                        item['available_resolutions'] = res_list
+                        thumbs = full_info.get('thumbnails', [])
+                        item['thumbnail'] = thumbs[-1].get('url') if thumbs else full_info.get('thumbnail', '')
+                        
+                        if is_short:
+                            if len(shorts_final) < num_shorts:
+                                shorts_final.append(item)
+                        else:
+                            if len(longs_final) < num_longs:
+                                longs_final.append(item)
+                                
+                        if len(shorts_final) >= num_shorts and len(longs_final) >= num_longs:
+                            # We have enough
+                            # Cancel remaining futures if possible (executor doesn't support easy cancel of pending)
+                            break
+                    except Exception:
                         continue
-                        
-                    # YouTube shorts are typically <= 60 seconds
-                    is_short = False
-                    if duration is not None and duration <= 60:
-                        is_short = True
-                    elif 'shorts' in url.lower() or 'short' in title.lower():
-                        is_short = True
-                        
-                    thumbs = entry.get('thumbnails', [])
-                    thumbnail = thumbs[-1].get('url') if thumbs else entry.get('thumbnail', '')
-                        
-                    item = {'title': title, 'url': url, 'is_short': is_short, 'duration': duration, 'thumbnail': thumbnail}
-                    
-                    if is_short and len(shorts_found) < num_shorts:
-                        shorts_found.append(item)
-                    elif not is_short and len(longs_found) < num_longs:
-                        longs_found.append(item)
-                        
-                    if len(shorts_found) >= num_shorts and len(longs_found) >= num_longs:
-                        break
-                        
-            results = shorts_found + longs_found
+            
+            return shorts_final + longs_final
+
     except Exception as e:
         msg = f"YouTube search failed for '{keyword}': {e}"
         print(msg)
         if errors is not None:
             errors.append(msg)
 
-    return results
+    return []
 
-def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, max_workers: int = 5, progress_callback=None, errors: list = None) -> list:
+def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, max_workers: int = 5, progress_callback=None, errors: list = None, min_height: int = 0) -> list:
     """
     For each slot, takes the FIRST keyword in 'keywords' and searches YouTube for it.
     Updates each slot with a 'youtube_results' list.
@@ -92,7 +139,7 @@ def fetch_youtube_results(slots: list, num_shorts: int = 0, num_longs: int = 3, 
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {
-            executor.submit(search_youtube_single, kw, num_shorts, num_longs, errors): idx
+            executor.submit(search_youtube_single, kw, num_shorts, num_longs, errors, min_height): idx
             for idx, kw in queries
         }
 

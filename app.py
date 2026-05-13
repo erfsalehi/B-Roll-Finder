@@ -261,6 +261,8 @@ def render_classic_mode():
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
             else:
                 st.warning("Groq API key is required.")
+
+
     # Step 1: Upload
     st.header("Step 1: Upload Files")
     col1, col2 = st.columns(2)
@@ -433,6 +435,11 @@ def render_classic_mode():
             st.success("Keywords updated!")
     # Step 5: Fetch Links
     st.header("Step 5: Fetch Video Links (Optional)")
+    with st.expander("🛠️ Advanced Search Filters", expanded=False):
+        c_res_map = {"None": 0, "720p": 720, "1080p": 1080, "2K": 1440, "4K": 2160}
+        c_min_res_label = st.selectbox("Minimum Resolution Filter", ["None", "720p", "1080p", "2K", "4K"], 
+                                     index=0, key="c_min_res_sel")
+        c_min_h = c_res_map.get(c_min_res_label, 0)
     st.write("Select the number of videos per timestamp for each source:")
     col_src1, col_src2, col_src3 = st.columns(3)
     with col_src1:
@@ -468,7 +475,8 @@ def render_classic_mode():
                             num_shorts=yt_shorts,
                             num_longs=yt_longs,
                             progress_callback=lambda p: progress_bar_yt.progress(p * 0.3),
-                            errors=fetch_errors
+                            errors=fetch_errors,
+                            min_height=c_min_h
                         )
                     # Then Pexels & Pixabay
                     total_slots = len(st.session_state.slots)
@@ -485,21 +493,21 @@ def render_classic_mode():
                         if primary_kw:
                             if pexels_count > 0 and os.getenv("PEXELS_API_KEY") and pexels_failures < _CIRCUIT_LIMIT:
                                 prev_err_count = len(fetch_errors)
-                                pexels_res = search_pexels(primary_kw, os.getenv("PEXELS_API_KEY"), pexels_count, errors=fetch_errors)
+                                pexels_res = search_pexels(primary_kw, os.getenv("PEXELS_API_KEY"), pexels_count, errors=fetch_errors, min_height=c_min_h)
                                 if len(fetch_errors) > prev_err_count:
                                     pexels_failures += 1
                                     if pexels_failures >= _CIRCUIT_LIMIT:
-                                        fetch_errors.append("Pexels: 3 consecutive failures — skipping remaining Pexels searches.")
+                                        fetch_errors.append("Pexels: 3 consecutive failures —  skipping remaining Pexels searches.")
                                 else:
                                     pexels_failures = 0
                                 slot['video_results'].extend(pexels_res)
                             if pixabay_count > 0 and os.getenv("PIXABAY_API_KEY") and pixabay_failures < _CIRCUIT_LIMIT:
                                 prev_err_count = len(fetch_errors)
-                                pixabay_res = search_pixabay(primary_kw, os.getenv("PIXABAY_API_KEY"), pixabay_count, errors=fetch_errors)
+                                pixabay_res = search_pixabay(primary_kw, os.getenv("PIXABAY_API_KEY"), pixabay_count, errors=fetch_errors, min_height=c_min_h)
                                 if len(fetch_errors) > prev_err_count:
                                     pixabay_failures += 1
                                     if pixabay_failures >= _CIRCUIT_LIMIT:
-                                        fetch_errors.append("Pixabay: 3 consecutive failures — skipping remaining Pixabay searches.")
+                                        fetch_errors.append("Pixabay: 3 consecutive failures —  skipping remaining Pixabay searches.")
                                 else:
                                     pixabay_failures = 0
                                 slot['video_results'].extend(pixabay_res)
@@ -516,7 +524,7 @@ def render_classic_mode():
                     if fetch_errors:
                         # Deduplicate by error type (strip the per-keyword prefix for grouping)
                         unique_errors = list(dict.fromkeys(fetch_errors))
-                        with st.expander(f"⚠️ {len(unique_errors)} search error(s) — click to see details"):
+                        with st.expander(f"⚠️  {len(unique_errors)} search error(s) —  click to see details"):
                             for err in unique_errors[:20]:
                                 st.write(f"• {err}")
                             if len(unique_errors) > 20:
@@ -538,7 +546,7 @@ def render_classic_mode():
             key="classic_q_filter",
             help="Filter displayed candidates by minimum resolution. (YouTube candidates are always shown)."
         )
-        with st.expander("ðŸâ€ View Search Results Gallery", expanded=True):
+        with st.expander("🖼️  View Search Results Gallery", expanded=True):
             st.caption("Review the footage found for each keyword. Titles and thumbnails are clickable.")
             
             # Show in a grid or table? Let's do a table first for compactness.
@@ -564,7 +572,7 @@ def render_classic_mode():
                         "Preview": res.get("thumbnail") or "",
                         "Title": title_link,
                         "Source": (res.get("source") or "?").upper(),
-                        "Duration": f"{res.get('duration')}s" if res.get('duration') else "—",
+                        "Duration": f"{res.get('duration')}s" if res.get('duration') else "— ",
                     })
             
             if all_rows:
@@ -585,7 +593,7 @@ def render_classic_mode():
                 )
                 
                 # Optional Gallery for Classic mode (only first 12 results to avoid lag)
-                st.subheader("🖼️ Quick Preview Gallery")
+                st.subheader("🖼️  Quick Preview Gallery")
                 g_cols = st.columns(4)
                 for idx, row in df_review.head(12).iterrows():
                     with g_cols[idx % 4]:
@@ -668,12 +676,12 @@ def render_classic_mode():
         # Failed Tasks Expander
         failed_tasks = st.session_state.dm.get_failed_tasks()
         if failed_tasks:
-            with st.expander(f"⚠️ {len(failed_tasks)} Failed Downloads"):
+            with st.expander(f"⚠️  {len(failed_tasks)} Failed Downloads"):
                 if st.button("Retry All Failed"):
                     st.session_state.dm.retry_all_failed()
                     st.rerun()
                 for ft in failed_tasks:
-                    st.write(f"âÅ’ {os.path.basename(ft['output_path'])} - {ft.get('error_msg', 'Unknown Error')}")
+                    st.write(f"❌ {os.path.basename(ft['output_path'])} - {ft.get('error_msg', 'Unknown Error')}")
         # Active Tasks
         active_tasks = st.session_state.dm.get_active_tasks()
         if active_tasks:
@@ -683,8 +691,8 @@ def render_classic_mode():
                 speed_str = format_speed(t.get('speed'))
                 eta_str = format_eta(t.get('eta'))
                 meta = " | ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
-                label = "Normalizing…" if is_processing else f"{t['status'].title()} ({t['progress']*100:.1f}%){(' — ' + meta) if meta else ''}"
-                st.write(f"**{os.path.basename(t['output_path'])}** — {label}")
+                label = "Normalizing…" if is_processing else f"{t['status'].title()} ({t['progress']*100:.1f}%){(' —  ' + meta) if meta else ''}"
+                st.write(f"**{os.path.basename(t['output_path'])}** —  {label}")
                 st.progress(t['progress'])
                 b1, b2, _ = st.columns(3)
                 if not is_processing:
@@ -842,7 +850,7 @@ def render_classic_mode():
                             if len(fetch_errors_g) > prev:
                                 pexels_failures += 1
                                 if pexels_failures >= _CIRCUIT_LIMIT:
-                                    fetch_errors_g.append("Pexels: 3 consecutive failures — skipping remaining Pexels searches.")
+                                    fetch_errors_g.append("Pexels: 3 consecutive failures —  skipping remaining Pexels searches.")
                             else:
                                 pexels_failures = 0
                             results.extend(pex_res)
@@ -852,7 +860,7 @@ def render_classic_mode():
                             if len(fetch_errors_g) > prev:
                                 pixabay_failures += 1
                                 if pixabay_failures >= _CIRCUIT_LIMIT:
-                                    fetch_errors_g.append("Pixabay: 3 consecutive failures — skipping remaining Pixabay searches.")
+                                    fetch_errors_g.append("Pixabay: 3 consecutive failures —  skipping remaining Pixabay searches.")
                             else:
                                 pixabay_failures = 0
                             results.extend(pix_res)
@@ -866,7 +874,7 @@ def render_classic_mode():
                         st.warning("No video links found. Try different keywords or check your API keys.")
                     if fetch_errors_g:
                         unique_g_errors = list(dict.fromkeys(fetch_errors_g))
-                        with st.expander(f"⚠️ {len(unique_g_errors)} search error(s)"):
+                        with st.expander(f"⚠️  {len(unique_g_errors)} search error(s)"):
                             for err in unique_g_errors[:20]:
                                 st.write(f"• {err}")
                         ssl_keywords = ("ssl", "certificate", "eof occurred", "handshake", "tlsv1")
@@ -878,10 +886,10 @@ def render_classic_mode():
         # Global Review Section
         has_g_results = any(len(t.get('video_results', [])) > 0 for t in st.session_state.global_themes)
         if has_g_results:
-            st.subheader("🌍 Global Footage Review")
+            st.subheader("🌍  Global Footage Review")
             
             # Global Gallery Section
-            st.subheader("🖼️ Global Gallery")
+            st.subheader("🖼️  Global Gallery")
             
             g_q_filter = st.selectbox(
                 "Filter Global by Quality",
@@ -913,7 +921,14 @@ def render_classic_mode():
                         source = res.get('source', '').upper()
                         w, h = res.get('width'), res.get('height')
                         dur = res.get('duration')
-                        res_str = f"{w}x{h}" if w and h else "Resolution Unknown"
+                        avail_res = res.get("available_resolutions", [])
+                        if avail_res:
+                            high_res = [r for r in [2160, 1440, 1080, 720] if r in avail_res]
+                            res_str = f"{w}x{h}" if w and h else f"{max(avail_res)}p"
+                            if high_res:
+                                res_str += f" ({', '.join([('4K' if r==2160 else '2K' if r==1440 else str(r)+'p') for r in high_res])})"
+                        else:
+                            res_str = f"{w}x{h}" if w and h else "Resolution Unknown"
                         dur_str = f"{dur}s" if dur else ""
                         with gcols[j_g]:
                             with st.container(border=True):
@@ -1020,7 +1035,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             
             with tab_local:
                 local_dir = st.text_input("Local Folder Path", placeholder="C:/Users/Name/Videos/MyStock", key="lib_local_dir")
-                if st.button("ðŸâ€ Index Local Folder", use_container_width=True):
+                if st.button("ðŸâ€   Index Local Folder", use_container_width=True):
                     if os.path.isdir(local_dir):
                         video_files = [f for f in os.listdir(local_dir) if f.lower().endswith(('.mp4', '.mov', '.mkv', '.avi'))]
                         if video_files:
@@ -1054,11 +1069,11 @@ elif app_mode in ["Director", "Smart Mode"]:
         "OpenRouter": bool(os.getenv("OPENROUTER_API_KEY")),
     }
     _pill = " · ".join(f"{'✅' if v else '○'} {k}" for k, v in _key_status.items())
-    with st.expander(f"⚙️ Setup — API keys  ·  {_pill}",
+    with st.expander(f"⚙️  Setup —  API keys  ·  {_pill}",
                      expanded=not (_key_status["Groq 1"] or _key_status["Groq 2"])):
         st.caption(
             "Groq is required (script analysis & ranking). Pexels/Pixabay/YouTube are "
-            "search sources — enable at least one. OpenRouter is an automatic fallback "
+            "search sources —  enable at least one. OpenRouter is an automatic fallback "
             "when Groq hits its rate limit."
         )
         col_k1, col_k2 = st.columns(2)
@@ -1161,7 +1176,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 st.session_state.active_chunk_indices = [0]
                                 save_cache()
                                 st.success(
-                                    f"Transcribed — {len(segments)} segment(s). "
+                                    f"Transcribed —  {len(segments)} segment(s). "
                                     "Continue to Step 2 to generate the shot list."
                                 )
                                 st.rerun()
@@ -1191,12 +1206,12 @@ elif app_mode in ["Director", "Smart Mode"]:
         with s1: st.metric("Length", f"{dur/60:.1f} min")
         with s2: st.metric("Words",  f"{wds:,}")
         with s3: st.metric("Speaking rate", f"{wps:.2f} wps")
-        with st.expander("📄 View full transcription", expanded=False):
+        with st.expander("📄  View full transcription", expanded=False):
             for seg in segs:
                 m = int(seg["start"] // 60); s = int(seg["start"] % 60)
                 st.write(f"**[{m:02d}:{s:02d}]** {seg['text']}")
     st.header("Step 2: Generate Shot List")
-    # Video topic — single source of truth shared with Step 4 (ranking).
+    # Video topic —  single source of truth shared with Step 4 (ranking).
     # Editing it here updates Step 4, and vice versa, because Streamlit
     # binds widgets with the same `key` to one session_state slot.
     col_topic_in, col_topic_btn = st.columns([5, 1])
@@ -1394,6 +1409,14 @@ elif app_mode in ["Director", "Smart Mode"]:
     # Step 3 — Fetch Candidates
     if st.session_state.director_shots:
         st.header("Step 3: Fetch Candidates")
+        
+        with st.expander("🛠️ Advanced Search Filters", expanded=True):
+            res_map = {"None": 0, "720p": 720, "1080p": 1080, "2K": 1440, "4K": 2160}
+            min_res_label = st.selectbox("Minimum Resolution Filter", ["None", "720p", "1080p", "2K", "4K"], 
+                                         index=0, key="d_min_res_sel", 
+                                         help="Videos below this resolution will be skipped and replaced with next best matches.")
+            min_h = res_map.get(min_res_label, 0)
+
         col_s2a, col_s2b, col_s2c, col_s2d, col_s2e = st.columns(5)
         with col_s2a:
             use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb", on_change=save_cache)
@@ -1495,6 +1518,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                         progress_callback=lambda p: pbar2.progress(p * 0.9),
                         errors=d_fetch_errors,
                         retry_only=retry_clicked,
+                        min_height=min_h
                     )
                     # Smart Mode: Low-Res Proxy Fetch (hijacks YouTube search)
                     if use_smart and app_mode == "Smart Mode":
@@ -1755,7 +1779,14 @@ elif app_mode in ["Director", "Smart Mode"]:
                         if score: source_display += f" · {score*100:.0f}% match"
                         w, h = cand.get("width"), cand.get("height")
                         dur = cand.get("duration")
-                        res_str = f"{w}x{h}" if w and h else "Resolution Unknown"
+                        avail_res = cand.get("available_resolutions", [])
+                        if avail_res:
+                            high_res = [r for r in [2160, 1440, 1080, 720] if r in avail_res]
+                            res_str = f"{w}x{h}" if w and h else f"{max(avail_res)}p"
+                            if high_res:
+                                res_str += f" ({', '.join([('4K' if r==2160 else '2K' if r==1440 else str(r)+'p') for r in high_res])})"
+                        else:
+                            res_str = f"{w}x{h}" if w and h else "Resolution Unknown"
                         dur_str = f"{int(dur)}s" if dur else ""
                         with cols[j_g]:
                             cand_url = cand.get("url")

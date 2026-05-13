@@ -22,13 +22,15 @@ def _pexels_slug_to_text(page_url: str) -> str:
         return ""
 
 
-def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list = None) -> list:
+def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list = None, min_height: int = 0) -> list:
     if not api_key or not keyword:
         return []
 
     url = "https://api.pexels.com/videos/search"
     headers = {"Authorization": api_key}
-    params = {"query": keyword, "per_page": num_results}
+    # Fetch more than needed to allow for filtering
+    fetch_count = num_results * 2 if min_height > 0 else num_results
+    params = {"query": keyword, "per_page": min(fetch_count, 80)}
 
     results = []
     try:
@@ -50,6 +52,9 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
                     elif best_file.get('quality') not in ['hd', 'uhd']:
                         best_file = vf
 
+            if min_height > 0 and best_file.get('height', 0) < min_height:
+                continue
+
             page_url = video.get('url', '')
             semantic = _pexels_slug_to_text(page_url)
             author = video.get('user', {}).get('name', 'Unknown')
@@ -67,6 +72,8 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
                 'quality': best_file.get('quality'),
                 'file_size': None,
             })
+            if len(results) >= num_results:
+                break
     except Exception as e:
         msg = f"Pexels search failed for '{keyword}': {e}"
         print(msg)
@@ -75,14 +82,14 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
 
     return results
 
-def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: list = None) -> list:
+def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: list = None, min_height: int = 0) -> list:
     if not api_key or not keyword:
         return []
 
     url = "https://pixabay.com/api/videos/"
-    # Pixabay per_page minimum is 3. If user wants 1, we fetch 3 and slice later.
-    fetch_count = max(3, num_results)
-    params = {"key": api_key, "q": keyword, "per_page": fetch_count}
+    # Pixabay per_page minimum is 3.
+    fetch_count = max(3, num_results * 2 if min_height > 0 else num_results)
+    params = {"key": api_key, "q": keyword, "per_page": min(fetch_count, 100)}
 
     results = []
     try:
@@ -106,6 +113,9 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
 
             v_data = videos[best_quality]
 
+            if min_height > 0 and v_data.get('height', 0) < min_height:
+                continue
+
             tags = hit.get('tags', '') or ''
             results.append({
                 'title': tags.title() if tags else f"Pixabay Video {hit.get('id', '?')}",
@@ -120,8 +130,10 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
                 'quality': best_quality,
                 'file_size': v_data.get('size'),
             })
+            if len(results) >= num_results:
+                break
 
-        return results[:num_results]
+        return results
     except Exception as e:
         msg = f"Pixabay search failed for '{keyword}': {e}"
         print(msg)
@@ -159,28 +171,22 @@ def _looks_like_short(title: str, description: str) -> bool:
 
 
 def search_youtube_data_api(keyword: str, api_key: str, num_results: int = 3,
-                            errors: list = None) -> list:
+                            errors: list = None, min_height: int = 0) -> list:
     """Search YouTube via the Data API v3.
-
-    Returns dicts in the same shape as ``search_pexels`` / ``search_pixabay``
-    so the downstream judge and editor UI need no special-casing. Width and
-    height are unavailable from search.list (would require a second
-    videos.list call), so they're left as ``None`` — the judge treats that
-    as orientation 'unknown', which the rank prompt handles.
-
-    Each call costs 100 quota units (default daily quota: 10,000). Callers
-    should rate-limit themselves; ``director_search`` only invokes this
-    once per shot, on the first query.
+    Note: search.list does NOT return resolutions, so min_height check 
+    is only a heuristic for Shorts in this API.
     """
     if not api_key or not keyword:
         return []
 
     url = "https://www.googleapis.com/youtube/v3/search"
+    # Fetch more to allow for heuristic filtering
+    fetch_count = num_results * 2 if min_height > 0 else num_results
     params = {
         "part": "snippet",
         "q": keyword,
         "type": "video",
-        "maxResults": max(1, min(num_results, 5)),
+        "maxResults": max(1, min(fetch_count, 10)),
         "safeSearch": "moderate",
         "key": api_key,
     }
