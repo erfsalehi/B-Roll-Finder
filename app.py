@@ -177,10 +177,9 @@ if not st.session_state.slots and os.path.exists(CACHE_FILE):
 st.sidebar.title("App Mode")
 app_mode = st.sidebar.radio(
     "Select Mode",
-    ["Director", "Smart Mode", "Classic Finder"],
+    ["Director", "Classic Finder"],
     help=(
         "**Director** is the standard workflow. "
-        "**Smart Mode** enables Scene-Level Understanding across your local library. "
         "**Classic Finder** is the legacy keyword-based path."
     ),
 )
@@ -1408,7 +1407,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             )
             yt_search_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_yts_nr", on_change=save_cache) if use_youtube_search else 0
         with col_s2e:
-            use_smart = st.checkbox("Smart Library", value=True, key="d_smart_cb", disabled=app_mode != "Smart Mode")
+            use_smart = st.checkbox("Smart Library", value=False, key="d_smart_cb", disabled=True, help="Smart Library is currently disabled.")
             smart_num = st.number_input("Results/query", value=5, min_value=1, max_value=20, key="d_smart_nr") if use_smart else 0
         if use_youtube_search:
             yt_calls = sum(
@@ -2162,22 +2161,23 @@ elif app_mode in ["Director", "Smart Mode"]:
                     indexed_batch_ids = st.session_state.get("d_indexed_batches", set())
                     batch_key = tuple(sorted(current_batch_ids))
                     
-                    if batch_key not in indexed_batch_ids:
-                        with st.status("ðŸ§  Auto-indexing new footage for AI Visual Search...") as status:
-                            from core.indexer import VideoIndexer
-                            indexer = VideoIndexer()
-                            count = 0
-                            for t in tasks:
-                                if t["status"] == "completed" and os.path.exists(t["output_path"]):
-                                    status.update(label=f"Indexing {os.path.basename(t['output_path'])}...", state="running")
-                                    indexer.index_video(t["output_path"], video_url=t.get("url"))
-                                    count += 1
-                            status.update(label=f"Done! Auto-indexed {count} scenes into your library.", state="complete")
-                        
-                        if "d_indexed_batches" not in st.session_state:
-                             st.session_state.d_indexed_batches = set()
-                        st.session_state.d_indexed_batches.add(batch_key)
-                        save_cache()
+                    # Auto-indexing disabled for now
+                    # if batch_key not in indexed_batch_ids:
+                    #     with st.status("ðŸ§  Auto-indexing new footage for AI Visual Search...") as status:
+                    #         from core.indexer import VideoIndexer
+                    #         indexer = VideoIndexer()
+                    #         count = 0
+                    #         for t in tasks:
+                    #             if t["status"] == "completed" and os.path.exists(t["output_path"]):
+                    #                 status.update(label=f"Indexing {os.path.basename(t['output_path'])}...", state="running")
+                    #                 indexer.index_video(t["output_path"], video_url=t.get("url"))
+                    #                 count += 1
+                    #         status.update(label=f"Done! Auto-indexed {count} scenes into your library.", state="complete")
+                    #     
+                    #     if "d_indexed_batches" not in st.session_state:
+                    #          st.session_state.d_indexed_batches = set()
+                    #     st.session_state.d_indexed_batches.add(batch_key)
+                    #     save_cache()
             # Auto-refresh while anything is still moving (downloading, queued,
             # paused, or post-download processing).
             in_motion = (stats["downloading"] + stats["queued"]
