@@ -31,17 +31,38 @@ def _fetch_full_info_cached(url: str) -> dict:
 
 
 # ── Cookie helper ────────────────────────────────────────────────────────────
+# If Chrome's DPAPI decryption fails (Chrome v127+ App-Bound Encryption),
+# we disable cookies for the rest of the session rather than crashing every call.
+_cookies_broken = False
+
+def _is_dpapi_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "dpapi" in msg or "failed to decrypt" in msg or "app-bound" in msg
+
+def _mark_cookies_broken() -> None:
+    global _cookies_broken
+    if not _cookies_broken:
+        _cookies_broken = True
+        print(
+            "\n[yt-dlp] WARNING: Cookie decryption failed (Chrome App-Bound Encryption / DPAPI).\n"
+            "  Falling back to no-cookie mode for this session.\n"
+            "  To fix: set 'YouTube Cookie Browser' to 'firefox' in Setup,\n"
+            "  OR run: pip install -U yt-dlp  (requires yt-dlp >= 2024.11)\n"
+        )
+
 def _get_cookie_opts() -> dict:
     """Return yt-dlp cookie options from the environment.
 
     Priority:
-      1. YT_COOKIE_BROWSER env var  → use cookiesfrombrowser (e.g. 'chrome')
+      1. YT_COOKIE_BROWSER env var  → use cookiesfrombrowser (e.g. 'firefox')
       2. cookies.txt in project root → use cookiefile
-      3. Neither                     → empty dict (most restricted)
+      3. Neither / DPAPI broken      → empty dict (no cookies)
 
-    Both options dramatically reduce the "Sign in to confirm you're not a bot"
-    errors because yt-dlp will use the real YouTube session from the browser.
+    NOTE: Chrome v127+ uses App-Bound Encryption which breaks yt-dlp's DPAPI
+    reader on Windows. Use Firefox, or update yt-dlp to >= 2024.11.
     """
+    if _cookies_broken:
+        return {}
     browser = os.getenv("YT_COOKIE_BROWSER", "").strip().lower()
     if browser and browser != "none":
         return {"cookiesfrombrowser": (browser,)}
@@ -263,6 +284,10 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
         return shorts_final + longs_final
 
     except Exception as e:
+        if _is_dpapi_error(e) and not _cookies_broken:
+            # Chrome DPAPI decryption broke — disable cookies and retry once
+            _mark_cookies_broken()
+            return search_youtube_single(keyword, num_shorts, num_longs, errors, min_height)
         msg = f"YouTube search failed for '{keyword}': {e}"
         print(msg)
         if errors is not None:
@@ -450,5 +475,11 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                 except Exception:
                     pass
     except Exception as e:
+        if _is_dpapi_error(e) and not _cookies_broken:
+            # Chrome DPAPI broke cookie reading — disable and retry once without cookies
+            _mark_cookies_broken()
+            download_video(url, output_path, quality, task_state,
+                           max_size_mb=max_size_mb, strict_quality=strict_quality, normalize=normalize)
+            return
         task_state['status'] = 'error'
         task_state['error_msg'] = str(e)
