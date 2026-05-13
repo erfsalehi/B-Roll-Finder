@@ -109,3 +109,40 @@ def compress_audio_for_whisper(input_path: str) -> str:
         if os.path.exists(output_path):
             os.remove(output_path)
         raise e
+def get_video_metadata(path: str) -> dict:
+    """
+    Uses ffprobe to extract duration, width, and height from a video file.
+    Returns a dict with 'duration' (float), 'width' (int), and 'height' (int).
+    Returns defaults if ffprobe fails or the file doesn't exist.
+    """
+    defaults = {"duration": 3600.0, "width": 1920, "height": 1080}
+    if not path or not os.path.exists(path):
+        return defaults
+    
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration:stream=width,height",
+        "-of", "json", path
+    ]
+    try:
+        import json
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        
+        meta = {}
+        # Try to get duration from format
+        if "format" in data and "duration" in data["format"]:
+            meta["duration"] = float(data["format"]["duration"])
+        
+        # Try to get width/height from first video stream
+        if "streams" in data:
+            for s in data["streams"]:
+                if s.get("width") and s.get("height"):
+                    meta["width"] = int(s["width"])
+                    meta["height"] = int(s["height"])
+                    break
+        
+        return {**defaults, **meta}
+    except Exception as e:
+        print(f"[get_video_metadata] Error probing {path}: {e}")
+        return defaults

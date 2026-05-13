@@ -1,5 +1,7 @@
 import os
+from pathlib import Path
 from xml.sax.saxutils import escape
+from core.ffmpeg_utils import get_video_metadata
 
 
 def _xml_attr(value) -> str:
@@ -148,7 +150,7 @@ def generate_fcpxml(shots: list, project_name: str = "default") -> str:
     base_dir = os.path.abspath(os.path.join("downloads", "director", proj_folder))
     
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
-    xml.append('<!DOCTYPE fcpxml>')
+    # Removed DOCTYPE for better compatibility as some versions of Premiere are picky about it
     xml.append('<fcpxml version="1.9">')
     
     # ── Resources ────────────────────────────────────────────────────────────
@@ -186,15 +188,23 @@ def generate_fcpxml(shots: list, project_name: str = "default") -> str:
                 filename = f"{base}-{n}.mp4"
             seen_filenames.add(filename)
             
+            asset_path = os.path.join(base_dir, filename)
+            # Use ffprobe to get real duration for airtight XML metadata
+            meta = get_video_metadata(asset_path)
+            duration_str = f"{meta['duration']:.3f}s"
+            
             asset_id = f"a{next_asset_id}"
+            # Use Path.as_uri() for perfect file:/// URI formatting on all OSs (handles spaces, drive letters, etc.)
+            file_url = _xml_attr(Path(asset_path).as_uri())
+            
+            xml.append(f'    <asset id="{asset_id}" name="{_xml_attr(filename)}" src="{file_url}" start="0s" duration="{duration_str}" hasVideo="1" hasAudio="1"/>')
+            
             asset_map[url] = {
                 "id": asset_id,
                 "filename": filename,
-                "path": os.path.join(base_dir, filename)
+                "path": asset_path,
+                "duration": meta['duration']
             }
-            
-            file_url = "file://" + _xml_attr(asset_map[url]["path"].replace("\\", "/"))
-            xml.append(f'    <asset id="{asset_id}" name="{_xml_attr(filename)}" src="{file_url}" start="0s" duration="3600s" hasVideo="1" hasAudio="1"/>')
             next_asset_id += 1
             
     xml.append('  </resources>')
@@ -203,8 +213,16 @@ def generate_fcpxml(shots: list, project_name: str = "default") -> str:
     xml.append('  <library>')
     xml.append(f'    <event name="B-Roll Director - {_xml_attr(project_name)}">')
     xml.append('      <project name="B-Roll Sequence">')
+    
+    # Calculate total sequence duration accurately
+    total_seq_dur = 0.0
+    if shots:
+        last_shot = shots[-1]
+        total_seq_dur = float(last_shot.get('end_timestamp', float(last_shot.get('timestamp', 0)) + 5))
+    
+    seq_dur_str = f"{total_seq_dur:.3f}s"
     # Defaulting to 23.98fps (1001/24000) as it's standard for cinematic edits
-    xml.append('        <sequence format="r1" tcStart="0s" tcFormat="NDF" duration="3600s">')
+    xml.append(f'        <sequence format="r1" tcStart="0s" tcFormat="NDF" duration="{seq_dur_str}">')
     xml.append('          <spine>')
     
     # ── Timeline ─────────────────────────────────────────────────────────────
@@ -226,7 +244,8 @@ def generate_fcpxml(shots: list, project_name: str = "default") -> str:
         # If there's a gap between current_timeline_pos and start_sec, add a gap resource
         if start_sec > current_timeline_pos:
             gap_dur = start_sec - current_timeline_pos
-            xml.append(f'            <gap name="Gap" offset="{current_timeline_pos}s" duration="{gap_dur}s" start="3600s"/>')
+            # Gaps should start at 0s and have precise offsets/durations
+            xml.append(f'            <gap name="Gap" offset="{current_timeline_pos:.3f}s" duration="{gap_dur:.3f}s" start="0s"/>')
         
         sel = shot.get("selected_results", [])
         asset_info = None
@@ -236,16 +255,22 @@ def generate_fcpxml(shots: list, project_name: str = "default") -> str:
         if asset_info:
             # Place the clip
             clip_name = _xml_attr(asset_info["filename"])
-            # Start at 0s of the clip, or if it's a smart_proxy, we might want to offset.
-            # But usually the downloader trims it. For now, assume 0s start.
-            xml.append(f'            <asset-clip name="{clip_name}" offset="{start_sec}s" ref="{asset_info["id"]}" duration="{duration}s" start="0s">')
+            # Ensure we don't try to use more of the clip than actually exists
+            clip_duration = min(duration, asset_info["duration"])
+            
+            xml.append(f'            <asset-clip name="{clip_name}" offset="{start_sec:.3f}s" ref="{asset_info["id"]}" duration="{clip_duration:.3f}s" start="0s">')
             # Add a marker with the shot intent inside the clip for convenience
             intent = _xml_attr(shot.get('shot_intent', ''))
             xml.append(f'              <marker start="0s" duration="1s" value="Shot {shot.get("slot_id")}: {intent}"/>')
             xml.append('            </asset-clip>')
+            
+            # If the timeline slot is longer than the actual clip, fill the rest with a gap
+            if duration > clip_duration:
+                filler_dur = duration - clip_duration
+                xml.append(f'            <gap name="Short Clip Filler" offset="{(start_sec + clip_duration):.3f}s" duration="{filler_dur:.3f}s" start="0s"/>')
         else:
             # Placeholder gap if no clip selected
-            xml.append(f'            <gap name="MISSING: Shot {shot.get("slot_id")}" offset="{start_sec}s" duration="{duration}s" start="3600s"/>')
+            xml.append(f'            <gap name="MISSING: Shot {shot.get("slot_id")}" offset="{start_sec:.3f}s" duration="{duration:.3f}s" start="0s"/>')
             
         current_timeline_pos = start_sec + duration
         
