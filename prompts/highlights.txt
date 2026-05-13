@@ -11,6 +11,7 @@ Constraint:
 - For HEADINGS, use the exact text from the script if it marks a new section, including any numbers (e.g. "1. OVERVIEW").
 - start_time and end_time MUST be in HH:MM:SS,mmm format if provided in the script, or seconds.
 - original_caption MUST be the relevant snippet from the script.
+- suggested_sfx: Suggest a 1-2 word sound effect that fits the context (e.g., "whoosh", "ding", "cash register", "pop", "camera shutter").
 
 Return a JSON array of objects under a top-level "highlights" key.
 Example:
@@ -21,7 +22,8 @@ Example:
       "end_time": "00:00:18,500",
       "original_caption": "1. We managed to save over ten thousand dollars on this engine rebuild.",
       "highlight_text": "1. $10,000 SAVED",
-      "category": "money"
+      "category": "money",
+      "suggested_sfx": "cash register"
     }
   ]
 }

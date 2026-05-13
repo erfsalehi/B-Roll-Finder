@@ -16,6 +16,7 @@ from core.output import (
     generate_fcpxml, generate_shot_list_txt, filter_overlays_for_shots, _safe_for_fs
 )
 from core.captions import extract_highlights, create_text_overlay
+from core.sfx import search_freesound, download_sfx
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
 from core import download_cache
 from core.app_utils import check_network, format_speed, format_eta
@@ -2268,6 +2269,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                         st.success(f"Extracted {len(st.session_state.text_overlays)} highlights!")
             
             if st.session_state.text_overlays:
+                st.subheader("Fine-tune Overlays & SFX")
                 # Data Editor for fine-tuning
                 # We use the session state directly. To avoid refreshing/losing focus on edits, 
                 # we don't write back to session_state.text_overlays on every rerun.
@@ -2324,6 +2326,29 @@ elif app_mode in ["Director", "Smart Mode"]:
                             ov["end_sec"] = ts_to_sec(ov.get("end_time", ov.get("start_time", 0) + 3))
                         st.session_state.text_overlays = final_ovs
                         st.success(f"Generated {len(st.session_state.text_overlays)} PNG overlays in {ov_dir}")
+
+                    # --- SFX Download Logic ---
+                    freesound_api = os.getenv("FREESOUND_API_KEY")
+                    if freesound_api:
+                        with st.spinner("Downloading Sound Effects from Freesound..."):
+                            sfx_dir = os.path.abspath(os.path.join("downloads", "director", proj_folder, "sfx"))
+                            os.makedirs(sfx_dir, exist_ok=True)
+                            
+                            downloaded_count = 0
+                            for ov in st.session_state.text_overlays:
+                                sfx_query = ov.get("suggested_sfx")
+                                if sfx_query and sfx_query.lower() != "none":
+                                    sfx_data = search_freesound(sfx_query, freesound_api)
+                                    if sfx_data:
+                                        sfx_ext = sfx_data.get("type", "mp3")
+                                        sfx_fname = os.path.join(sfx_dir, f"sfx_{ov.get('highlight_text', 'sound')}.{sfx_ext}")
+                                        if download_sfx(sfx_data, sfx_fname, freesound_api):
+                                            ov["sfx_path"] = sfx_fname
+                                            downloaded_count += 1
+                            if downloaded_count > 0:
+                                st.success(f"Downloaded {downloaded_count} sound effects to {sfx_dir}")
+                    else:
+                        st.info("💡 Tip: Add FREESOUND_API_KEY to your .env to automatically download sound effects!")
     # ── Step 7 — Export ──────────────────────────────────────────────────────
     if st.session_state.director_shots:
         st.header("Step 7: Export")
@@ -2349,11 +2374,18 @@ elif app_mode in ["Director", "Smart Mode"]:
             if not shot_chunk:
                 break
             
-            # Filter overlays for this specific chunk
+            # Filter overlays & SFX for this specific chunk
             chunk_overlays = filter_overlays_for_shots(shot_chunk, st.session_state.text_overlays)
             
+            chunk_sfx = []
+            if "text_overlays" in st.session_state:
+                # We reuse the filtered overlays to find valid SFX paths
+                chunk_sfx = [ov for ov in chunk_overlays if ov.get("sfx_path")]
+                # Map back to the structure generate_fcpxml expects
+                chunk_sfx = [{"filepath": s["sfx_path"], "start_sec": s["start_sec"]} for s in chunk_sfx]
+
             part_display_name = p_name if num_parts == 1 else f"{p_name}_Part_{i+1}"
-            xml_content = generate_fcpxml(shot_chunk, project_name=part_display_name, overlays=chunk_overlays)
+            xml_content = generate_fcpxml(shot_chunk, project_name=part_display_name, overlays=chunk_overlays, sfx_list=chunk_sfx)
             
             fname = "b_roll_sequence.xml" if num_parts == 1 else f"b_roll_sequence_part_{i+1}.xml"
             xml_parts.append({"filename": fname, "content": xml_content})

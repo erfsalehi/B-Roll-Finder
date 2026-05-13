@@ -192,7 +192,7 @@ def _safe_for_fs(text: str, max_len: int = 30) -> str:
     cleaned = "-".join(cleaned.split()).lower()
     return cleaned[:max_len].strip("-") or ""
 
-def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None) -> str:
+def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None, sfx_list: list = None) -> str:
     """
     Generates a bulletproof Legacy FCP 7 XML (<xmeml>) for Premiere Pro.
     Uses exact frame math and implicit gaps to guarantee compatibility.
@@ -488,6 +488,78 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             xml.append('              </clipitem>')
         xml.append('            </track>')
     xml.append('          </video>')
+
+    # ── AUDIO TRACKS ──
+    xml.append('          <audio>')
+    # Track 1: Placeholder for Narration/Direct Audio (Empty for now)
+    xml.append('            <track/>')
+    
+    # Track 2: SFX
+    if sfx_list:
+        xml.append('            <track>')
+        for idx, sfx in enumerate(sfx_list):
+            sfx_path = sfx.get("filepath")
+            if not sfx_path or not os.path.exists(sfx_path):
+                continue
+                
+            sfx_filename = os.path.basename(sfx_path)
+            sfx_uri = _get_premiere_safe_pathurl(sfx_path)
+            
+            s_sec = float(sfx.get("start_sec", 0))
+            
+            # Get actual duration of the SFX file
+            sfx_dur_sec = _get_media_duration(sfx_path, fallback_duration=2.0)
+            
+            s_frame = sec_to_frames(s_sec, fps_exact)
+            d_frame = sec_to_frames(sfx_dur_sec, fps_exact)
+            e_frame = s_frame + d_frame
+            
+            file_id = f"file-sfx-{idx}"
+            clip_id = f"clip-sfx-{idx}"
+            
+            xml.append(f'              <clipitem id="{clip_id}">')
+            xml.append(f'                <name>{_xml_attr(sfx_filename)}</name>')
+            xml.append(f'                <duration>{d_frame}</duration>')
+            xml.append('                <rate>')
+            xml.append(f'                  <timebase>{timebase}</timebase>')
+            xml.append('                  <ntsc>TRUE</ntsc>')
+            xml.append('                </rate>')
+            xml.append(f'                <start>{s_frame}</start>')
+            xml.append(f'                <end>{e_frame}</end>')
+            xml.append('                <in>0</in>')
+            xml.append(f'                <out>{d_frame}</out>')
+            
+            xml.append(f'                <file id="{file_id}">')
+            xml.append(f'                  <name>{_xml_attr(sfx_filename)}</name>')
+            xml.append(f'                  <pathurl>{_xml_attr(sfx_uri)}</pathurl>')
+            xml.append('                  <rate>')
+            xml.append(f'                    <timebase>{timebase}</timebase>')
+            xml.append('                    <ntsc>TRUE</ntsc>')
+            xml.append('                  </rate>')
+            xml.append(f'                  <duration>{d_frame}</duration>')
+            xml.append('                  <media>')
+            xml.append('                    <audio>')
+            xml.append(f'                      <duration>{d_frame}</duration>')
+            xml.append('                      <samplecharacteristics>')
+            xml.append('                        <samplerate>48000</samplerate>')
+            xml.append('                        <depth>16</depth>')
+            xml.append('                      </samplecharacteristics>')
+            xml.append('                    </audio>')
+            xml.append('                  </media>')
+            xml.append('                </file>')
+            
+            # Simple panning (center)
+            xml.append('                <sourcetrack>')
+            xml.append('                  <trackindex>1</trackindex>')
+            xml.append('                </sourcetrack>')
+            
+            xml.append('              </clipitem>')
+        xml.append('            </track>')
+    else:
+        # Placeholder A2
+        xml.append('            <track/>')
+        
+    xml.append('          </audio>')
     xml.append('        </media>')
     xml.append('      </sequence>')
     xml.append('    </children>')
