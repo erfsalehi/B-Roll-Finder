@@ -8,6 +8,20 @@ def _xml_attr(value) -> str:
     return escape(str(value), {'"': "&quot;"})
 
 
+def sec_to_frames(seconds: float, fps: float = 23.976) -> int:
+    """Converts seconds to exact frame counts for Premiere Pro."""
+    return int(round(seconds * fps))
+
+
+def _get_media_duration(path: str, fallback_duration: float = 3600.0) -> float:
+    """Helper to get duration using our ffprobe utility."""
+    meta = get_video_metadata(path)
+    # If get_video_metadata returned the default 3600 but we have a better fallback, use it.
+    if meta['duration'] == 3600.0 and fallback_duration != 3600.0:
+        return fallback_duration
+    return meta['duration']
+
+
 def format_time(seconds: int) -> str:
     h = seconds // 3600
     m = (seconds % 3600) // 60
@@ -141,144 +155,164 @@ def _safe_for_fs(text: str, max_len: int = 30) -> str:
 
 def generate_fcpxml(shots: list, project_name: str = "default") -> str:
     """
-    Generates a Final Cut Pro XML (v1.9) that Premiere Pro can import.
-    Creates a sequence with all selected video clips placed on the timeline
-    at their respective timestamps, with gaps closed to match the SRT.
+    Generates a bulletproof Legacy FCP 7 XML (<xmeml>) for Premiere Pro.
+    Uses exact frame math and implicit gaps to guarantee compatibility.
     """
     proj_folder = _safe_for_fs(project_name, 50)
-    # We use absolute paths for the 'src' attribute so Premiere can find them instantly.
+    # We use absolute paths for the 'pathurl' attribute so Premiere can find them instantly.
     base_dir = os.path.abspath(os.path.join("downloads", "director", proj_folder))
     
+    fps_exact = 23.976
+    timebase = 24  # Standard timebase for 23.98 in FCP7 XML
+
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
-    # Removed DOCTYPE for better compatibility as some versions of Premiere are picky about it
-    xml.append('<fcpxml version="1.9">')
+    xml.append('<!DOCTYPE xmeml>')
+    xml.append('<xmeml version="4">')
+    xml.append('  <project>')
+    xml.append(f'    <name>{_xml_attr(project_name)}</name>')
+    xml.append('    <children>')
     
-    # ── Resources ────────────────────────────────────────────────────────────
-    xml.append('  <resources>')
-    xml.append('    <format id="r1" name="FFVideoFormat1080p2398" frameDuration="1001/24000s" width="1920" height="1080"/>')
-    
-    asset_map = {} # url -> asset_id
+    # ── Sequence Setup ──
+    xml.append('      <sequence id="b-roll-seq">')
+    xml.append('        <name>B-Roll Sequence</name>')
+    xml.append('        <rate>')
+    xml.append(f'          <timebase>{timebase}</timebase>')
+    xml.append('          <ntsc>TRUE</ntsc>')
+    xml.append('        </rate>')
+    xml.append('        <media>')
+    xml.append('          <video>')
+    xml.append('            <format>')
+    xml.append('              <samplecharacteristics>')
+    xml.append('                <width>1920</width>')
+    xml.append('                <height>1080</height>')
+    xml.append('              </samplecharacteristics>')
+    xml.append('            </format>')
+    xml.append('            <track>')
+
+    asset_map = {}
     next_asset_id = 1
-    
-    # Pre-scan for unique assets (selected clips)
     seen_filenames = set()
-    for shot in shots:
+    defined_files = set() # To track which files have already been injected
+
+    # ── Timeline Math & Placement ──
+    for i, shot in enumerate(shots):
+        start_sec = float(shot.get('timestamp', 0))
+        
+        # Calculate duration
+        if i < len(shots) - 1:
+            end_sec = float(shots[i+1].get('timestamp', start_sec + 5))
+        else:
+            end_sec = float(shot.get('end_timestamp', start_sec + 5))
+            
+        duration_sec = end_sec - start_sec
+        if duration_sec <= 0:
+            duration_sec = 1.0
+
+        # Convert everything to absolute frames
+        start_frame = sec_to_frames(start_sec, fps_exact)
+        duration_frames = sec_to_frames(duration_sec, fps_exact)
+        end_frame = start_frame + duration_frames
+
         sel = shot.get("selected_results", [])
         if not sel:
+            # If no clip exists for this shot, we just skip it. 
+            # FCP7 XML handles gaps implicitly by leaving empty timeline space!
             continue
-        
-        # We only assign the FIRST selected clip to the timeline for this shot
+            
         res = sel[0]
         url = res.get("url")
         if not url:
             continue
-            
+
+        # File pathing logic
         if url not in asset_map:
             slot_id = shot.get("slot_id", "X")
             keyword = _safe_for_fs(res.get("matched_query", ""), 30) or "clip"
-            # Filename logic must match app.py EXACTLY: {slot_id}-1-{keyword}.mp4
-            # (since we only use the 1st selected clip for the timeline)
             base = f"{slot_id}-1-{keyword}"
             filename = f"{base}.mp4"
             
-            # Collision handling (rare for 1-1 naming but for safety)
             n = 1
             while filename in seen_filenames:
                 n += 1
                 filename = f"{base}-{n}.mp4"
             seen_filenames.add(filename)
             
-            asset_path = os.path.join(base_dir, filename)
-            # Use ffprobe to get real duration for airtight XML metadata
-            meta = get_video_metadata(asset_path)
-            duration_str = f"{meta['duration']:.3f}s"
+            filepath = os.path.join(base_dir, filename)
+            # Use Path.as_uri() for perfect file:/// URI formatting
+            file_uri = Path(filepath).as_uri()
             
-            asset_id = f"a{next_asset_id}"
-            # Use Path.as_uri() for perfect file:/// URI formatting on all OSs (handles spaces, drive letters, etc.)
-            file_url = _xml_attr(Path(asset_path).as_uri())
-            
-            xml.append(f'    <asset id="{asset_id}" name="{_xml_attr(filename)}" src="{file_url}" start="0s" duration="{duration_str}" hasVideo="1" hasAudio="1"/>')
+            # Media duration
+            media_dur_sec = _get_media_duration(filepath, fallback_duration=duration_sec + 10.0)
+            media_dur_frames = sec_to_frames(media_dur_sec, fps_exact)
             
             asset_map[url] = {
-                "id": asset_id,
+                "id": f"file-{next_asset_id}",
                 "filename": filename,
-                "path": asset_path,
-                "duration": meta['duration']
+                "uri": file_uri,
+                "media_dur_frames": media_dur_frames
             }
             next_asset_id += 1
-            
-    xml.append('  </resources>')
-    
-    # ── Library & Event ──────────────────────────────────────────────────────
-    xml.append('  <library>')
-    xml.append(f'    <event name="B-Roll Director - {_xml_attr(project_name)}">')
-    xml.append('      <project name="B-Roll Sequence">')
-    
-    # Calculate total sequence duration accurately
-    total_seq_dur = 0.0
-    if shots:
-        last_shot = shots[-1]
-        total_seq_dur = float(last_shot.get('end_timestamp', float(last_shot.get('timestamp', 0)) + 5))
-    
-    seq_dur_str = f"{total_seq_dur:.3f}s"
-    # Defaulting to 23.98fps (1001/24000) as it's standard for cinematic edits
-    xml.append(f'        <sequence format="r1" tcStart="0s" tcFormat="NDF" duration="{seq_dur_str}">')
-    xml.append('          <spine>')
-    
-    # ── Timeline ─────────────────────────────────────────────────────────────
-    current_timeline_pos = 0.0
-    
-    for i, shot in enumerate(shots):
-        start_sec = float(shot.get('timestamp', 0))
+
+        asset_info = asset_map[url]
+        clip_id = f"clip-{i}"
+
+        # ── Insert Clip on Timeline ──
+        xml.append(f'              <clipitem id="{clip_id}">')
+        xml.append(f'                <name>{_xml_attr(asset_info["filename"])}</name>')
+        xml.append(f'                <duration>{asset_info["media_dur_frames"]}</duration>')
+        xml.append('                <rate>')
+        xml.append(f'                  <timebase>{timebase}</timebase>')
+        xml.append('                  <ntsc>TRUE</ntsc>')
+        xml.append('                </rate>')
         
-        # Calculate duration by looking ahead (matching SRT logic)
-        if i < len(shots) - 1:
-            end_val = float(shots[i+1].get('timestamp', start_sec + 5))
+        # Placement on timeline
+        xml.append(f'                <start>{start_frame}</start>')
+        xml.append(f'                <end>{end_frame}</end>')
+        
+        # Cut points on the source file
+        xml.append('                <in>0</in>')
+        xml.append(f'                <out>{duration_frames}</out>')
+        
+        # File Definition Block
+        if asset_info["id"] not in defined_files:
+            xml.append(f'                <file id="{asset_info["id"]}">')
+            xml.append(f'                  <name>{_xml_attr(asset_info["filename"])}</name>')
+            xml.append(f'                  <pathurl>{_xml_attr(asset_info["uri"])}</pathurl>')
+            xml.append('                  <rate>')
+            xml.append(f'                    <timebase>{timebase}</timebase>')
+            xml.append('                    <ntsc>TRUE</ntsc>')
+            xml.append('                  </rate>')
+            xml.append(f'                  <duration>{asset_info["media_dur_frames"]}</duration>')
+            xml.append('                  <media>')
+            xml.append('                    <video>')
+            xml.append(f'                      <duration>{asset_info["media_dur_frames"]}</duration>')
+            xml.append('                    </video>')
+            xml.append('                  </media>')
+            xml.append('                </file>')
+            defined_files.add(asset_info["id"])
         else:
-            end_val = float(shot.get('end_timestamp', start_sec + 5))
-        
-        duration = end_val - start_sec
-        if duration <= 0:
-            duration = 1.0
-            
-        # If there's a gap between current_timeline_pos and start_sec, add a gap resource
-        if start_sec > current_timeline_pos:
-            gap_dur = start_sec - current_timeline_pos
-            # Gaps should start at 0s and have precise offsets/durations
-            xml.append(f'            <gap name="Gap" offset="{current_timeline_pos:.3f}s" duration="{gap_dur:.3f}s" start="0s"/>')
-        
-        sel = shot.get("selected_results", [])
-        asset_info = None
-        if sel and sel[0].get("url") in asset_map:
-            asset_info = asset_map[sel[0]["url"]]
-            
-        if asset_info:
-            # Place the clip
-            clip_name = _xml_attr(asset_info["filename"])
-            # Ensure we don't try to use more of the clip than actually exists
-            clip_duration = min(duration, asset_info["duration"])
-            
-            xml.append(f'            <asset-clip name="{clip_name}" offset="{start_sec:.3f}s" ref="{asset_info["id"]}" duration="{clip_duration:.3f}s" start="0s">')
-            # Add a marker with the shot intent inside the clip for convenience
-            intent = _xml_attr(shot.get('shot_intent', ''))
-            xml.append(f'              <marker start="0s" duration="1s" value="Shot {shot.get("slot_id")}: {intent}"/>')
-            xml.append('            </asset-clip>')
-            
-            # If the timeline slot is longer than the actual clip, fill the rest with a gap
-            if duration > clip_duration:
-                filler_dur = duration - clip_duration
-                xml.append(f'            <gap name="Short Clip Filler" offset="{(start_sec + clip_duration):.3f}s" duration="{filler_dur:.3f}s" start="0s"/>')
-        else:
-            # Placeholder gap if no clip selected
-            xml.append(f'            <gap name="MISSING: Shot {shot.get("slot_id")}" offset="{start_sec:.3f}s" duration="{duration:.3f}s" start="0s"/>')
-            
-        current_timeline_pos = start_sec + duration
-        
-    xml.append('          </spine>')
-    xml.append('        </sequence>')
-    xml.append('      </project>')
-    xml.append('    </event>')
-    xml.append('  </library>')
-    xml.append('</fcpxml>')
+            # If we already defined the file metadata, just reference it
+            xml.append(f'                <file id="{asset_info["id"]}"/>')
+
+        # Add Marker to the clip
+        intent = _xml_attr(shot.get('shot_intent', ''))
+        if intent:
+            xml.append('                <marker>')
+            xml.append('                  <name>Shot Intent</name>')
+            xml.append(f'                  <comment>{intent}</comment>')
+            xml.append('                  <in>0</in>')
+            xml.append('                  <out>1</out>')
+            xml.append('                </marker>')
+
+        xml.append('              </clipitem>')
+
+    # ── Close XML ──
+    xml.append('            </track>')
+    xml.append('          </video>')
+    xml.append('        </media>')
+    xml.append('      </sequence>')
+    xml.append('    </children>')
+    xml.append('  </project>')
+    xml.append('</xmeml>')
     
     return "\n".join(xml)
