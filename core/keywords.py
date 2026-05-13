@@ -168,8 +168,8 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
         payload["response_format"] = {"type": "json_object"}
 
     last_error = None
-    # Try each key with exponential backoff: wait 5s, 10s, 20s between retries
-    backoff_delays = [5, 10, 20]
+    # Aggressive backoff for free-tier/rate-limited keys
+    backoff_delays = [2, 5, 15, 30, 60]
 
     for i, api_key in enumerate(active_keys):
         headers = {

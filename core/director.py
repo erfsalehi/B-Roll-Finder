@@ -154,6 +154,8 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
         try:
             data = _call_llm_json(client, system_prompt, user_msg, temperature=0.4, max_tokens=3000)
             shots = data.get("shots", [])
+            if not shots:
+                print(f"DEBUG: No shots found in LLM response for block. Response keys: {data.keys()}")
             
             for shot in shots:
                 # We expect the AI to return the start/end in its JSON if we ask, 
@@ -188,9 +190,33 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
                 
         except Exception as e:
             print(f"Error in director transcription block {i}: {e}")
+            # Fallback: create one large shot from the entire block if AI fails
+            if block:
+                s_time = block[0]["start"]
+                e_time = block[-1]["end"]
+                all_shots.append({
+                    "slot_id": slot_id,
+                    "chunk_id": chunk_id,
+                    "timestamp": int(float(s_time)),
+                    "end_timestamp": int(float(e_time)),
+                    "timestamp_start_str": format_time(int(float(s_time))),
+                    "timestamp_end_str": format_time(int(float(e_time))),
+                    "text": " ".join([s["text"] for s in block]),
+                    "shot_intent": "Error Fallback",
+                    "shot_type": "medium",
+                    "search_queries": ["error", "placeholder"],
+                    "duration_needed_sec": round(float(e_time) - float(s_time), 1),
+                    "priority": "low",
+                    "video_results": []
+                })
+                slot_id += 1
             
         if progress_callback:
             progress_callback((i + len(block)) / len(segments))
+        
+        # Throttle to avoid rate limits
+        import time
+        time.sleep(1.0)
             
     return all_shots
 
