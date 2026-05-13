@@ -3,6 +3,7 @@ import os
 import json
 import zipfile
 import io
+import re
 import pandas as pd
 from dotenv import load_dotenv, set_key
 from core.timing import get_audio_duration, parse_script_to_slots, calculate_wps
@@ -2268,9 +2269,10 @@ elif app_mode in ["Director", "Smart Mode"]:
             
             if st.session_state.text_overlays:
                 # Data Editor for fine-tuning
-                df_ov = pd.DataFrame(st.session_state.text_overlays)
-                edited_df = st.data_editor(df_ov, num_rows="dynamic", use_container_width=True, key="ov_editor")
-                st.session_state.text_overlays = edited_df.to_dict('records')
+                # We use the session state directly. To avoid refreshing/losing focus on edits, 
+                # we don't write back to session_state.text_overlays on every rerun.
+                edited_df = st.data_editor(st.session_state.text_overlays, num_rows="dynamic", use_container_width=True, key="ov_editor")
+                # st.session_state.text_overlays = edited_df.to_dict('records') # REMOVED to prevent refresh loop
                 
                 st.divider()
                 st.subheader("Visual Settings")
@@ -2301,7 +2303,8 @@ elif app_mode in ["Director", "Smart Mode"]:
                         return float(ts or 0)
 
                     with st.spinner("Generating transparent PNGs..."):
-                        for idx, ov in enumerate(st.session_state.text_overlays):
+                        final_ovs = edited_df.to_dict('records')
+                        for idx, ov in enumerate(final_ovs):
                             fname = os.path.join(ov_dir, f"overlay_{idx+1}.png")
                             create_text_overlay(
                                 str(ov.get("highlight_text", "")),
@@ -2315,6 +2318,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                             ov["animation"] = st.session_state.overlay_settings["animation"]
                             ov["start_sec"] = ts_to_sec(ov.get("start_time", 0))
                             ov["end_sec"] = ts_to_sec(ov.get("end_time", ov.get("start_time", 0) + 3))
+                        st.session_state.text_overlays = final_ovs
                         st.success(f"Generated {len(st.session_state.text_overlays)} PNG overlays in {ov_dir}")
     # ── Step 7 — Export ──────────────────────────────────────────────────────
     if st.session_state.director_shots:
