@@ -14,15 +14,18 @@ _query_cache_lock = threading.Lock()
 
 def _fetch_query(query: str, source: str, api_key: str, num_results: int,
                  errors: list, min_height: int = 0) -> list:
+    # min_height is only meaningful for YouTube; stock APIs (Pexels/Pixabay)
+    # are virtually always 720p+ so we skip the resolution check there and
+    # let the download-stage filter handle it instead.
     cache_key = (source, query, num_results, min_height)
     with _query_cache_lock:
         if cache_key in _query_cache:
             return _query_cache[cache_key]
 
     if source == 'pexels':
-        results = search_pexels(query, api_key, num_results, errors=errors, min_height=min_height)
+        results = search_pexels(query, api_key, num_results, errors=errors)
     elif source == 'pixabay':
-        results = search_pixabay(query, api_key, num_results, errors=errors, min_height=min_height)
+        results = search_pixabay(query, api_key, num_results, errors=errors)
     elif source == 'youtube':
         results = search_youtube_data_api(query, api_key, num_results, errors=errors, min_height=min_height)
     else:
