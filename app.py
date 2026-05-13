@@ -2303,7 +2303,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                         return float(ts or 0)
 
                     with st.spinner("Generating transparent PNGs..."):
-                        final_ovs = edited_df.to_dict('records')
+                        final_ovs = edited_df # edited_df is already a list of dicts
                         # Map placement to Y coordinate for Pillow
                         placement_map = {"Top": 120, "Middle": 480, "Bottom": 850}
                         target_y = placement_map.get(st.session_state.overlay_settings["placement"], 850)
