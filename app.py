@@ -2318,7 +2318,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                         return float(ts or 0)
 
                     with st.spinner("Generating transparent PNGs..."):
-                        final_ovs = edited_df # edited_df is already a list of dicts
+                        # data_editor returns a DataFrame; convert back to list of dicts
+                        import pandas as pd
+                        final_ovs = edited_df.to_dict('records') if isinstance(edited_df, pd.DataFrame) else list(edited_df)
                         # Map placement to Y coordinate for Pillow
                         placement_map = {"Top": 120, "Middle": 480, "Bottom": 850}
                         target_y = placement_map.get(st.session_state.overlay_settings["placement"], 850)
@@ -2336,9 +2338,19 @@ elif app_mode in ["Director", "Smart Mode"]:
                             ov["filepath"] = fname
                             ov["animation"] = st.session_state.overlay_settings["animation"]
                             ov["start_sec"] = ts_to_sec(ov.get("start_time", 0))
-                            ov["end_sec"] = ts_to_sec(ov.get("end_time", ov.get("start_time", 0) + 3))
+                            raw_end = ov.get("end_time")
+                            ov["end_sec"] = ts_to_sec(raw_end) if raw_end else (ov["start_sec"] + 3)
                         st.session_state.text_overlays = final_ovs
                         st.success(f"Generated {len(st.session_state.text_overlays)} PNG overlays in {ov_dir}")
+
+                    # Preview generated overlays
+                    preview_ovs = [ov for ov in st.session_state.text_overlays if ov.get("filepath") and os.path.exists(ov["filepath"])]
+                    if preview_ovs:
+                        st.subheader("Preview")
+                        cols = st.columns(min(4, len(preview_ovs)))
+                        for i, ov in enumerate(preview_ovs):
+                            with cols[i % len(cols)]:
+                                st.image(ov["filepath"], caption=ov.get("highlight_text", ""), use_container_width=True)
 
                     # --- SFX Download Logic ---
                     freesound_api = os.getenv("FREESOUND_API_KEY")
