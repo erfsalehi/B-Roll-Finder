@@ -2388,7 +2388,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                         cols = st.columns(min(4, len(preview_ovs)))
                         for i, ov in enumerate(preview_ovs):
                             with cols[i % len(cols)]:
-                                st.image(ov["filepath"], caption=ov.get("highlight_text", ""), use_container_width=True)
+                                st.image(ov["filepath"], caption=ov.get("highlight_text", ""), width="stretch")
 
                     # --- SFX Download Logic ---
                     freesound_api = os.getenv("FREESOUND_API_KEY")

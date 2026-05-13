@@ -366,13 +366,28 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         max_h = res_map.get(quality, 9999)
         q_filter = f"[height<={max_h}]"
 
-    # Premiere Pro loves H.264 (avc1) and AAC (mp4a)
-    format_selector = f"bestvideo{q_filter}[vcodec^=avc1][ext=mp4]+bestaudio[acodec^=mp4a][ext=m4a]/best[ext=mp4]/best"
-    
+    # Format selector: prefer H.264+AAC for Premiere Pro compatibility, but fall
+    # back progressively so we never hit "Requested format is not available".
+    # We intentionally drop [ext=mp4]/[ext=m4a] constraints here — the
+    # FFmpegVideoConvertor postprocessor already re-muxes everything to mp4,
+    # so restricting the source container only causes unnecessary failures on
+    # videos that only offer VP9/WebM streams.
+    format_selector = (
+        f"bestvideo{q_filter}[vcodec^=avc1]+bestaudio[acodec^=mp4a]"   # ideal: H.264 + AAC
+        f"/bestvideo{q_filter}[vcodec^=avc1]+bestaudio"                 # H.264 + any audio
+        f"/bestvideo{q_filter}+bestaudio"                               # any codec at target res
+        f"/best{q_filter}"                                              # combined stream at target res
+        f"/best"                                                        # absolute fallback
+    )
+
     if quality == 'Worst':
-        format_selector = 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst'
+        format_selector = 'worstvideo+worstaudio/worst'
     elif quality == 'Best':
-        format_selector = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+        format_selector = (
+            'bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]'
+            '/bestvideo[vcodec^=avc1]+bestaudio'
+            '/bestvideo+bestaudio/best'
+        )
 
     def my_hook(d):
         if task_state.get('status') == 'cancelled':
