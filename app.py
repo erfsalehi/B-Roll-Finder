@@ -2340,13 +2340,20 @@ elif app_mode in ["Director", "Smart Mode"]:
                     
                     def ts_to_sec(ts):
                         if isinstance(ts, (int, float)): return float(ts)
+                        if not ts: return 0.0
                         # HH:MM:SS,mmm or HH:MM:SS
                         parts = re.split('[:.,]', str(ts))
                         if len(parts) >= 3:
-                            h, m, s = map(int, parts[:3])
-                            ms = int(parts[3]) if len(parts) > 3 else 0
-                            return h * 3600 + m * 60 + s + ms / 1000.0
-                        return float(ts or 0)
+                            try:
+                                h, m, s = map(int, parts[:3])
+                                ms = int(parts[3]) if len(parts) > 3 else 0
+                                return h * 3600 + m * 60 + s + ms / 1000.0
+                            except (ValueError, IndexError):
+                                pass
+                        try:
+                            return float(ts)
+                        except:
+                            return 0.0
 
                     with st.spinner("Generating transparent PNGs..."):
                         # data_editor returns a DataFrame; convert back to list of dicts
