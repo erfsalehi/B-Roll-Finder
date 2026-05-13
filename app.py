@@ -1250,6 +1250,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                 save_cache()
             except Exception as e:
                 st.error(f"Error generating shot list: {e}")
+            save_cache()
+
+    if st.session_state.director_shots:
         st.subheader("Shot List")
         st.caption(
             "Edit **Intent**, **Priority**, or **Queries** inline. After editing queries, "
@@ -1285,7 +1288,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 "Priority": st.column_config.SelectboxColumn("Priority",
                               options=["high", "medium", "low", "none"],
                               required=True, width="small",
-                              help="'none' means talking-head ââ‚¬â€ no B-roll is fetched for this shot."),
+                              help="'none' means talking-head — no B-roll is fetched for this shot."),
                 "Queries":  st.column_config.TextColumn("Queries (Stock)", width="medium",
                               help="Used for Pexels/Pixabay. Separate with ' | '."),
                 "YT Keywords": st.column_config.TextColumn("Keywords (YouTube)", width="medium",
@@ -1335,39 +1338,40 @@ elif app_mode in ["Director", "Smart Mode"]:
                 changed = True
         if changed:
             save_cache()
-        if st.session_state.director_shots:
-            st.caption("💡 **YouTube Keyword Tools:** Use these to bulk-fill the YouTube Keywords column in the table above.")
-            yk1, yk2, yk3 = st.columns([2, 2, 6])
-            with yk1:
-                if st.button("✨ Seed from Queries", key="d_seed_yt_keywords", use_container_width=True):
-                    st.session_state.director_shots = seed_youtube_keywords(
-                        st.session_state.director_shots,
-                        max_keywords=2,
-                    )
-                    save_cache()
-                    st.rerun()
-            with yk2:
-                if st.button("🤖 Generate with AI", key="d_gen_yt_keywords", use_container_width=True):
-                    if not os.getenv("GROQ_API_KEY"):
-                        st.error("Groq API key required.")
-                    else:
-                        pbar_yk = st.progress(0)
-                        try:
-                            st.session_state.director_shots = generate_youtube_keywords_for_shots(
-                                st.session_state.director_shots,
-                                api_key=os.getenv("GROQ_API_KEY"),
-                                video_topic=st.session_state.get("d_video_topic", ""),
-                                custom_instructions=st.session_state.get("d_style", ""),
-                                max_keywords=2,
-                                progress_callback=lambda p: pbar_yk.progress(p),
-                            )
-                            pbar_yk.progress(1.0)
-                            save_cache()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-            with yk3:
-                st.caption("Keywords are used only for YouTube search. Pexels/Pixabay use Stock Queries.")
+
+        st.caption("💡 **YouTube Keyword Tools:** Use these to bulk-fill the YouTube Keywords column in the table above.")
+        yk1, yk2, yk3 = st.columns([2, 2, 6])
+        with yk1:
+            if st.button("✨ Seed from Queries", key="d_seed_yt_keywords", use_container_width=True):
+                st.session_state.director_shots = seed_youtube_keywords(
+                    st.session_state.director_shots,
+                    max_keywords=2,
+                )
+                save_cache()
+                st.rerun()
+        with yk2:
+            if st.button("🤖 Generate with AI", key="d_gen_yt_keywords", use_container_width=True):
+                if not os.getenv("GROQ_API_KEY"):
+                    st.error("Groq API key required.")
+                else:
+                    pbar_yk = st.progress(0)
+                    try:
+                        from core.director import generate_youtube_keywords_for_shots
+                        st.session_state.director_shots = generate_youtube_keywords_for_shots(
+                            st.session_state.director_shots,
+                            api_key=os.getenv("GROQ_API_KEY"),
+                            video_topic=st.session_state.get("d_video_topic", ""),
+                            custom_instructions=st.session_state.get("d_style", ""),
+                            max_keywords=2,
+                            progress_callback=lambda p: pbar_yk.progress(p),
+                        )
+                        pbar_yk.progress(1.0)
+                        save_cache()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        with yk3:
+            st.caption("Keywords are used only for YouTube search. Pexels/Pixabay use Stock Queries.")
     # Step 2.5: optional YouTube-specific keywords for Classic-style search.
     # ââ€â‚¬ââ€â‚¬ Step 3 ââ‚¬â€ Fetch Candidates ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
     if st.session_state.director_shots:
