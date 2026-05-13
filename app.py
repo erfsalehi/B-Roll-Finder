@@ -268,6 +268,20 @@ def render_classic_mode():
                                              type="password",
                                              help="Required for automatic sound effects downloads.")
             st.markdown("&nbsp;")
+        _browser_options = ["None", "chrome", "firefox", "edge", "brave", "safari", "opera", "chromium"]
+        _current_browser = os.getenv("YT_COOKIE_BROWSER", "None")
+        _browser_idx = _browser_options.index(_current_browser) if _current_browser in _browser_options else 0
+        cookie_browser = st.selectbox(
+            "YouTube Cookie Browser",
+            options=_browser_options,
+            index=_browser_idx,
+            help=(
+                "Fixes 'Sign in to confirm you're not a bot' errors. "
+                "Select the browser where you are logged into YouTube — yt-dlp will "
+                "borrow its cookies for authentication. The browser must be installed "
+                "and you must be logged into YouTube in it."
+            ),
+        )
         if st.button("Save API Keys", type="primary"):
             if groq_input:
                 if not os.path.exists(ENV_FILE):
@@ -279,6 +293,7 @@ def render_classic_mode():
                 if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
                 if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
                 if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
+                set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
             else:
@@ -1132,6 +1147,21 @@ elif app_mode in ["Director", "Smart Mode"]:
                                              type="password", key="d_free",
                                              help="Required for automatic sound effects downloads.")
             st.markdown("&nbsp;")  # vertical spacer to align rows
+        _browser_options_d = ["None", "chrome", "firefox", "edge", "brave", "safari", "opera", "chromium"]
+        _current_browser_d = os.getenv("YT_COOKIE_BROWSER", "None")
+        _browser_idx_d = _browser_options_d.index(_current_browser_d) if _current_browser_d in _browser_options_d else 0
+        cookie_browser_d = st.selectbox(
+            "YouTube Cookie Browser",
+            options=_browser_options_d,
+            index=_browser_idx_d,
+            key="d_cookie_browser",
+            help=(
+                "Fixes 'Sign in to confirm you're not a bot' errors. "
+                "Select the browser where you are logged into YouTube — yt-dlp will "
+                "borrow its cookies for authentication. The browser must be installed "
+                "and you must be logged into YouTube in it."
+            ),
+        )
         if st.button("Save API Keys", key="d_save_keys", type="primary"):
             if groq_input:
                 set_key(ENV_FILE, "GROQ_API_KEY", groq_input)
@@ -1142,6 +1172,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
                 if openrouter_2_input: set_key(ENV_FILE, "OPENROUTER_API_KEY_2", openrouter_2_input)
                 if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
+                set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser_d)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
             else:

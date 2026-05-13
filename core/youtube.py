@@ -6,6 +6,29 @@ import threading
 import time
 import glob
 
+
+# ── Cookie helper ────────────────────────────────────────────────────────────
+def _get_cookie_opts() -> dict:
+    """Return yt-dlp cookie options from the environment.
+
+    Priority:
+      1. YT_COOKIE_BROWSER env var  → use cookiesfrombrowser (e.g. 'chrome')
+      2. cookies.txt in project root → use cookiefile
+      3. Neither                     → empty dict (most restricted)
+
+    Both options dramatically reduce the "Sign in to confirm you're not a bot"
+    errors because yt-dlp will use the real YouTube session from the browser.
+    """
+    browser = os.getenv("YT_COOKIE_BROWSER", "").strip().lower()
+    if browser and browser != "none":
+        return {"cookiesfrombrowser": (browser,)}
+    # Fallback: cookies.txt two directories up (project root)
+    cookie_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
+    if os.path.exists(cookie_file):
+        return {"cookiefile": cookie_file}
+    return {}
+
+
 def _fetch_full_info(url: str) -> dict:
     """Helper to fetch full metadata for a single video URL."""
     ydl_opts = {
@@ -14,6 +37,7 @@ def _fetch_full_info(url: str) -> dict:
         'simulate': True,
         'skip_download': True,
         'extract_flat': False,
+        **_get_cookie_opts(),
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -31,7 +55,8 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
         'force_generic_extractor': True,
         'quiet': True,
         'no_warnings': True,
-        'simulate': True
+        'simulate': True,
+        **_get_cookie_opts(),
     }
     
     if not keyword or keyword.startswith("Error:") or keyword.startswith("No keywords generated"):
@@ -221,10 +246,6 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                     if size_mb > max_size_mb:
                         raise ValueError(f"Skipped: Video size ({size_mb:.1f}MB) exceeds limit ({max_size_mb}MB)")
                 
-    # Auto-detect cookies.txt in the project root — dramatically reduces 403s
-    # for users who are logged into YouTube in their browser.
-    _cookie_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cookies.txt')
-
     ydl_opts = {
         'format': format_selector,
         'outtmpl': output_path,
@@ -257,11 +278,9 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             'key': 'FFmpegVideoConvertor',
             'preferedformat': 'mp4',
         }],
+        # Inject cookies (browser session or cookies.txt) — eliminates bot checks
+        **_get_cookie_opts(),
     }
-
-    # Inject cookies if available (nearly eliminates 403s for logged-in users)
-    if os.path.exists(_cookie_file):
-        ydl_opts['cookiefile'] = _cookie_file
     
     try:
         task_state['status'] = 'downloading'
