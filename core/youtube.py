@@ -2,6 +2,7 @@ import concurrent.futures
 import yt_dlp
 import traceback
 import os
+import re
 import threading
 import time
 import glob
@@ -90,6 +91,34 @@ _YT_EXTRACTOR_ARGS = {
 }
 
 
+def _yt_video_id(url: str) -> str:
+    """Extract an 11-char YouTube video ID from a URL or bare ID string."""
+    if not url:
+        return ""
+    if re.match(r'^[A-Za-z0-9_-]{11}$', url):
+        return url
+    m = re.search(r'(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})', url)
+    return m.group(1) if m else ""
+
+
+def _yt_thumbnail(url: str, entry: dict) -> str:
+    """Return the best thumbnail URL for a YouTube entry.
+
+    yt-dlp's flat search often omits the thumbnail field. Every public
+    YouTube video has a guaranteed hqdefault.jpg at a predictable URL, so
+    we fall back to constructing it from the video ID rather than leaving
+    the thumbnail blank.
+    """
+    thumb = (entry.get('thumbnail') or '').strip()
+    if thumb:
+        return thumb
+    for t in (entry.get('thumbnails') or []):
+        if t.get('url'):
+            return t['url']
+    vid = _yt_video_id(url)
+    return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ""
+
+
 def _fetch_full_info(url: str) -> dict:
     """Helper to fetch full metadata for a single video URL."""
     ydl_opts = {
@@ -170,7 +199,7 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
                 'url':       url,
                 'duration':  dur,
                 'is_short':  is_short,
-                'thumbnail': entry.get('thumbnail', ''),
+                'thumbnail': _yt_thumbnail(url, entry),
                 'width':     entry.get('width'),
                 'height':    entry.get('height') or 0,
             })
@@ -230,7 +259,7 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
                     {f.get('height') for f in full_info.get('formats', []) if f.get('height')},
                     reverse=True,
                 ),
-                'thumbnail': thumbs[-1].get('url') if thumbs else full_info.get('thumbnail', ''),
+                'thumbnail': (thumbs[-1].get('url') if thumbs else full_info.get('thumbnail')) or _yt_thumbnail(item['url'], full_info),
             })
             if is_s:
                 if len(shorts_final) < num_shorts:
