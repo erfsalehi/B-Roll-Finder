@@ -12,7 +12,7 @@ from core.stock_apis import search_pexels, search_pixabay
 from core.output import (
     generate_keywords_txt, generate_youtube_txt, generate_srt,
     generate_transcription_srt, generate_failed_downloads_txt,
-    generate_fcpxml, generate_shot_list_txt, _safe_for_fs
+    generate_fcpxml, generate_shot_list_txt, filter_overlays_for_shots, _safe_for_fs
 )
 from core.captions import extract_highlights, create_text_overlay
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
@@ -20,6 +20,7 @@ from core import download_cache
 from core.app_utils import check_network, format_speed, format_eta
 from core.session_cache import load_session_cache, save_session_cache
 import time
+import math
 
 # --- Config & Initialization ---
 st.set_page_config(page_title="B-Roll Finder", layout="wide")
@@ -2318,24 +2319,46 @@ elif app_mode in ["Director", "Smart Mode"]:
     # ── Step 7 — Export ──────────────────────────────────────────────────────
     if st.session_state.director_shots:
         st.header("Step 7: Export")
+        
+        col_s1, col_s2 = st.columns([1, 3])
+        with col_s1:
+            num_parts = st.number_input("Split XML into Parts", value=1, min_value=1, max_value=10, help="Large projects can be split to save RAM in Premiere Pro.")
+        
         shot_list_json = json.dumps(st.session_state.director_shots, indent=2)
         shot_list_txt  = generate_shot_list_txt(st.session_state.director_shots)
         p_name = st.session_state.get("project_name", "default")
-        fcpxml = generate_fcpxml(
-            st.session_state.director_shots, 
-            project_name=p_name,
-            overlays=st.session_state.text_overlays
-        )
-        
-        # Auto-save XML to the downloads folder for easy import
         proj_folder = _safe_for_fs(p_name, 50)
-        xml_path = os.path.join("downloads", "director", proj_folder, "b_roll_sequence.xml")
-        try:
-            os.makedirs(os.path.dirname(xml_path), exist_ok=True)
-            with open(xml_path, "w", encoding="utf-8") as f:
-                f.write(fcpxml)
-        except:
-            pass
+
+        # ── Generate XML Parts ──
+        xml_parts = []
+        total_shots = len(st.session_state.director_shots)
+        chunk_size = math.ceil(total_shots / num_parts)
+        
+        for i in range(num_parts):
+            start_idx = i * chunk_size
+            end_idx = start_idx + chunk_size
+            shot_chunk = st.session_state.director_shots[start_idx:end_idx]
+            if not shot_chunk:
+                break
+            
+            # Filter overlays for this specific chunk
+            chunk_overlays = filter_overlays_for_shots(shot_chunk, st.session_state.text_overlays)
+            
+            part_display_name = p_name if num_parts == 1 else f"{p_name}_Part_{i+1}"
+            xml_content = generate_fcpxml(shot_chunk, project_name=part_display_name, overlays=chunk_overlays)
+            
+            fname = "b_roll_sequence.xml" if num_parts == 1 else f"b_roll_sequence_part_{i+1}.xml"
+            xml_parts.append({"filename": fname, "content": xml_content})
+            
+            # Auto-save each part to disk
+            xml_path = os.path.join("downloads", "director", proj_folder, fname)
+            try:
+                os.makedirs(os.path.dirname(xml_path), exist_ok=True)
+                with open(xml_path, "w", encoding="utf-8") as f:
+                    f.write(xml_content)
+            except:
+                pass
+
         trans_srt = ""
         if st.session_state.transcription_segments:
             trans_srt = generate_transcription_srt(st.session_state.transcription_segments)
@@ -2355,4 +2378,20 @@ elif app_mode in ["Director", "Smart Mode"]:
             if failed_txt:
                 st.download_button("failed_downloads.txt", data=failed_txt, file_name="failed_downloads.txt", mime="text/plain")
         with c3: 
-            st.download_button("B-Roll Sequence (.xml)", data=fcpxml, file_name="b_roll_sequence.xml", mime="text/xml", help="Import this file into Premiere Pro or Final Cut Pro to instantly build your sequence.")
+            if num_parts == 1:
+                st.download_button(
+                    "B-Roll Sequence (.xml)", 
+                    data=xml_parts[0]["content"], 
+                    file_name="b_roll_sequence.xml", 
+                    mime="text/xml", 
+                    help="Import this file into Premiere Pro to build your sequence."
+                )
+            else:
+                st.write("**XML Sequences (Split):**")
+                for p in xml_parts:
+                    st.download_button(
+                        f"Download {p['filename']}", 
+                        data=p["content"], 
+                        file_name=p["filename"], 
+                        mime="text/xml"
+                    )

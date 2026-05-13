@@ -161,6 +161,29 @@ def generate_shot_list_txt(shots: list) -> str:
         lines.append("")
     return "\n".join(lines)
 
+def filter_overlays_for_shots(shots: list, overlays: list) -> list:
+    """Returns only those overlays that fall within the time range of the given shots."""
+    if not shots or not overlays:
+        return []
+    
+    # Sort shots by timestamp to be safe
+    sorted_shots = sorted(shots, key=lambda x: float(x.get('timestamp', 0)))
+    start_time = float(sorted_shots[0].get('timestamp', 0))
+    
+    # For the end time, we look at the last shot's end point
+    last_shot = sorted_shots[-1]
+    last_start = float(last_shot.get('timestamp', 0))
+    # Approximate end if not explicit
+    end_time = float(last_shot.get('end_timestamp', last_start + 5.0))
+    
+    filtered = []
+    for ov in overlays:
+        ov_start = float(ov.get('start_sec', 0))
+        # If the overlay starts within this shot block, include it
+        if start_time <= ov_start <= end_time:
+            filtered.append(ov)
+    return filtered
+
 def _safe_for_fs(text: str, max_len: int = 30) -> str:
     if not text:
         return ""
