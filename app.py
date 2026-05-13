@@ -29,7 +29,7 @@ if not os.path.exists(".cache"):
 load_dotenv(ENV_FILE)
 # When the user runs a TUN-mode VPN (e.g. V2RayN, Hiddify), the OS
 # captures all traffic at the network layer, so app-level HTTP_PROXY /
-# HTTPS_PROXY env vars become stale ââ‚¬â€ they point at an HTTP proxy
+# HTTPS_PROXY env vars become stale — they point at an HTTP proxy
 # listener that may not be running, and every request fails with
 # WinError 10061 ("connection refused"). Set BROLL_BYPASS_HTTP_PROXY=1
 # in .env to strip these vars on startup. Default off so users whose
@@ -186,10 +186,11 @@ app_mode = st.sidebar.radio(
 
 def render_classic_mode():
     st.title("🎬 B-Roll Finder")
-    # ââ€â‚¬ââ€â‚¬ Setup: API keys (status pill in header, auto-collapses when ready) ââ€â‚¬ââ€â‚¬
+    # ── Setup: API keys (status pill in header, auto-collapses when ready) ──
     # Auto-import keys from any *Api.txt files in the project root.
     for txt_file, env_key in [
         ("groq api.txt",      "GROQ_API_KEY"),
+        ("groq api 2.txt",    "GROQ_API_KEY_2"),
         ("Pexels Api.txt",    "PEXELS_API_KEY"),
         ("Pixabay Api.txt",   "PIXABAY_API_KEY"),
         ("YT Api.txt",        "YOUTUBE_API_KEY"),
@@ -205,7 +206,8 @@ def render_classic_mode():
                 pass
     load_dotenv(ENV_FILE, override=True)
     _key_status = {
-        "Groq":       bool(os.getenv("GROQ_API_KEY")),
+        "Groq 1":     bool(os.getenv("GROQ_API_KEY")),
+        "Groq 2":     bool(os.getenv("GROQ_API_KEY_2")),
         "Pexels":     bool(os.getenv("PEXELS_API_KEY")),
         "Pixabay":    bool(os.getenv("PIXABAY_API_KEY")),
         "YouTube":    bool(os.getenv("YOUTUBE_API_KEY")),
@@ -213,7 +215,7 @@ def render_classic_mode():
     }
     _pill = " · ".join(f"{'✅' if v else '○'} {k}" for k, v in _key_status.items())
     with st.expander(f"⚙️  Setup — API keys  ·  {_pill}",
-                     expanded=not _key_status["Groq"]):
+                     expanded=not (_key_status["Groq 1"] or _key_status["Groq 2"])):
         st.caption(
             "Groq is required (script analysis). Pexels/Pixabay/YouTube are search "
             "sources — enable at least one. OpenRouter is an automatic fallback "
@@ -221,12 +223,17 @@ def render_classic_mode():
         )
         col_k1, col_k2 = st.columns(2)
         with col_k1:
-            groq_input    = st.text_input("Groq API Key (required)",
+            groq_input    = st.text_input("Groq API Key 1 (required)",
                                           value=os.getenv("GROQ_API_KEY", ""),
                                           type="password")
+            groq_input_2  = st.text_input("Groq API Key 2 (fallback)",
+                                          value=os.getenv("GROQ_API_KEY_2", ""),
+                                          type="password",
+                                          help="Secondary Groq key to use when the first one hits rate limits.")
             pexels_input  = st.text_input("Pexels API Key",
                                           value=os.getenv("PEXELS_API_KEY", ""),
                                           type="password")
+        with col_k2:
             pixabay_input = st.text_input("Pixabay API Key",
                                           value=os.getenv("PIXABAY_API_KEY", ""),
                                           type="password")
@@ -245,6 +252,7 @@ def render_classic_mode():
                 if not os.path.exists(ENV_FILE):
                     open(ENV_FILE, 'w').close()
                 set_key(ENV_FILE, "GROQ_API_KEY", groq_input)
+                if groq_input_2:      set_key(ENV_FILE, "GROQ_API_KEY_2",      groq_input_2)
                 if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
                 if pexels_input:     set_key(ENV_FILE, "PEXELS_API_KEY",     pexels_input)
                 if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
@@ -481,7 +489,7 @@ def render_classic_mode():
                                 if len(fetch_errors) > prev_err_count:
                                     pexels_failures += 1
                                     if pexels_failures >= _CIRCUIT_LIMIT:
-                                        fetch_errors.append("Pexels: 3 consecutive failures ââ‚¬â€ skipping remaining Pexels searches.")
+                                        fetch_errors.append("Pexels: 3 consecutive failures — skipping remaining Pexels searches.")
                                 else:
                                     pexels_failures = 0
                                 slot['video_results'].extend(pexels_res)
@@ -491,7 +499,7 @@ def render_classic_mode():
                                 if len(fetch_errors) > prev_err_count:
                                     pixabay_failures += 1
                                     if pixabay_failures >= _CIRCUIT_LIMIT:
-                                        fetch_errors.append("Pixabay: 3 consecutive failures ââ‚¬â€ skipping remaining Pixabay searches.")
+                                        fetch_errors.append("Pixabay: 3 consecutive failures — skipping remaining Pixabay searches.")
                                 else:
                                     pixabay_failures = 0
                                 slot['video_results'].extend(pixabay_res)
@@ -508,7 +516,7 @@ def render_classic_mode():
                     if fetch_errors:
                         # Deduplicate by error type (strip the per-keyword prefix for grouping)
                         unique_errors = list(dict.fromkeys(fetch_errors))
-                        with st.expander(f"âš ï¸ {len(unique_errors)} search error(s) ââ‚¬â€ click to see details"):
+                        with st.expander(f"⚠️ {len(unique_errors)} search error(s) — click to see details"):
                             for err in unique_errors[:20]:
                                 st.write(f"• {err}")
                             if len(unique_errors) > 20:
@@ -556,7 +564,7 @@ def render_classic_mode():
                         "Preview": res.get("thumbnail") or "",
                         "Title": title_link,
                         "Source": (res.get("source") or "?").upper(),
-                        "Duration": f"{res.get('duration')}s" if res.get('duration') else "ââ‚¬â€",
+                        "Duration": f"{res.get('duration')}s" if res.get('duration') else "—",
                     })
             
             if all_rows:
@@ -577,7 +585,7 @@ def render_classic_mode():
                 )
                 
                 # Optional Gallery for Classic mode (only first 12 results to avoid lag)
-                st.subheader("ðŸ–¼ï¸ Quick Preview Gallery")
+                st.subheader("🖼️ Quick Preview Gallery")
                 g_cols = st.columns(4)
                 for idx, row in df_review.head(12).iterrows():
                     with g_cols[idx % 4]:
@@ -660,7 +668,7 @@ def render_classic_mode():
         # Failed Tasks Expander
         failed_tasks = st.session_state.dm.get_failed_tasks()
         if failed_tasks:
-            with st.expander(f"âš ï¸ {len(failed_tasks)} Failed Downloads"):
+            with st.expander(f"⚠️ {len(failed_tasks)} Failed Downloads"):
                 if st.button("Retry All Failed"):
                     st.session_state.dm.retry_all_failed()
                     st.rerun()
@@ -675,8 +683,8 @@ def render_classic_mode():
                 speed_str = format_speed(t.get('speed'))
                 eta_str = format_eta(t.get('eta'))
                 meta = " | ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
-                label = "Normalizing…" if is_processing else f"{t['status'].title()} ({t['progress']*100:.1f}%){(' ââ‚¬â€ ' + meta) if meta else ''}"
-                st.write(f"**{os.path.basename(t['output_path'])}** ââ‚¬â€ {label}")
+                label = "Normalizing…" if is_processing else f"{t['status'].title()} ({t['progress']*100:.1f}%){(' — ' + meta) if meta else ''}"
+                st.write(f"**{os.path.basename(t['output_path'])}** — {label}")
                 st.progress(t['progress'])
                 b1, b2, _ = st.columns(3)
                 if not is_processing:
@@ -834,7 +842,7 @@ def render_classic_mode():
                             if len(fetch_errors_g) > prev:
                                 pexels_failures += 1
                                 if pexels_failures >= _CIRCUIT_LIMIT:
-                                    fetch_errors_g.append("Pexels: 3 consecutive failures ââ‚¬â€ skipping remaining Pexels searches.")
+                                    fetch_errors_g.append("Pexels: 3 consecutive failures — skipping remaining Pexels searches.")
                             else:
                                 pexels_failures = 0
                             results.extend(pex_res)
@@ -844,7 +852,7 @@ def render_classic_mode():
                             if len(fetch_errors_g) > prev:
                                 pixabay_failures += 1
                                 if pixabay_failures >= _CIRCUIT_LIMIT:
-                                    fetch_errors_g.append("Pixabay: 3 consecutive failures ââ‚¬â€ skipping remaining Pixabay searches.")
+                                    fetch_errors_g.append("Pixabay: 3 consecutive failures — skipping remaining Pixabay searches.")
                             else:
                                 pixabay_failures = 0
                             results.extend(pix_res)
@@ -858,7 +866,7 @@ def render_classic_mode():
                         st.warning("No video links found. Try different keywords or check your API keys.")
                     if fetch_errors_g:
                         unique_g_errors = list(dict.fromkeys(fetch_errors_g))
-                        with st.expander(f"âš ï¸ {len(unique_g_errors)} search error(s)"):
+                        with st.expander(f"⚠️ {len(unique_g_errors)} search error(s)"):
                             for err in unique_g_errors[:20]:
                                 st.write(f"• {err}")
                         ssl_keywords = ("ssl", "certificate", "eof occurred", "handshake", "tlsv1")
@@ -870,10 +878,10 @@ def render_classic_mode():
         # Global Review Section
         has_g_results = any(len(t.get('video_results', [])) > 0 for t in st.session_state.global_themes)
         if has_g_results:
-            st.subheader("ðŸÅ’ Global Footage Review")
+            st.subheader("🌍 Global Footage Review")
             
             # Global Gallery Section
-            st.subheader("ðŸ–¼ï¸ Global Gallery")
+            st.subheader("🖼️ Global Gallery")
             
             g_q_filter = st.selectbox(
                 "Filter Global by Quality",
@@ -1032,31 +1040,36 @@ elif app_mode in ["Director", "Smart Mode"]:
             st.divider()
             stats = searcher.get_library_stats()
             st.caption(f"Library Status: **{stats['unique_videos']}** videos | **{stats['total_segments']}** indexed scenes with Scene-Level Understanding.")
-            if st.button("ðŸ—👀 Clear Library", type="secondary"):
+            if st.button("🗑️👀 Clear Library", type="secondary"):
                 indexer.db.clear()
                 st.success("Library cleared.")
                 st.rerun()
-    # ââ€â‚¬ââ€â‚¬ Setup: API keys (collapsible, auto-collapses once Groq key is present) ââ€â‚¬ââ€â‚¬
+    # ── Setup: API keys (collapsible, auto-collapses once Groq key is present) ──
     _key_status = {
-        "Groq":       bool(os.getenv("GROQ_API_KEY")),
+        "Groq 1":     bool(os.getenv("GROQ_API_KEY")),
+        "Groq 2":     bool(os.getenv("GROQ_API_KEY_2")),
         "Pexels":     bool(os.getenv("PEXELS_API_KEY")),
         "Pixabay":    bool(os.getenv("PIXABAY_API_KEY")),
         "YouTube":    bool(os.getenv("YOUTUBE_API_KEY")),
         "OpenRouter": bool(os.getenv("OPENROUTER_API_KEY")),
     }
     _pill = " · ".join(f"{'✅' if v else '○'} {k}" for k, v in _key_status.items())
-    with st.expander(f"⚙️ Setup ââ‚¬â€ API keys  ·  {_pill}",
-                     expanded=not _key_status["Groq"]):
+    with st.expander(f"⚙️ Setup — API keys  ·  {_pill}",
+                     expanded=not (_key_status["Groq 1"] or _key_status["Groq 2"])):
         st.caption(
             "Groq is required (script analysis & ranking). Pexels/Pixabay/YouTube are "
-            "search sources ââ‚¬â€ enable at least one. OpenRouter is an automatic fallback "
+            "search sources — enable at least one. OpenRouter is an automatic fallback "
             "when Groq hits its rate limit."
         )
         col_k1, col_k2 = st.columns(2)
         with col_k1:
-            groq_input    = st.text_input("Groq API Key (required)",
+            groq_input    = st.text_input("Groq API Key 1 (required)",
                                           value=os.getenv("GROQ_API_KEY", ""),
                                           type="password", key="d_groq")
+            groq_input_2  = st.text_input("Groq API Key 2 (fallback)",
+                                          value=os.getenv("GROQ_API_KEY_2", ""),
+                                          type="password", key="d_groq_2",
+                                          help="Secondary Groq key to use when the first one hits rate limits.")
             pexels_input  = st.text_input("Pexels API Key",
                                           value=os.getenv("PEXELS_API_KEY", ""),
                                           type="password", key="d_pex")
@@ -1080,6 +1093,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         if st.button("Save API Keys", key="d_save_keys", type="primary"):
             if groq_input:
                 set_key(ENV_FILE, "GROQ_API_KEY", groq_input)
+                if groq_input_2:      set_key(ENV_FILE, "GROQ_API_KEY_2",      groq_input_2)
                 if pexels_input:     set_key(ENV_FILE, "PEXELS_API_KEY",     pexels_input)
                 if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
                 if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
@@ -1098,7 +1112,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             help="Upload your voiceover. The AI will transcribe it and generate a shot list for the whole video in one go.",
         )
         if audio_file:
-            # ââ€â‚¬ââ€â‚¬ Project Isolation & Auto-Reset ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+            # ── Project Isolation & Auto-Reset ───────────────────────────
             current_project = audio_file.name
             if st.session_state.get("project_name") and st.session_state.project_name != current_project:
                 st.session_state.director_shots = []
@@ -1119,12 +1133,12 @@ elif app_mode in ["Director", "Smart Mode"]:
                 st.metric("Duration", f"{st.session_state.audio_duration / 60:.1f} min")
             with top_b:
                 seg_count = len(st.session_state.get("transcription_segments", []))
-                st.metric("Segments", str(seg_count) if seg_count else "ââ‚¬â€")
+                st.metric("Segments", str(seg_count) if seg_count else "—")
             with top_c:
                 st.audio(audio_path)
             cta_a, cta_b = st.columns([3, 1])
             with cta_a:
-                if st.button("ðŸŽâ„¢ Transcribe", key="d_transcribe", type="primary",
+                if st.button("🎙️ Transcribe", key="d_transcribe", type="primary",
                              use_container_width=True):
                     if not os.getenv("GROQ_API_KEY"):
                         st.error("Set Groq API Key in Setup above.")
@@ -1147,7 +1161,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 st.session_state.active_chunk_indices = [0]
                                 save_cache()
                                 st.success(
-                                    f"Transcribed ââ‚¬â€ {len(segments)} segment(s). "
+                                    f"Transcribed — {len(segments)} segment(s). "
                                     "Continue to Step 2 to generate the shot list."
                                 )
                                 st.rerun()
@@ -1182,7 +1196,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 m = int(seg["start"] // 60); s = int(seg["start"] % 60)
                 st.write(f"**[{m:02d}:{s:02d}]** {seg['text']}")
     st.header("Step 2: Generate Shot List")
-    # Video topic ââ‚¬â€ single source of truth shared with Step 4 (ranking).
+    # Video topic — single source of truth shared with Step 4 (ranking).
     # Editing it here updates Step 4, and vice versa, because Streamlit
     # binds widgets with the same `key` to one session_state slot.
     col_topic_in, col_topic_btn = st.columns([5, 1])
@@ -1230,7 +1244,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 segments = st.session_state.transcription_segments
                 pbar = st.progress(0)
                 status = st.empty()
-                status.text("Generating shot list for the full video...")
+                status.text("Finalizing shot list...")
                 shots = generate_shot_list_from_transcription(
                     segments,
                     os.getenv("GROQ_API_KEY"),
@@ -1243,14 +1257,18 @@ elif app_mode in ["Director", "Smart Mode"]:
                 for idx, shot in enumerate(shots):
                     shot["slot_id"] = idx + 1
                     shot.pop("chunk_id", None)
-                st.session_state.director_shots = shots
-                pbar.progress(1.0)
-                status.empty()
-                st.success(f"Shot list generated — {len(shots)} shot(s).")
-                save_cache()
+                
+                if shots:
+                    st.session_state.director_shots = shots
+                    pbar.progress(1.0)
+                    status.empty()
+                    st.success(f"Shot list generated — {len(shots)} shot(s).")
+                    save_cache()
+                else:
+                    status.empty()
+                    st.warning("The AI returned no shots for this transcription. Check your Groq API key or try again.")
             except Exception as e:
                 st.error(f"Error generating shot list: {e}")
-            save_cache()
 
     if st.session_state.director_shots:
         st.subheader("Shot List")
@@ -1356,7 +1374,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 else:
                     pbar_yk = st.progress(0)
                     try:
-                        from core.director import generate_youtube_keywords_for_shots
+                        from core.director_youtube import generate_youtube_keywords_for_shots
                         st.session_state.director_shots = generate_youtube_keywords_for_shots(
                             st.session_state.director_shots,
                             api_key=os.getenv("GROQ_API_KEY"),
@@ -1373,7 +1391,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         with yk3:
             st.caption("Keywords are used only for YouTube search. Pexels/Pixabay use Stock Queries.")
     # Step 2.5: optional YouTube-specific keywords for Classic-style search.
-    # ââ€â‚¬ââ€â‚¬ Step 3 ââ‚¬â€ Fetch Candidates ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+    # Step 3 — Fetch Candidates
     if st.session_state.director_shots:
         st.header("Step 3: Fetch Candidates")
         col_s2a, col_s2b, col_s2c, col_s2d, col_s2e = st.columns(5)
@@ -1393,7 +1411,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                     "Adds YouTube as a search source. Each YT search costs "
                     "100 quota units (default daily quota: 10,000), so to stay "
                     "within budget the director only runs ONE YouTube search "
-                    "per shot ââ‚¬â€ using the first query. Pexels and Pixabay still "
+                    "per shot — using the first query. Pexels and Pixabay still "
                     "run all queries. Selected YT clips download via yt-dlp."
                 ),
             )
@@ -1429,7 +1447,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             )
             est_units = yt_calls * 100
             st.caption(
-                f"📺 YouTube enabled ââ‚¬â€ ~{yt_calls} search call(s), "
+                f"📺 YouTube enabled — ~{yt_calls} search call(s), "
                 f"~{est_units:,} quota unit(s) (daily quota is 10,000)."
             )
         col_btn1, col_btn2 = st.columns(2)
@@ -1478,9 +1496,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                         errors=d_fetch_errors,
                         retry_only=retry_clicked,
                     )
-                    # ââ€â‚¬ââ€â‚¬ Smart Mode: Low-Res Proxy Fetch (hijacks YouTube search) ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+                    # Smart Mode: Low-Res Proxy Fetch (hijacks YouTube search)
                     if use_smart and app_mode == "Smart Mode":
-                        status2.text("ðŸ§  Smart Mode: Fetching low-res proxies & analyzing scenes…")
+                        status2.text("🧠 Smart Mode: Fetching low-res proxies & analyzing scenes…")
                         from core.proxy_fetcher import ProxyFetcher
                         pf = ProxyFetcher()
                         for i, shot in enumerate(updated_subset):
@@ -1549,13 +1567,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                         st.warning("No candidates found. Check your API keys or try different style hints.")
                     if d_fetch_errors:
                         unique_fe = list(dict.fromkeys(d_fetch_errors))
-                        with st.expander(f"âš ï¸ {len(unique_fe)} fetch error(s)"):
+                        with st.expander(f"⚠️ {len(unique_fe)} fetch error(s)"):
                             for e in unique_fe[:20]:
                                 st.write(f"• {e}")
                     save_cache()
                 finally:
                     st.session_state.is_fetching = False
-    # ââ€â‚¬ââ€â‚¬ Step 4 ââ‚¬â€ LLM Ranking ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+    # Step 4 — LLM Ranking 
     # Ranker now also flags single-candidate shots as irrelevant when needed,
     # so we offer it whenever any shot has at least one candidate.
     has_candidates = any(len(s.get("video_results", [])) >= 1 for s in st.session_state.get("director_shots", []))
@@ -1569,7 +1587,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         if d_video_topic:
             st.caption(f"📌 Using video topic: **{d_video_topic}** (edit in Step 2 above to change)")
         else:
-            st.warning("âš ï¸ No video topic set. Set one in Step 2 above for the ranker to filter off-topic clips effectively.")
+            st.warning("⚠️ No video topic set. Set one in Step 2 above for the ranker to filter off-topic clips effectively.")
         if st.button("Rank Candidates with AI", key="d_rank"):
             if not os.getenv("GROQ_API_KEY"):
                 st.error("Groq API key required for ranking.")
@@ -1595,29 +1613,29 @@ elif app_mode in ["Director", "Smart Mode"]:
                     if failed == 0:
                         st.success("Candidates ranked! Irrelevant clips are hidden in the review.")
                     elif failed < total:
-                        st.warning(f"Ranked {total - failed}/{total} shots. {failed} shot(s) failed ââ‚¬â€ see details below and check those shots in the review.")
+                        st.warning(f"Ranked {total - failed}/{total} shots. {failed} shot(s) failed — see details below and check those shots in the review.")
                     else:
                         st.error("Ranking failed for all shots. Showing original order. Check API key and rate limits.")
                     if d_rank_errors:
                         unique_re = list(dict.fromkeys(d_rank_errors))
-                        with st.expander(f"âš ï¸ {len(unique_re)} ranking error(s)"):
+                        with st.expander(f"⚠️ {len(unique_re)} ranking error(s)"):
                             for e in unique_re[:20]:
                                 st.write(f"• {e}")
                     save_cache()
                 except Exception as e:
                     st.error(f"Ranking error: {e}")
-    # ââ€â‚¬ââ€â‚¬ Step 5 ââ‚¬â€ Editor Review (paginated) ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+    # Step 5 — Editor Review (paginated)
     review_shots = [s for s in st.session_state.get("director_shots", [])
                     if s.get("video_results") and s.get("priority") != "none"]
     if review_shots:
         st.header("Step 5: Review & Select")
         st.caption(
-            "Tick the clips you want for each shot. Selections persist as you navigate ââ‚¬â€ "
+            "Tick the clips you want for each shot. Selections persist as you navigate — "
             "nothing downloads until you click **Download** in Step 6. "
             "Picking the same clip across multiple shots downloads it once."
         )
-        # Build a global URL ââ€ ' list of slot_ids map across ALL shots so we
-        # can flag candidates that are already picked elsewhere ââ‚¬â€ useful
+        # Build a global URL → list of slot_ids map across ALL shots so we
+        # can flag candidates that are already picked elsewhere — useful
         # signal for editorial decisions even though Step 6 dedupes the
         # downloads automatically.
         global_pick_map = {}
@@ -1815,7 +1833,6 @@ elif app_mode in ["Director", "Smart Mode"]:
                     save_cache()
                     with st.spinner("Fetching..."):
                         from core.director_search import fetch_director_footage
-                        # ... logic to fetch ... (I will keep the existing fetch logic)
                         updated_subset = fetch_director_footage([shot], use_pexels=st.session_state.get("d_pex_cb"), use_pixabay=st.session_state.get("d_pix_cb"), use_youtube=st.session_state.get("d_yt_search_cb"), pexels_num_results=st.session_state.get("d_pex_nr", 3), pixabay_num_results=st.session_state.get("d_pix_nr", 3), youtube_api_num_results=st.session_state.get("d_ytapi_nr", 3), youtube_search_num_results=st.session_state.get("d_yts_nr", 3), use_youtube_api=st.session_state.get("d_yt_api_cb"), use_youtube_search=st.session_state.get("d_yt_search_cb"), progress_callback=None, errors=[], retry_only=False)
                         if updated_subset:
                             for s in st.session_state.director_shots:
@@ -1825,23 +1842,23 @@ elif app_mode in ["Director", "Smart Mode"]:
                             save_cache()
                             st.success("Refetched!")
                             st.rerun()
-    # ââ€â‚¬ââ€â‚¬ Step 6 ââ‚¬â€ Download ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+    # --- Step 6 --- Download ---
     selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_results")]
     if selected_shots:
         st.header("Step 6: Download Selected")
         st.caption(
-            "Settings below apply to **new** downloads and to **retries**. Change "
-            "Quality or Max Size, then click *Retry* on a failed item to re-attempt "
+            "Settings below apply to new downloads and to retries. Change "
+            "Quality or Max Size, then click Retry on a failed item to re-attempt "
             "with the new settings. Clips downloaded in earlier sessions are reused "
-            "automatically ââ‚¬â€ no re-download."
+            "automatically — no re-download."
         )
-        # Persistent download cache info ââ‚¬â€ collapsed by default, but shows
+        # Persistent download cache info — collapsed by default, but shows
         # the user we're remembering past downloads and gives them a way
         # to invalidate the registry without touching the actual files.
         _cache_stats = download_cache.stats()
         if _cache_stats["count"]:
             with st.expander(
-                f"📄¦ Download cache ââ‚¬â€ {_cache_stats['count']} clip(s), "
+                f"📄¦ Download cache — {_cache_stats['count']} clip(s), "
                 f"{_cache_stats['size_bytes'] / (1024 * 1024):.1f} MB"
                 + (f"  ·  {_cache_stats['stale']} stale" if _cache_stats['stale'] else "")
             ):
@@ -1850,14 +1867,14 @@ elif app_mode in ["Director", "Smart Mode"]:
                     "When you pick the same clip again, it's hardlinked from the cached "
                     "file instead of being re-downloaded. Stale entries (file deleted "
                     "from disk) are pruned automatically on lookup. "
-                    "Clearing the registry doesn't delete any files ââ‚¬â€ it just forgets the "
+                    "Clearing the registry doesn't delete any files — it just forgets the "
                     "URLââ€ 'path mapping."
                 )
                 if st.button("Clear download cache", key="d_cache_clear"):
                     download_cache.clear()
                     st.success("Cache cleared. The actual files in `downloads/` are untouched.")
                     st.rerun()
-        # Live-bound settings ââ‚¬â€ read on each render so retry/new-download both see them.
+        # Live-bound settings — read on each render so retry/new-download both see them.
         col_dv1, col_dv2, col_dv3 = st.columns(3)
         with col_dv1:
             d_quality  = st.selectbox("Quality", ["1080p", "720p", "480p", "Best", "Worst"], key="d_vq")
@@ -1868,7 +1885,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         total_selected_files = sum(len(s.get("selected_results", [])) for s in selected_shots)
         col_dl1, col_dl2 = st.columns([2, 1])
         with col_dl1:
-            start_dl = st.button(f"â¬â€¡ Download {total_selected_files} selected videos",
+            start_dl = st.button(f"📥 Download {total_selected_files} selected videos",
                                 key="d_dl_start", type="primary", use_container_width=True)
         with col_dl2:
             if st.button("📄 Export Manifest", key="d_manifest", use_container_width=True, help="Generate a text file listing all shots, grouped by chunk."):
@@ -1922,7 +1939,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if st.session_state.dm.max_workers != d_workers:
                     st.session_state.dm = DownloadManager(max_workers=d_workers)
                 st.session_state.dm.clear_and_reset()
-                # ââ€â‚¬ââ€â‚¬ Group selected clips by URL across all shots ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+                # ── Group selected clips by URL across all shots ─────────
                 def _safe_for_fs(text: str, max_len: int = 30) -> str:
                     if not text:
                         return ""
@@ -1967,7 +1984,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 for url, group in url_groups.items():
                     primary_path, primary_source = group["primary"]
                     extras = group["extras"]
-                    # ââ€â‚¬ââ€â‚¬ Cross-session cache lookup ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+                    # ── Cross-session cache lookup ──────────────────
                     # If we've previously downloaded this URL (any earlier
                     # session) and the file is still on disk, skip the
                     # network entirely and just hardlink/copy from the
@@ -1990,7 +2007,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 continue
                         # If we couldn't materialize from cache, fall
                         # through to a fresh download below.
-                    # ââ€â‚¬ââ€â‚¬ smart_proxy: timestamp-precise section download ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+                    # ── smart_proxy: timestamp-precise section download ──────────
                     # Look up the candidate metadata so we have timestamps & source
                     res_meta = None
                     for shot in selected_shots:
@@ -2045,10 +2062,10 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if duplicate_count:
                     parts.append(f"saved **{duplicate_count}** duplicate transfer(s) via hardlink")
                 if added or cached_hits:
-                    st.success("Done ââ‚¬â€ " + "; ".join(parts) + ".")
+                    st.success("Done — " + "; ".join(parts) + ".")
                 else:
-                    st.warning("Nothing was queued ââ‚¬â€ check URLs.")
-        # ââ€â‚¬ââ€â‚¬ Dashboard ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+                    st.warning("Nothing was queued — check URLs.")
+        # ── Dashboard ────────────────────────────────────────────────────
         tasks = st.session_state.dm.get_all_tasks()
         if tasks:
             stats     = st.session_state.dm.get_stats()
@@ -2070,7 +2087,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                     if st.button("âÅ“– Cancel All", key="d_cancel", use_container_width=True):
                         st.session_state.dm.cancel_all()
                         st.rerun()
-            # ââ€â‚¬ââ€â‚¬ Active tasks ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+            # ── Active tasks ─────────────────────────────────────────────
             active = st.session_state.dm.get_active_tasks()
             if active:
                 st.subheader("In progress")
@@ -2081,11 +2098,11 @@ elif app_mode in ["Director", "Smart Mode"]:
                     meta      = " · ".join(filter(None, [speed_str, f"ETA {eta_str}" if eta_str else ""]))
                     label     = "Normalizing…" if is_proc else (
                         f"{t['status'].title()} ({t['progress']*100:.1f}%)"
-                        + (f" ââ‚¬â€ {meta}" if meta else "")
+                        + (f" — {meta}" if meta else "")
                     )
                     extras_n = len(t.get("extra_paths") or [])
                     extras_lbl = f" · ââ€ — +{extras_n} mirror{'s' if extras_n > 1 else ''}" if extras_n else ""
-                    st.markdown(f"**{os.path.basename(t['output_path'])}**{extras_lbl} ââ‚¬â€ {label}")
+                    st.markdown(f"**{os.path.basename(t['output_path'])}**{extras_lbl} — {label}")
                     st.progress(t["progress"])
                     b1, b2, _b3 = st.columns([1, 1, 5])
                     if not is_proc:
@@ -2097,7 +2114,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 st.session_state.dm.resume_download(t["id"]); st.rerun()
                     if b2.button("Cancel", key=f"cd_{t['id']}", use_container_width=True):
                         st.session_state.dm.cancel_download(t["id"]); st.rerun()
-            # ââ€â‚¬ââ€â‚¬ Failed tasks (URL + per-task retry with current settings) ââ€â‚¬ââ€â‚¬
+            # ── Failed tasks (URL + per-task retry with current settings) ──
             failed = st.session_state.dm.get_failed_tasks()
             if failed:
                 st.subheader(f"âÅ’ Failed ({len(failed)})")
@@ -2133,7 +2150,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     "quality": d_quality, "max_size_mb": d_max_size,
                                 })
                                 st.rerun()
-                        # URL row ââ‚¬â€ let the user copy or open the source page
+                        # URL row — let the user copy or open the source page
                         url_col, link_col = st.columns([5, 1])
                         with url_col:
                             st.code(ft.get("url", ""), language=None)
@@ -2144,12 +2161,12 @@ elif app_mode in ["Director", "Smart Mode"]:
                         if ft.get("error_msg") and ft["error_msg"] != ft.get("error_summary"):
                             with st.expander("Full error"):
                                 st.code(ft["error_msg"], language=None)
-            # ââ€â‚¬ââ€â‚¬ History (preserved across batches) ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+            # ── History (preserved across batches) ─────────────────────────
             history = [t for t in st.session_state.dm.get_history()
                        if t["status"] in ("completed", "cancelled")
                        and t["id"] not in {x["id"] for x in tasks}]  # exclude current batch
             if history:
-                with st.expander(f"📄Å“ History ââ‚¬â€ {len(history)} task(s) from earlier batches"):
+                with st.expander(f"📄Å“ History — {len(history)} task(s) from earlier batches"):
                     h_completed = sum(1 for h in history if h["status"] == "completed")
                     h_cancelled = sum(1 for h in history if h["status"] == "cancelled")
                     st.caption(f"✅ {h_completed} completed · â­ {h_cancelled} cancelled")
@@ -2158,7 +2175,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                     for h in history[-20:]:  # cap display to avoid blowing up the page
                         icon = "✅" if h["status"] == "completed" else "â­"
                         st.write(f"{icon} {os.path.basename(h['output_path'])}")
-            # ââ€â‚¬ââ€â‚¬ Auto-Index on Completion ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+            # ── Auto-Index on Completion ───────────────────────────────────
             if completed == total_t and total_t > 0:
                 current_batch_ids = [t["id"] for t in tasks if t["status"] == "completed"]
                 if current_batch_ids:
@@ -2188,7 +2205,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                          + stats.get("paused", 0) + stats.get("processing", 0))
             if in_motion > 0:
                 time.sleep(1); st.rerun()
-    # ââ€â‚¬ââ€â‚¬ Step 7 ââ‚¬â€ Export ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬ââ€â‚¬
+    # ── Step 7 — Export ──────────────────────────────────────────────────────
     if st.session_state.director_shots:
         st.header("Step 7: Export")
         shot_list_json = json.dumps(st.session_state.director_shots, indent=2)
