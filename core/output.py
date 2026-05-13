@@ -407,8 +407,9 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             xml.append('                  </media>')
             xml.append('                </file>')
             
-            # Simple Fade In/Out if requested
-            if ov.get("animation") == "Fade In/Out":
+            # ── Animations ──
+            anim = ov.get("animation")
+            if anim == "Fade In/Out":
                 xml.append('                <filter>')
                 xml.append('                  <effect>')
                 xml.append('                    <name>Opacity</name>')
@@ -419,24 +420,67 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
                 xml.append('                      <valuemin>0</valuemin>')
                 xml.append('                      <valuemax>100</valuemax>')
                 xml.append('                      <value>100</value>')
-                # Keyframes for fade
                 fade_frames = sec_to_frames(0.5, fps_exact)
-                xml.append('                      <keyframe>')
-                xml.append('                        <when>0</when>')
-                xml.append('                        <value>0</value>')
-                xml.append('                      </keyframe>')
-                xml.append('                      <keyframe>')
-                xml.append(f'                        <when>{fade_frames}</when>')
-                xml.append('                        <value>100</value>')
-                xml.append('                      </keyframe>')
-                xml.append('                      <keyframe>')
-                xml.append(f'                        <when>{d_frame - fade_frames}</when>')
-                xml.append('                        <value>100</value>')
-                xml.append('                      </keyframe>')
-                xml.append('                      <keyframe>')
-                xml.append(f'                        <when>{d_frame}</when>')
-                xml.append('                        <value>0</value>')
-                xml.append('                      </keyframe>')
+                xml.append('                      <keyframe><when>0</when><value>0</value></keyframe>')
+                xml.append(f'                      <keyframe><when>{fade_frames}</when><value>100</value></keyframe>')
+                xml.append(f'                      <keyframe><when>{d_frame - fade_frames}</when><value>100</value></keyframe>')
+                xml.append(f'                      <keyframe><when>{d_frame}</when><value>0</value></keyframe>')
+                xml.append('                    </parameter>')
+                xml.append('                  </effect>')
+                xml.append('                </filter>')
+
+            elif anim in ["Slide Up", "Slide In Left"]:
+                # Basic Motion filter
+                xml.append('                <filter>')
+                xml.append('                  <effect>')
+                xml.append('                    <name>Basic Motion</name>')
+                xml.append('                    <effectid>basic</effectid>')
+                xml.append('                    <parameter>')
+                xml.append('                      <parameterid>center</parameterid>')
+                xml.append('                      <name>Center</name>')
+                
+                # Default is center (0,0)
+                xml.append('                      <value><horiz>0</horiz><vert>0</vert></value>')
+                
+                anim_frames = sec_to_frames(0.6, fps_exact)
+                if anim == "Slide Up":
+                    # Start below (vert 100), slide to 0, stay, slide down
+                    xml.append('                      <keyframe>')
+                    xml.append('                        <when>0</when>')
+                    xml.append('                        <value><horiz>0</horiz><vert>100</vert></value>')
+                    xml.append('                      </keyframe>')
+                    xml.append('                      <keyframe>')
+                    xml.append(f'                        <when>{anim_frames}</when>')
+                    xml.append('                        <value><horiz>0</horiz><vert>0</vert></value>')
+                    xml.append('                      </keyframe>')
+                    xml.append('                      <keyframe>')
+                    xml.append(f'                        <when>{d_frame - anim_frames}</when>')
+                    xml.append('                        <value><horiz>0</horiz><vert>0</vert></value>')
+                    xml.append('                      </keyframe>')
+                    xml.append('                      <keyframe>')
+                    xml.append(f'                        <when>{d_frame}</when>')
+                    xml.append('                        <value><horiz>0</horiz><vert>100</vert></value>')
+                    xml.append('                      </keyframe>')
+                
+                elif anim == "Slide In Left":
+                    # Start left (horiz -100), slide to 0, stay, slide right
+                    xml.append('                      <keyframe>')
+                    xml.append('                        <when>0</when>')
+                    xml.append('                        <value><horiz>-100</horiz><vert>0</vert></value>')
+                    xml.append('                      </keyframe>')
+                    xml.append('                      <keyframe>')
+                    xml.append(f'                        <when>{anim_frames}</when>')
+                    xml.append('                        <value><horiz>0</horiz><vert>0</vert></value>')
+                    xml.append('                      </keyframe>')
+                    xml.append('                      <keyframe>')
+                    xml.append(f'                        <when>{d_frame - anim_frames}</when>')
+                    xml.append('                        <value><horiz>0</horiz><vert>0</vert></value>')
+                    xml.append('                      </keyframe>')
+                    xml.append('                      <keyframe>')
+                    xml.append(f'                        <when>{d_frame}</when>')
+                    xml.append('                        <value><horiz>100</horiz><vert>0</vert></value>')
+                    xml.append('                      </keyframe>')
+
                 xml.append('                    </parameter>')
                 xml.append('                  </effect>')
                 xml.append('                </filter>')

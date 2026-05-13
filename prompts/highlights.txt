@@ -1,13 +1,14 @@
 Analyze the following video script and timestamps. Identify key moments worth highlighting on screen to keep the audience engaged. 
 
 Categories to look for:
-- HEADINGS: Major topic shifts or chapter titles.
+- HEADINGS/TITLES: Look for major topic shifts, chapter markers, or enumerated points (e.g., "1. Introduction", "2- Strategy"). If the script uses numbers before titles, PRESERVE THEM exactly as written.
 - MONEY/PRICING: Mention of specific dollar amounts or financial gains/losses.
 - STATISTICS: Important numbers, percentages, or data points.
-- CORE CONCEPTS: Powerful 1-3 word phrases that summarize a key takeaway.
+- CORE CONCEPTS: Powerful phrases that summarize a key takeaway.
 
 Constraint:
-- highlight_text MUST be short (under 5 words).
+- highlight_text MUST be short (under 5 words). 
+- For HEADINGS, use the exact text from the script if it marks a new section, including any numbers (e.g. "1. OVERVIEW").
 - start_time and end_time MUST be in HH:MM:SS,mmm format if provided in the script, or seconds.
 - original_caption MUST be the relevant snippet from the script.
 
@@ -18,8 +19,8 @@ Example:
     {
       "start_time": "00:00:15,000",
       "end_time": "00:00:18,500",
-      "original_caption": "We managed to save over ten thousand dollars on this engine rebuild.",
-      "highlight_text": "$10,000 SAVED",
+      "original_caption": "1. We managed to save over ten thousand dollars on this engine rebuild.",
+      "highlight_text": "1. $10,000 SAVED",
       "category": "money"
     }
   ]

@@ -59,7 +59,7 @@ if "overlay_settings" not in st.session_state:
         "color": "#FFFFFF",
         "shadow": "#000000",
         "size": 120,
-        "y": 800,
+        "placement": "Bottom", # New field
         "animation": "Fade In/Out"
     }
     st.session_state.transcription_chunks = []
@@ -2282,9 +2282,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                     st.session_state.overlay_settings["size"] = st.slider("Font Size", 50, 250, st.session_state.overlay_settings["size"])
                 with c_v2:
                     st.session_state.overlay_settings["shadow"] = st.color_picker("Shadow Color", st.session_state.overlay_settings["shadow"])
-                    st.session_state.overlay_settings["y"] = st.slider("Vertical Position (0-1080)", 0, 1080, st.session_state.overlay_settings["y"])
+                    st.session_state.overlay_settings["placement"] = st.selectbox("Visual Placement", ["Top", "Middle", "Bottom"], index=2)
                 with c_v3:
-                    st.session_state.overlay_settings["animation"] = st.selectbox("Animation Style", ["None", "Fade In/Out"], index=1)
+                    st.session_state.overlay_settings["animation"] = st.selectbox("Animation Style", ["None", "Fade In/Out", "Slide Up", "Slide In Left"], index=1)
                     
                 if st.button("Generate & Preview Overlays", type="primary"):
                     p_name = st.session_state.get("project_name", "default")
@@ -2304,6 +2304,10 @@ elif app_mode in ["Director", "Smart Mode"]:
 
                     with st.spinner("Generating transparent PNGs..."):
                         final_ovs = edited_df.to_dict('records')
+                        # Map placement to Y coordinate for Pillow
+                        placement_map = {"Top": 120, "Middle": 480, "Bottom": 850}
+                        target_y = placement_map.get(st.session_state.overlay_settings["placement"], 850)
+
                         for idx, ov in enumerate(final_ovs):
                             fname = os.path.join(ov_dir, f"overlay_{idx+1}.png")
                             create_text_overlay(
@@ -2312,7 +2316,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 font_size=st.session_state.overlay_settings["size"],
                                 color=st.session_state.overlay_settings["color"],
                                 shadow_color=st.session_state.overlay_settings["shadow"],
-                                y_position=st.session_state.overlay_settings["y"]
+                                y_position=target_y
                             )
                             ov["filepath"] = fname
                             ov["animation"] = st.session_state.overlay_settings["animation"]
