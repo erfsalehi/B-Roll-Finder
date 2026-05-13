@@ -37,6 +37,7 @@ def _fetch_full_info(url: str) -> dict:
         'simulate': True,
         'skip_download': True,
         'extract_flat': False,
+        'socket_timeout': 15,
         **_get_cookie_opts(),
     }
     try:
@@ -48,93 +49,132 @@ def _fetch_full_info(url: str) -> dict:
 def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3, errors: list = None, min_height: int = 0) -> list:
     """
     Uses yt-dlp to search for a single keyword and returns a mix of shorts and long videos.
-    Now fetches full metadata (resolutions, etc.) and filters by min_height.
+
+    Fast path  (min_height == 0): uses only the flat ytsearch metadata — no
+    secondary per-video HTTP calls, typically 5-10× faster.
+
+    Slow path  (min_height  > 0): fetches full per-video metadata in parallel
+    so we can filter by actual resolution. Uses a stop_event so workers stop
+    as soon as we have enough results.
     """
-    ydl_opts = {
+    if not keyword or keyword.startswith("Error:") or keyword.startswith("No keywords generated"):
+        return []
+
+    need = num_shorts + num_longs
+    # Over-fetch more candidates only when we need resolution filtering
+    pool_mult = 4 if min_height > 0 else 2
+    search_pool_size = max(need * pool_mult, need + 3)
+
+    ydl_search_opts = {
         'extract_flat': True,
-        'force_generic_extractor': True,
         'quiet': True,
         'no_warnings': True,
         'simulate': True,
+        'socket_timeout': 20,
         **_get_cookie_opts(),
     }
-    
-    if not keyword or keyword.startswith("Error:") or keyword.startswith("No keywords generated"):
-        return []
-        
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # If filtering, we fetch a larger pool initially
-            search_pool_size = (num_shorts + num_longs) * 5 if min_height > 0 else (num_shorts + num_longs) * 3
-            query = f"ytsearch{search_pool_size}:{keyword}"
-            info = ydl.extract_info(query, download=False)
-            
-            initial_candidates = []
-            if 'entries' in info:
-                for entry in info['entries']:
-                    url = entry.get('url')
-                    if not url: continue
-                    initial_candidates.append({
-                        'title': entry.get('title', 'Unknown Title'),
-                        'url': url,
-                        'duration': entry.get('duration')
-                    })
 
-        if initial_candidates:
-            shorts_final = []
-            longs_final = []
-            
-            # Fetch full info in batches to check resolution
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(initial_candidates), 10)) as executor:
-                future_to_item = {
-                    executor.submit(_fetch_full_info, item['url']): item 
-                    for item in initial_candidates
-                }
-                
-                for future in concurrent.futures.as_completed(future_to_item):
-                    item = future_to_item[future]
-                    try:
-                        full_info = future.result()
-                        if not full_info: continue
-                        
-                        h = full_info.get('height', 0)
-                        if min_height > 0 and h < min_height:
-                            continue
-                            
-                        # Success: met resolution. Now categorize as short/long.
-                        dur = full_info.get('duration')
-                        is_short = False
-                        if dur is not None and dur <= 60:
-                            is_short = True
-                        elif 'shorts' in item['url'].lower() or 'short' in item['title'].lower():
-                            is_short = True
-                            
-                        item['is_short'] = is_short
-                        item['duration'] = dur
-                        item['width'] = full_info.get('width')
-                        item['height'] = h
-                        item['resolution'] = full_info.get('resolution')
-                        formats = full_info.get('formats', [])
-                        res_list = sorted(list(set(f.get('height') for f in formats if f.get('height'))), reverse=True)
-                        item['available_resolutions'] = res_list
-                        thumbs = full_info.get('thumbnails', [])
-                        item['thumbnail'] = thumbs[-1].get('url') if thumbs else full_info.get('thumbnail', '')
-                        
-                        if is_short:
-                            if len(shorts_final) < num_shorts:
-                                shorts_final.append(item)
-                        else:
-                            if len(longs_final) < num_longs:
-                                longs_final.append(item)
-                                
-                        if len(shorts_final) >= num_shorts and len(longs_final) >= num_longs:
-                            # We have enough
-                            # Cancel remaining futures if possible (executor doesn't support easy cancel of pending)
-                            break
-                    except Exception:
-                        continue
-            
+    try:
+        with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{search_pool_size}:{keyword}", download=False)
+
+        initial_candidates = []
+        for entry in (info.get('entries') or []):
+            url = entry.get('url')
+            if not url:
+                continue
+            dur = entry.get('duration')
+            is_short = (
+                (dur is not None and dur <= 60)
+                or 'shorts' in url.lower()
+                or 'short' in (entry.get('title') or '').lower()
+            )
+            initial_candidates.append({
+                'title':     entry.get('title', 'Unknown Title'),
+                'url':       url,
+                'duration':  dur,
+                'is_short':  is_short,
+                'thumbnail': entry.get('thumbnail', ''),
+                'width':     entry.get('width'),
+                'height':    entry.get('height') or 0,
+            })
+
+        if not initial_candidates:
+            return []
+
+        # ── Fast path: no resolution filter — flat metadata is enough ────────
+        if min_height == 0:
+            shorts_final, longs_final = [], []
+            for item in initial_candidates:
+                if item['is_short']:
+                    if len(shorts_final) < num_shorts:
+                        shorts_final.append(item)
+                else:
+                    if len(longs_final) < num_longs:
+                        longs_final.append(item)
+                if len(shorts_final) >= num_shorts and len(longs_final) >= num_longs:
+                    break
             return shorts_final + longs_final
+
+        # ── Slow path: full per-video fetch to check actual resolution ────────
+        shorts_final, longs_final = [], []
+        stop_event = threading.Event()
+
+        def _fetch_if_needed(url: str) -> dict:
+            """Fetch full info; bail immediately if we already have enough."""
+            if stop_event.is_set():
+                return {}
+            return _fetch_full_info(url)
+
+        max_threads = min(len(initial_candidates), 8)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
+            future_to_item = {
+                executor.submit(_fetch_if_needed, item['url']): item
+                for item in initial_candidates
+            }
+            for future in concurrent.futures.as_completed(future_to_item):
+                if stop_event.is_set():
+                    break
+                item = future_to_item[future]
+                try:
+                    full_info = future.result()
+                    if not full_info:
+                        continue
+                    h = full_info.get('height') or 0
+                    if h < min_height:
+                        continue
+                    dur  = full_info.get('duration')
+                    is_s = (
+                        (dur is not None and dur <= 60)
+                        or 'shorts' in item['url'].lower()
+                        or 'short'  in item['title'].lower()
+                    )
+                    thumbs = full_info.get('thumbnails') or []
+                    item.update({
+                        'duration':             dur,
+                        'is_short':             is_s,
+                        'width':                full_info.get('width'),
+                        'height':               h,
+                        'resolution':           full_info.get('resolution'),
+                        'available_resolutions': sorted(
+                            {f.get('height') for f in full_info.get('formats', []) if f.get('height')},
+                            reverse=True,
+                        ),
+                        'thumbnail': thumbs[-1].get('url') if thumbs else full_info.get('thumbnail', ''),
+                    })
+                    if is_s:
+                        if len(shorts_final) < num_shorts:
+                            shorts_final.append(item)
+                    else:
+                        if len(longs_final) < num_longs:
+                            longs_final.append(item)
+                    if len(shorts_final) >= num_shorts and len(longs_final) >= num_longs:
+                        stop_event.set()  # signal other threads to exit early
+                        break
+                except Exception:
+                    continue
+
+        return shorts_final + longs_final
 
     except Exception as e:
         msg = f"YouTube search failed for '{keyword}': {e}"
@@ -258,6 +298,7 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         'extractor_retries': 5,
         'file_access_retries': 5,
         'http_chunk_size': 10485760,  # 10 MB
+        'socket_timeout': 30,
         'nocheckcertificate': True,
         'geo_bypass': True,
         'http_headers': {

@@ -87,6 +87,7 @@ class VideoIndexer:
     def download_and_index_youtube(self, url, progress_cb=None):
         """Downloads a YouTube video at 720p and indexes it into the Smart Library."""
         import yt_dlp
+        from core.youtube import _get_cookie_opts
 
         if progress_cb:
             progress_cb(0.05, "Downloading YouTube video…")
@@ -96,6 +97,8 @@ class VideoIndexer:
             "outtmpl": os.path.join(self.download_dir, "%(title)s.%(ext)s"),
             "noplaylist": True,
             "merge_output_format": "mp4",
+            "socket_timeout": 30,
+            **_get_cookie_opts(),
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -113,6 +116,7 @@ class VideoIndexer:
         Uses yt-dlp's download_ranges to avoid fetching the entire file.
         """
         import yt_dlp
+        from core.youtube import _get_cookie_opts
 
         if progress_cb:
             progress_cb(0.1, f"Downloading {int(start_time//60):02d}:{int(start_time%60):02d}"
@@ -131,6 +135,8 @@ class VideoIndexer:
             "merge_output_format": "mp4",
             "quiet": True,
             "no_warnings": True,
+            "socket_timeout": 30,
+            **_get_cookie_opts(),
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
