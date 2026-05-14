@@ -323,3 +323,94 @@ def fetch_director_footage(
         progress_callback(1.0)
 
     return shots
+
+
+# ── Chunked background dispatcher ─────────────────────────────────────────────
+# Runs fetch_director_footage on N shots at a time, sequentially. Lets Step 5
+# start reviewing chunk 1 while chunks 2+ are still in flight.
+
+def group_shots_into_fetch_chunks(shots: list, fetch_chunk_size: int) -> list:
+    """Split shots into ordered fetch chunks (only shots that have work to do).
+
+    Returns a list of (chunk_index, [slot_id, ...]) pairs and a parallel list
+    of [shot_dict, ...] lists. Shots with priority='none' or no queries are
+    excluded so we don't waste a chunk slot on them.
+    """
+    work_shots = []
+    for shot in shots:
+        if shot.get("priority") == "none":
+            continue
+        queries = shot.get("search_queries") or []
+        yt_queries = shot.get("youtube_keywords") or []
+        if not queries and not yt_queries:
+            continue
+        work_shots.append(shot)
+
+    chunks = [
+        work_shots[i : i + fetch_chunk_size]
+        for i in range(0, len(work_shots), fetch_chunk_size)
+    ]
+    return chunks
+
+
+def dispatch_chunked_fetch(
+    shots: list,
+    fetch_chunk_size: int,
+    fetch_kwargs: dict,
+    status_dict: dict,
+    errors_dict: dict,
+    clip_library_inject=None,
+):
+    """Background worker: fetch shots in chunks of N, one chunk at a time.
+
+    Each shot's ``video_results`` is mutated in place — since the shot dicts
+    are the same objects held in Streamlit session state, results become
+    visible to the UI as soon as a chunk finishes.
+
+    Parameters
+    ----------
+    shots : list
+        The full ordered shot list (we filter inside).
+    fetch_chunk_size : int
+        Number of work-shots per chunk.
+    fetch_kwargs : dict
+        Forwarded to :func:`fetch_director_footage` (except ``errors`` /
+        ``progress_callback`` which we manage here).
+    status_dict : dict
+        Mutated with ``{chunk_idx: 'pending'|'fetching'|'done'|'error'}``.
+        Must be pre-populated with one ``pending`` entry per chunk so the UI
+        can render the full list before the worker starts.
+    errors_dict : dict
+        Mutated with ``{chunk_idx: [error_str, ...]}`` for any chunk that
+        produced fetch errors.
+    clip_library_inject : callable, optional
+        Called as ``clip_library_inject(chunk_shots)`` after each chunk's
+        candidates land. Lets the caller layer Clip Library hits into each
+        chunk's ``video_results`` so they appear together.
+    """
+    chunks = group_shots_into_fetch_chunks(shots, fetch_chunk_size)
+
+    # Strip kwargs we manage ourselves so callers can pass them harmlessly.
+    fetch_kwargs = {k: v for k, v in fetch_kwargs.items()
+                    if k not in ("errors", "progress_callback")}
+
+    for cidx, chunk in enumerate(chunks):
+        status_dict[cidx] = "fetching"
+        chunk_errors: list = []
+        try:
+            fetch_director_footage(
+                chunk,
+                errors=chunk_errors,
+                **fetch_kwargs,
+            )
+            if clip_library_inject is not None:
+                try:
+                    clip_library_inject(chunk)
+                except Exception as e:
+                    chunk_errors.append(f"Clip library inject failed: {e}")
+            if chunk_errors:
+                errors_dict[cidx] = chunk_errors
+            status_dict[cidx] = "done"
+        except Exception as e:
+            errors_dict[cidx] = [f"Dispatcher: {e}"] + chunk_errors
+            status_dict[cidx] = "error"

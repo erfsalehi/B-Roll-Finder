@@ -24,6 +24,7 @@ from core.app_utils import check_network, format_speed, format_eta
 from core.session_cache import load_session_cache, save_session_cache
 import time
 import math
+import threading
 
 # --- Config & Initialization ---
 st.set_page_config(page_title="B-Roll Finder", layout="wide")
@@ -87,6 +88,17 @@ if "dm" not in st.session_state:
     st.session_state.dm = DownloadManager()
 if "is_fetching" not in st.session_state:
     st.session_state.is_fetching = False
+# Chunked background fetch state — see Step 3 dispatcher below.
+if "chunk_fetch_status" not in st.session_state:
+    st.session_state.chunk_fetch_status = {}      # {chunk_idx: 'pending'|'fetching'|'done'|'error'}
+if "chunk_fetch_errors" not in st.session_state:
+    st.session_state.chunk_fetch_errors = {}      # {chunk_idx: [error_str, ...]}
+if "chunk_fetch_slot_ids" not in st.session_state:
+    st.session_state.chunk_fetch_slot_ids = []    # [[slot_id, ...], ...] parallel to chunk indices
+if "chunk_fetch_thread" not in st.session_state:
+    st.session_state.chunk_fetch_thread = None
+if "fetch_chunk_size" not in st.session_state:
+    st.session_state.fetch_chunk_size = 6
 if "d_video_topic" not in st.session_state:
     st.session_state.d_video_topic = ""
 if "d_style" not in st.session_state:
@@ -115,6 +127,79 @@ def toggle_pick(url, cand_dict, shot_dict):
             shot_dict["selected_results"] = []
         shot_dict["selected_results"].append(cand_dict)
     save_cache()
+
+
+# ── Chunked fetch live-status renderers ──────────────────────────────────────
+# `_render_chunk_status_polling` is a Streamlit fragment that polls the
+# background dispatcher's status dict every 2s and triggers a full app rerun
+# whenever a chunk transitions to done/error. That rerun is what makes Step 5
+# pick up the newly-fetched shots.
+
+def _render_chunk_status_body():
+    status_dict = st.session_state.get("chunk_fetch_status") or {}
+    if not status_dict:
+        return
+    n_total = len(status_dict)
+    n_done = sum(1 for v in status_dict.values() if v == "done")
+    n_err = sum(1 for v in status_dict.values() if v == "error")
+    n_active = sum(1 for v in status_dict.values() if v == "fetching")
+    n_pending = sum(1 for v in status_dict.values() if v == "pending")
+    completed = n_done + n_err
+
+    parts = [f"**Fetch progress:** {completed}/{n_total} chunks"]
+    if n_active:  parts.append(f"🔄 {n_active} fetching")
+    if n_pending: parts.append(f"⏳ {n_pending} pending")
+    if n_err:     parts.append(f"❌ {n_err} errored")
+    if completed == n_total and n_err == 0:
+        parts.append("✅ done")
+    st.markdown(" · ".join(parts))
+
+    icons = {"pending": "⏳", "fetching": "🔄", "done": "✅", "error": "❌"}
+    slot_groups = st.session_state.get("chunk_fetch_slot_ids", [])
+    n_cols = min(max(n_total, 1), 6)
+    cols = st.columns(n_cols)
+    for i in range(n_total):
+        v = status_dict.get(i, "pending")
+        ico = icons.get(v, "?")
+        sids = slot_groups[i] if i < len(slot_groups) else []
+        label = f"shots {sids[0]}–{sids[-1]}" if sids else ""
+        with cols[i % n_cols]:
+            st.markdown(
+                f"{ico} **Chunk {i+1}**<br><small>{label}</small>",
+                unsafe_allow_html=True,
+            )
+
+    err_dict = st.session_state.get("chunk_fetch_errors", {})
+    if err_dict:
+        with st.expander(f"⚠️ Fetch errors in {len(err_dict)} chunk(s)"):
+            for cidx in sorted(err_dict):
+                st.write(f"**Chunk {cidx+1}:**")
+                for e in (err_dict[cidx] or [])[:5]:
+                    st.write(f"  • {e}")
+
+
+@st.fragment(run_every=2.0)
+def _render_chunk_status_polling():
+    with st.container(border=True):
+        _render_chunk_status_body()
+    status_dict = st.session_state.get("chunk_fetch_status") or {}
+    n_total = len(status_dict)
+    completed = sum(1 for v in status_dict.values() if v in ("done", "error"))
+    still_running = completed < n_total
+    st.session_state.is_fetching = still_running
+    # Trigger a full app rerun when chunk completion changes, OR when the
+    # final chunk lands (so the page switches from polling-fragment to the
+    # static "Fetch complete" display and polling stops).
+    last_seen = st.session_state.get("_last_chunk_completed_count", -1)
+    if completed != last_seen or not still_running:
+        st.session_state._last_chunk_completed_count = completed
+        st.rerun(scope="app")
+
+
+def _render_chunk_status_final():
+    with st.container(border=True):
+        _render_chunk_status_body()
+    st.session_state.is_fetching = False
 
 def toggle_global_pick(url):
     if 'picked_global_urls' not in st.session_state:
@@ -1573,13 +1658,24 @@ elif app_mode in ["Director", "Smart Mode"]:
                 f"📺 YouTube enabled — ~{yt_calls} search call(s), "
                 f"~{est_units:,} quota unit(s) (daily quota is 10,000)."
             )
-        col_btn1, col_btn2 = st.columns(2)
+        col_btn1, col_btn2, col_btn3 = st.columns([2, 2, 1])
         with col_btn1:
             fetch_clicked = st.button("Fetch", disabled=st.session_state.is_fetching, key="d_fetch", use_container_width=True)
         with col_btn2:
             retry_clicked = st.button("Retry Empty", disabled=st.session_state.is_fetching, key="d_retry", use_container_width=True, help="Only searches for shots that currently have 0 candidates. Preserves existing successful searches.")
-        chunk_to_fetch = None
-        if fetch_clicked or retry_clicked or chunk_to_fetch is not None:
+        with col_btn3:
+            _new_chunk_size = st.number_input(
+                "Chunk size",
+                min_value=2, max_value=20,
+                value=int(st.session_state.get("fetch_chunk_size", 6)),
+                key="d_chunk_size",
+                help="Shots are fetched in chunks of this many. Smaller = first chunk lands sooner so Step 5 review can begin earlier; larger = fewer chunk transitions, slightly less overhead.",
+            )
+            if int(_new_chunk_size) != st.session_state.fetch_chunk_size:
+                st.session_state.fetch_chunk_size = int(_new_chunk_size)
+                save_cache()
+
+        if fetch_clicked or retry_clicked:
             if not check_network():
                 st.error("No network connection detected.")
             elif not (use_pexels and os.getenv("PEXELS_API_KEY")) and \
@@ -1589,108 +1685,39 @@ elif app_mode in ["Director", "Smart Mode"]:
                 st.error("No search sources enabled. Add Pexels/Pixabay keys or enable YouTube Search.")
             elif use_youtube_api and not os.getenv("YOUTUBE_API_KEY"):
                 st.error("YouTube API requires a YouTube API key. Untick YouTube API or add the key in Setup.")
-            else:
+            elif retry_clicked:
+                # ── Synchronous retry: only re-fetches shots with 0 results.
+                # Workload is unpredictable but typically small, so we keep
+                # this path blocking — a single spinner is clearer than
+                # spinning up chunked dispatch for what's often <5 shots.
                 st.session_state.is_fetching = True
                 d_fetch_errors = []
                 try:
                     pbar2 = st.progress(0)
                     status2 = st.empty()
-                    
-                    target_shots = st.session_state.director_shots
-                    if chunk_to_fetch is not None:
-                        target_shots = [s for s in st.session_state.director_shots if s.get("chunk_id") == chunk_to_fetch]
-                        status2.info(f"Fetching candidates for Chunk {chunk_to_fetch+1}…")
-                    else:
-                        status2.text("Fetching candidates…")
-                    
-                    from core.director_search import fetch_director_footage, clear_query_cache
-                    if not retry_clicked:
-                        clear_query_cache()
-                    updated_subset = fetch_director_footage(
-                        target_shots,
-                        use_pexels=use_pexels,
-                        use_pixabay=use_pixabay,
+                    status2.text("Re-fetching empty shots…")
+                    from core.director_search import fetch_director_footage
+                    fetch_director_footage(
+                        st.session_state.director_shots,
+                        use_pexels=use_pexels, use_pixabay=use_pixabay,
                         use_youtube=use_youtube_search,
-                        pexels_num_results=pex_num,
-                        pixabay_num_results=pix_num,
+                        pexels_num_results=pex_num, pixabay_num_results=pix_num,
                         youtube_api_num_results=yt_api_num,
                         youtube_search_num_results=yt_search_num,
                         use_youtube_api=use_youtube_api,
                         use_youtube_search=use_youtube_search,
                         progress_callback=lambda p: pbar2.progress(p * 0.9),
                         errors=d_fetch_errors,
-                        retry_only=retry_clicked,
-                        min_height=min_h
+                        retry_only=True,
+                        min_height=min_h,
                     )
-                    # Smart Mode: Low-Res Proxy Fetch (hijacks YouTube search)
-                    if use_smart and app_mode == "Smart Mode":
-                        status2.text("🧠 Smart Mode: Fetching low-res proxies & analyzing scenes…")
-                        from core.proxy_fetcher import ProxyFetcher
-                        pf = ProxyFetcher()
-                        for i, shot in enumerate(updated_subset):
-                            if retry_clicked and shot.get("video_results"):
-                                continue
-                            shot_p_start = 0.9 + (0.1 * i / max(len(updated_subset), 1))
-                            def _proxy_cb(p, msg, _i=i):
-                                pbar2.progress(0.9 + (0.1 * (_i + p) / max(len(updated_subset), 1)))
-                                status2.text(f"[Shot {_i+1}/{len(updated_subset)}] {msg}")
-                            try:
-                                proxy_cands = pf.fetch_for_shot(shot, max_videos=2, top_k_per_video=2, progress_cb=_proxy_cb)
-                                if proxy_cands:
-                                    # Generate Match Reasons in one batched Groq call
-                                    from core.smart_search import SmartSearch
-                                    ss_temp = SmartSearch()
-                                    query = shot.get("shot_intent", "")
-                                    reasons = ss_temp.generate_match_reasons_batched(query, proxy_cands, os.getenv("GROQ_API_KEY"))
-                                    for cand, reason in zip(proxy_cands, reasons):
-                                        cand["smart_reason"] = reason
-                                    if "video_results" not in shot:
-                                        shot["video_results"] = []
-                                    shot["video_results"].extend(proxy_cands)
-                            except Exception as e:
-                                print(f"[ProxyFetch] Shot {i} failed: {e}")
-                    elif use_smart:
-                        # Classic Smart Library search (non-YouTube sources)
-                        status2.text("Searching local library semantically…")
-                        from core.smart_search import SmartSearch
-                        ss = SmartSearch()
-                        for i, shot in enumerate(updated_subset):
-                            query = shot.get("shot_intent", "")
-                            if query and (not retry_clicked or not shot.get("video_results")):
-                                smart_hits = ss.search(query, k=int(smart_num))
-                                if smart_hits:
-                                    reasons = ss.generate_match_reasons_batched(query, smart_hits, os.getenv("GROQ_API_KEY"))
-                                    for hit, reason in zip(smart_hits, reasons):
-                                        cand = {
-                                            "title": hit.get("video_title"),
-                                            "url": hit.get("video_url") or hit.get("video_path"),
-                                            "source": "smart_library",
-                                            "thumbnail": None,
-                                            "duration": hit.get("duration"),
-                                            "matched_query": query,
-                                            "score": hit.get("score"),
-                                            "segment_path": hit.get("segment_path"),
-                                            "smart_reason": reason
-                                        }
-                                        if "video_results" not in shot:
-                                            shot["video_results"] = []
-                                        shot["video_results"].append(cand)
-                            pbar2.progress(0.9 + (0.1 * (i+1)/len(updated_subset)))
-                    if chunk_to_fetch is not None:
-                        update_map = {s["slot_id"]: s for s in updated_subset}
-                        for s in st.session_state.director_shots:
-                            if s["slot_id"] in update_map:
-                                s.update(update_map[s["slot_id"]])
-                    else:
-                        st.session_state.director_shots = updated_subset
-                        
-                    # ── Clip Library injection ──────────────────────────────
                     if use_library and lib_num > 0:
                         status2.text("📚 Searching Clip Library…")
-                        for shot in target_shots:
+                        for shot in st.session_state.director_shots:
                             if shot.get("priority") == "none":
                                 continue
-                            if retry_clicked and shot.get("video_results"):
+                            # Retry path: only inject for shots that had work this round
+                            if not shot.get("video_results"):
                                 continue
                             q = shot.get("shot_intent", "") or " ".join(shot.get("search_queries", [])[:2])
                             if not q:
@@ -1699,16 +1726,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                             if lib_hits:
                                 existing_urls = {r.get("url") for r in shot.get("video_results", [])}
                                 new_hits = [h for h in lib_hits if h.get("url") not in existing_urls]
-                                shot.setdefault("video_results", [])
                                 shot["video_results"] = new_hits + shot["video_results"]
-
                     pbar2.progress(1.0)
-                    total_found = sum(len(s.get("video_results", [])) for s in st.session_state.director_shots)
                     status2.text("Done.")
-                    if total_found > 0:
-                        st.success(f"Found {total_found} candidates across {len(st.session_state.director_shots)} shots.")
-                    else:
-                        st.warning("No candidates found. Check your API keys or try different style hints.")
                     if d_fetch_errors:
                         unique_fe = list(dict.fromkeys(d_fetch_errors))
                         with st.expander(f"⚠️ {len(unique_fe)} fetch error(s)"):
@@ -1717,6 +1737,102 @@ elif app_mode in ["Director", "Smart Mode"]:
                     save_cache()
                 finally:
                     st.session_state.is_fetching = False
+            else:
+                # ── Chunked background fetch ──────────────────────────────
+                from core.director_search import (
+                    group_shots_into_fetch_chunks,
+                    dispatch_chunked_fetch,
+                    clear_query_cache,
+                )
+                clear_query_cache()
+                _chunk_size = max(2, int(st.session_state.fetch_chunk_size))
+                _chunks = group_shots_into_fetch_chunks(
+                    st.session_state.director_shots, _chunk_size
+                )
+                if not _chunks:
+                    st.error("No shots have search queries to fetch.")
+                else:
+                    st.session_state.chunk_fetch_status = {
+                        i: "pending" for i in range(len(_chunks))
+                    }
+                    st.session_state.chunk_fetch_errors = {}
+                    st.session_state.chunk_fetch_slot_ids = [
+                        [s["slot_id"] for s in c] for c in _chunks
+                    ]
+                    st.session_state._last_chunk_completed_count = -1
+                    # Clear stale video_results for everything we're about to fetch
+                    # so the UI doesn't show old candidates next to "pending" badges.
+                    for _shot in st.session_state.director_shots:
+                        if _shot.get("priority") == "none":
+                            continue
+                        if not (_shot.get("search_queries") or _shot.get("youtube_keywords")):
+                            continue
+                        _shot["video_results"] = []
+                    _fetch_kwargs = dict(
+                        use_pexels=use_pexels, use_pixabay=use_pixabay,
+                        use_youtube=use_youtube_search,
+                        pexels_num_results=pex_num, pixabay_num_results=pix_num,
+                        youtube_api_num_results=yt_api_num,
+                        youtube_search_num_results=yt_search_num,
+                        use_youtube_api=use_youtube_api,
+                        use_youtube_search=use_youtube_search,
+                        retry_only=False,
+                        min_height=min_h,
+                    )
+                    _lib_inject = None
+                    if use_library and lib_num > 0:
+                        _lib_num = int(lib_num)
+                        def _lib_inject(chunk_shots, _k=_lib_num):
+                            for shot in chunk_shots:
+                                q = shot.get("shot_intent", "") or " ".join(shot.get("search_queries", [])[:2])
+                                if not q:
+                                    continue
+                                lib_hits = search_library(q, top_k=_k)
+                                if lib_hits:
+                                    existing_urls = {r.get("url") for r in shot.get("video_results", [])}
+                                    new_hits = [h for h in lib_hits if h.get("url") not in existing_urls]
+                                    shot.setdefault("video_results", [])
+                                    shot["video_results"] = new_hits + shot["video_results"]
+                    try:
+                        from streamlit.runtime.scriptrunner import (
+                            add_script_run_ctx, get_script_run_ctx,
+                        )
+                    except ImportError:
+                        add_script_run_ctx = lambda t, c: None
+                        get_script_run_ctx = lambda: None
+                    _st_ctx = get_script_run_ctx()
+                    _worker = threading.Thread(
+                        target=dispatch_chunked_fetch,
+                        kwargs=dict(
+                            shots=st.session_state.director_shots,
+                            fetch_chunk_size=_chunk_size,
+                            fetch_kwargs=_fetch_kwargs,
+                            status_dict=st.session_state.chunk_fetch_status,
+                            errors_dict=st.session_state.chunk_fetch_errors,
+                            clip_library_inject=_lib_inject,
+                        ),
+                        daemon=True,
+                        name="ChunkedFetchDispatcher",
+                    )
+                    if _st_ctx:
+                        add_script_run_ctx(_worker, _st_ctx)
+                    _worker.start()
+                    st.session_state.chunk_fetch_thread = _worker
+                    st.session_state.is_fetching = True
+                    save_cache()
+                    st.rerun()
+
+        # Live chunk-fetch status display — polls every 2s while any chunk is
+        # in flight, switches to a static summary once everything's done.
+        _status_dict = st.session_state.get("chunk_fetch_status") or {}
+        if _status_dict:
+            _still_running = any(
+                v in ("pending", "fetching") for v in _status_dict.values()
+            )
+            if _still_running:
+                _render_chunk_status_polling()
+            else:
+                _render_chunk_status_final()
     # Regenerate Failed — shown after any fetch when some shots still have 0 candidates
     empty_shots = [
         s for s in st.session_state.get("director_shots", [])
@@ -1843,6 +1959,29 @@ elif app_mode in ["Director", "Smart Mode"]:
     # Step 5 — Editor Review (paginated)
     review_shots = [s for s in st.session_state.get("director_shots", [])
                     if s.get("video_results") and s.get("priority") != "none"]
+    # Banner about chunks still fetching — shows when a background fetch is
+    # in flight so the user knows more shots will appear as chunks complete.
+    _status_dict_for_step5 = st.session_state.get("chunk_fetch_status") or {}
+    _pending_chunks = [i for i, v in _status_dict_for_step5.items()
+                       if v in ("pending", "fetching")]
+    if _pending_chunks:
+        _pending_slots = []
+        _groups = st.session_state.get("chunk_fetch_slot_ids", [])
+        for ci in _pending_chunks:
+            if ci < len(_groups):
+                _pending_slots.extend(_groups[ci])
+        if review_shots:
+            st.info(
+                f"🔄 {len(_pending_chunks)} chunk(s) still fetching "
+                f"({len(_pending_slots)} more shot(s) coming). "
+                "You can start reviewing what's ready below — remaining shots will "
+                "appear automatically as their chunks finish."
+            )
+        else:
+            st.info(
+                f"🔄 Fetching first chunk… {len(_pending_chunks)} chunk(s) in flight. "
+                "Step 5 will populate as soon as the first chunk lands."
+            )
     if review_shots:
         st.header("Step 5: Review & Select")
         st.caption(
