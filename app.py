@@ -15,7 +15,8 @@ from core.output import (
     generate_transcription_srt, generate_failed_downloads_txt,
     generate_fcpxml, generate_shot_list_txt, filter_overlays_for_shots, _safe_for_fs
 )
-from core.captions import extract_highlights, create_text_overlay
+from core.captions import extract_highlights, create_text_overlay, get_available_fonts
+from core.clip_library import store_clip, search_library, get_library_stats
 from core.sfx import search_freesound, download_sfx
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
 from core import download_cache
@@ -60,8 +61,22 @@ if "overlay_settings" not in st.session_state:
         "color": "#FFFFFF",
         "shadow": "#000000",
         "size": 120,
-        "placement": "Bottom", # New field
-        "animation": "Fade In/Out"
+        "placement": "Bottom",
+        "animation": "Fade In/Out",
+        "no_anim_categories": [],
+        "font_family": "Arial Bold",
+        "effect_type": "Shadow",
+        "text_opacity": 255,
+        "bg_box": False,
+        "bg_box_color": "#000000",
+        "bg_box_opacity": 160,
+        "emoji_prefix": False,
+        "category_colors": {
+            "headings/titles": "#FFFFFF",
+            "money/pricing":   "#FFD700",
+            "statistics":      "#00BFFF",
+            "core concepts":   "#FFFF00",
+        },
     }
     st.session_state.transcription_chunks = []
 if "active_chunk_indices" not in st.session_state:
@@ -299,6 +314,22 @@ def render_classic_mode():
             else:
                 st.warning("Groq API key is required.")
 
+    # ── Clip Library sidebar panel ───────────────────────────────────────────
+    with st.sidebar.expander("📚 Clip Library", expanded=False):
+        _stats = get_library_stats()
+        st.metric("Total clips stored", _stats["total"])
+        if _stats["by_source"]:
+            for _src, _cnt in _stats["by_source"].items():
+                st.caption(f"  {_src}: {_cnt}")
+        if _stats["top_clips"]:
+            st.markdown("**Most-used clips**")
+            for _clip in _stats["top_clips"]:
+                st.markdown(
+                    f"- [{_clip['clip_title'][:40] or 'untitled'}]({_clip['clip_url']}) "
+                    f"· {_clip['source']} · used {_clip['usage_count']}×"
+                )
+        if _stats["total"] == 0:
+            st.info("No clips yet. Select and download clips — they'll be saved here automatically.")
 
     # Step 1: Upload
     st.header("Step 1: Upload Files")
@@ -1513,6 +1544,16 @@ elif app_mode in ["Director", "Smart Mode"]:
         with col_s2e:
             use_smart = st.checkbox("Smart Library", value=False, key="d_smart_cb", disabled=True, help="Smart Library is currently disabled.")
             smart_num = st.number_input("Results/query", value=5, min_value=1, max_value=20, key="d_smart_nr") if use_smart else 0
+        col_s2f, = st.columns(1)
+        with col_s2f:
+            _lib_total = get_library_stats().get("total", 0)
+            use_library = st.checkbox(
+                f"📚 Clip Library ({_lib_total} clips)",
+                value=_lib_total > 0,
+                key="d_lib_cb",
+                help="Search your saved clip database first. Clips appear at the top of results with a 📚 badge.",
+            )
+            lib_num = st.number_input("Top results", value=5, min_value=1, max_value=20, key="d_lib_nr") if use_library else 0
         if use_youtube_search:
             yt_calls = sum(
                 len(s.get("youtube_keywords") or s.get("search_queries", [])[:1])
@@ -1643,6 +1684,24 @@ elif app_mode in ["Director", "Smart Mode"]:
                     else:
                         st.session_state.director_shots = updated_subset
                         
+                    # ── Clip Library injection ──────────────────────────────
+                    if use_library and lib_num > 0:
+                        status2.text("📚 Searching Clip Library…")
+                        for shot in target_shots:
+                            if shot.get("priority") == "none":
+                                continue
+                            if retry_clicked and shot.get("video_results"):
+                                continue
+                            q = shot.get("shot_intent", "") or " ".join(shot.get("search_queries", [])[:2])
+                            if not q:
+                                continue
+                            lib_hits = search_library(q, top_k=lib_num)
+                            if lib_hits:
+                                existing_urls = {r.get("url") for r in shot.get("video_results", [])}
+                                new_hits = [h for h in lib_hits if h.get("url") not in existing_urls]
+                                shot.setdefault("video_results", [])
+                                shot["video_results"] = new_hits + shot["video_results"]
+
                     pbar2.progress(1.0)
                     total_found = sum(len(s.get("video_results", [])) for s in st.session_state.director_shots)
                     status2.text("Done.")
@@ -1964,9 +2023,18 @@ elif app_mode in ["Director", "Smart Mode"]:
                         url = cand.get("page_url") or cand.get("url")
                         title = cand.get("title", "Video")
                         source_val = cand.get("source", "").upper()
-                        source_display = "🤖 AI VISUAL SEARCH" if source_val == "SMART_LIBRARY" else f"🌐 {source_val}"
+                        if source_val == "SMART_LIBRARY":
+                            source_display = "🤖 AI VISUAL SEARCH"
+                        elif source_val == "LIBRARY":
+                            _orig = cand.get("original_source", "").upper()
+                            _sim  = cand.get("similarity", 0)
+                            _uses = cand.get("usage_count", 1)
+                            source_display = f"📚 LIBRARY ({_orig}) · {_sim*100:.0f}% match · used {_uses}×"
+                        else:
+                            source_display = f"🌐 {source_val}"
                         score = cand.get("score")
-                        if score: source_display += f" · {score*100:.0f}% match"
+                        if score and source_val != "LIBRARY":
+                            source_display += f" · {score*100:.0f}% match"
                         w, h = cand.get("width"), cand.get("height")
                         dur = cand.get("duration")
                         avail_res = cand.get("available_resolutions", [])
@@ -1987,7 +2055,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 if thumb:
                                     selected_badge = '<div style="position:absolute;top:6px;left:6px;z-index:10;background:#00cc44;color:white;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:14px;border:2px solid white;">✓</div>' if is_picked else ""
                                     used_badge = f'<div style="position:absolute;bottom:6px;left:6px;z-index:10;background:#ffcc00;color:black;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:bold;border:1px solid #999;">USED IN {", ".join(map(str, other_slots))}</div>' if other_slots else ""
-                                    border_style = "border: 3px solid #00cc44; border-radius:6px;" if is_picked else ""
+                                    _is_lib = cand.get("from_library")
+                                    if is_picked:
+                                        border_style = "border: 3px solid #00cc44; border-radius:6px;"
+                                    elif _is_lib:
+                                        border_style = "border: 2px solid #a78bfa; border-radius:6px;"
+                                    else:
+                                        border_style = ""
                                     st.markdown(f'<div style="position:relative;{border_style}"><img src="{thumb}" style="width:100%;border-radius:4px;aspect-ratio:16/9;object-fit:cover;display:block;">{selected_badge}{used_badge}</div>', unsafe_allow_html=True)
                                 st.markdown(f"**{title}**")
                                 st.caption(f"{source_display} · {dur_str} · {res_str}")
@@ -2431,6 +2505,33 @@ elif app_mode in ["Director", "Smart Mode"]:
                     for h in history[-20:]:  # cap display to avoid blowing up the page
                         icon = "✅" if h["status"] == "completed" else "â­"
                         st.write(f"{icon} {os.path.basename(h['output_path'])}")
+            # ── Auto-Save to Clip Library on Completion ────────────────────
+            if completed == total_t and total_t > 0:
+                _batch_key = tuple(sorted(t["id"] for t in tasks if t["status"] == "completed"))
+                _saved_keys = st.session_state.get("d_library_saved_batches", set())
+                if _batch_key and _batch_key not in _saved_keys:
+                    _done_urls = {t["url"]: t for t in tasks if t["status"] == "completed"}
+                    _lib_saved = 0
+                    for _shot in st.session_state.director_shots:
+                        for _res in _shot.get("selected_results", []):
+                            _url = _res.get("url", "")
+                            if _url in _done_urls:
+                                _task = _done_urls[_url]
+                                if store_clip(
+                                    shot_description=_shot.get("shot_intent", _shot.get("text", "")),
+                                    clip_data={**_res, "local_path": _task.get("output_path", "")},
+                                    project=st.session_state.get("project_name", "default"),
+                                    slot_index=_shot.get("slot_id", 0),
+                                    keywords=_shot.get("search_queries", []),
+                                    search_query=_res.get("matched_query", ""),
+                                ):
+                                    _lib_saved += 1
+                    if _lib_saved:
+                        st.success(f"💾 {_lib_saved} clip(s) saved to your Clip Library.")
+                    if "d_library_saved_batches" not in st.session_state:
+                        st.session_state.d_library_saved_batches = set()
+                    st.session_state.d_library_saved_batches.add(_batch_key)
+
             # ── Auto-Index on Completion ───────────────────────────────────
             if completed == total_t and total_t > 0:
                 current_batch_ids = [t["id"] for t in tasks if t["status"] == "completed"]
@@ -2488,15 +2589,61 @@ elif app_mode in ["Director", "Smart Mode"]:
                 
                 st.divider()
                 st.subheader("Visual Settings")
+                _ov = st.session_state.overlay_settings
+
+                # ── Row 1: Typography & Layout ──────────────────────────────────
                 c_v1, c_v2, c_v3 = st.columns(3)
                 with c_v1:
-                    st.session_state.overlay_settings["color"] = st.color_picker("Text Color", st.session_state.overlay_settings["color"])
-                    st.session_state.overlay_settings["size"] = st.slider("Font Size", 50, 250, st.session_state.overlay_settings["size"])
+                    _avail_fonts = get_available_fonts()
+                    _font_names = list(_avail_fonts.keys()) or ["Arial Bold"]
+                    _fi = _font_names.index(_ov["font_family"]) if _ov["font_family"] in _font_names else 0
+                    _ov["font_family"] = st.selectbox("Font Family", _font_names, index=_fi)
+                    _ov["size"] = st.slider("Font Size", 50, 250, _ov["size"])
                 with c_v2:
-                    st.session_state.overlay_settings["shadow"] = st.color_picker("Shadow Color", st.session_state.overlay_settings["shadow"])
-                    st.session_state.overlay_settings["placement"] = st.selectbox("Visual Placement", ["Top", "Middle", "Bottom"], index=2)
+                    _ov["color"] = st.color_picker("Text Color", _ov["color"])
+                    _ov["text_opacity"] = st.slider("Text Opacity", 0, 255, _ov.get("text_opacity", 255))
                 with c_v3:
-                    st.session_state.overlay_settings["animation"] = st.selectbox("Animation Style", ["None", "Fade In/Out", "Slide Up", "Slide In Left"], index=1)
+                    _ov["placement"] = st.selectbox("Visual Placement", ["Top", "Middle", "Bottom"],
+                                                    index=["Top","Middle","Bottom"].index(_ov.get("placement","Bottom")))
+                    _ov["effect_type"] = st.radio("Text Effect", ["Shadow", "Outline"], horizontal=True,
+                                                   index=0 if _ov.get("effect_type","Shadow") == "Shadow" else 1)
+                    _ov["shadow"] = st.color_picker("Effect Color", _ov["shadow"])
+
+                # ── Row 2: Background Box & Animation ───────────────────────────
+                c_a1, c_a2, c_a3 = st.columns(3)
+                with c_a1:
+                    _ov["bg_box"] = st.checkbox("Background Box", value=_ov.get("bg_box", False))
+                    if _ov["bg_box"]:
+                        _ov["bg_box_color"]   = st.color_picker("Box Color", _ov.get("bg_box_color", "#000000"))
+                        _ov["bg_box_opacity"] = st.slider("Box Opacity", 0, 255, _ov.get("bg_box_opacity", 160))
+                with c_a2:
+                    _ov["animation"] = st.selectbox("Animation Style",
+                                                     ["None", "Fade In/Out", "Slide Up", "Slide In Left", "Random"],
+                                                     index=["None","Fade In/Out","Slide Up","Slide In Left","Random"].index(
+                                                         _ov.get("animation","Fade In/Out")))
+                    _ov["no_anim_categories"] = st.multiselect(
+                        "No Animation for Categories",
+                        ["headings/titles", "money/pricing", "statistics", "core concepts"],
+                        default=_ov.get("no_anim_categories", []),
+                        help="These categories always render as static (no animation).",
+                    )
+                with c_a3:
+                    _ov["emoji_prefix"] = st.checkbox("Emoji Category Prefix", value=_ov.get("emoji_prefix", False),
+                                                       help="Prepends 📌 headings  💰 money  📊 stats  💡 concepts")
+
+                # ── Per-Category Colors ─────────────────────────────────────────
+                with st.expander("Per-Category Colors"):
+                    _cat_cols = st.columns(4)
+                    _cat_list = ["headings/titles", "money/pricing", "statistics", "core concepts"]
+                    _cat_defaults = {"headings/titles":"#FFFFFF","money/pricing":"#FFD700",
+                                     "statistics":"#00BFFF","core concepts":"#FFFF00"}
+                    _ov.setdefault("category_colors", _cat_defaults)
+                    for ci, cat in enumerate(_cat_list):
+                        with _cat_cols[ci]:
+                            _ov["category_colors"][cat] = st.color_picker(
+                                cat.title(), _ov["category_colors"].get(cat, _cat_defaults[cat]),
+                                key=f"catcol_{cat}"
+                            )
                     
                 if st.button("Generate & Preview Overlays", type="primary"):
                     p_name = st.session_state.get("project_name", "default")
@@ -2529,18 +2676,72 @@ elif app_mode in ["Director", "Smart Mode"]:
                         placement_map = {"Top": 120, "Middle": 480, "Bottom": 850}
                         target_y = placement_map.get(st.session_state.overlay_settings["placement"], 850)
 
+                        import random as _random
+                        _ov_s        = st.session_state.overlay_settings
+                        _anim_pool   = ["Fade In/Out", "Slide Up", "Slide In Left"]
+                        _global_anim = _ov_s["animation"]
+                        _no_anim_cats = [c.lower() for c in _ov_s.get("no_anim_categories", [])]
+                        _avail_fonts  = get_available_fonts()
+                        _sel_font_path = _avail_fonts.get(_ov_s.get("font_family", ""), None)
+                        _cat_colors   = _ov_s.get("category_colors", {})
+                        _emoji_map    = {
+                            "headings/titles": "📌",
+                            "money/pricing":   "💰",
+                            "statistics":      "📊",
+                            "core concepts":   "💡",
+                        }
+                        _use_emoji    = _ov_s.get("emoji_prefix", False)
+                        _use_outline  = _ov_s.get("effect_type", "Shadow") == "Outline"
+                        _use_bg       = _ov_s.get("bg_box", False)
+                        _bg_col       = _ov_s.get("bg_box_color", "#000000") if _use_bg else None
+                        _bg_opa       = _ov_s.get("bg_box_opacity", 160)
+                        _txt_opa      = _ov_s.get("text_opacity", 255)
+
                         for idx, ov in enumerate(final_ovs):
-                            fname = os.path.join(ov_dir, f"overlay_{idx+1}.png")
+                            fname     = os.path.join(ov_dir, f"overlay_{idx+1}.png")
+                            cat_lower = str(ov.get("category", "")).lower()
+                            is_heading = "heading" in cat_lower
+
+                            # Text: headings use full original_caption; others use highlight_text
+                            overlay_text = str(ov.get("original_caption", "") if is_heading else ov.get("highlight_text", ""))
+
+                            # Emoji prefix
+                            if _use_emoji:
+                                for ek, ev in _emoji_map.items():
+                                    if ek in cat_lower or cat_lower in ek:
+                                        overlay_text = f"{ev} {overlay_text}"
+                                        break
+
+                            # Per-category color (fall back to global color)
+                            ov_color = _ov_s["color"]
+                            for ck, cv in _cat_colors.items():
+                                if ck in cat_lower or cat_lower in ck:
+                                    ov_color = cv
+                                    break
+
                             create_text_overlay(
-                                str(ov.get("highlight_text", "")),
+                                overlay_text,
                                 fname,
-                                font_size=st.session_state.overlay_settings["size"],
-                                color=st.session_state.overlay_settings["color"],
-                                shadow_color=st.session_state.overlay_settings["shadow"],
-                                y_position=target_y
+                                font_path=_sel_font_path,
+                                font_size=_ov_s["size"],
+                                color=ov_color,
+                                shadow_color=_ov_s["shadow"],
+                                y_position=target_y,
+                                bg_color=_bg_col,
+                                bg_opacity=_bg_opa,
+                                outline=_use_outline,
+                                auto_scale=is_heading,
+                                text_opacity=_txt_opa,
                             )
                             ov["filepath"] = fname
-                            ov["animation"] = st.session_state.overlay_settings["animation"]
+                            # Animation: suppression wins, then random, then global
+                            cat_suppressed = any(no_cat in cat_lower or cat_lower in no_cat for no_cat in _no_anim_cats)
+                            if cat_suppressed:
+                                ov["animation"] = "None"
+                            elif _global_anim == "Random":
+                                ov["animation"] = _random.choice(_anim_pool)
+                            else:
+                                ov["animation"] = _global_anim
                             ov["start_sec"] = ts_to_sec(ov.get("start_time", 0))
                             raw_end = ov.get("end_time")
                             ov["end_sec"] = ts_to_sec(raw_end) if raw_end else (ov["start_sec"] + 3)
@@ -2548,13 +2749,21 @@ elif app_mode in ["Director", "Smart Mode"]:
                         st.success(f"Generated {len(st.session_state.text_overlays)} PNG overlays in {ov_dir}")
 
                     # Preview generated overlays
-                    preview_ovs = [ov for ov in st.session_state.text_overlays if ov.get("filepath") and os.path.exists(ov["filepath"])]
-                    if preview_ovs:
+                    all_preview = [ov for ov in st.session_state.text_overlays if ov.get("filepath") and os.path.exists(ov["filepath"])]
+                    if all_preview:
                         st.subheader("Preview")
-                        cols = st.columns(min(4, len(preview_ovs)))
-                        for i, ov in enumerate(preview_ovs):
-                            with cols[i % len(cols)]:
-                                st.image(ov["filepath"], caption=ov.get("highlight_text", ""), width="stretch")
+                        _all_cats = sorted({str(ov.get("category","")).lower() for ov in all_preview if ov.get("category")})
+                        _filter_cats = st.multiselect("Filter by category", _all_cats, default=_all_cats, key="prev_cat_filter")
+                        preview_ovs = [ov for ov in all_preview if str(ov.get("category","")).lower() in _filter_cats]
+                        if preview_ovs:
+                            cols = st.columns(min(4, len(preview_ovs)))
+                            for i, ov in enumerate(preview_ovs):
+                                with cols[i % len(cols)]:
+                                    is_hdg = "heading" in str(ov.get("category", "")).lower()
+                                    preview_cap = ov.get("original_caption", "") if is_hdg else ov.get("highlight_text", "")
+                                    st.image(ov["filepath"], caption=preview_cap, width="stretch")
+                                    if ov.get("sfx_path") and os.path.exists(ov["sfx_path"]):
+                                        st.audio(ov["sfx_path"])
 
                     # --- SFX Download Logic ---
                     freesound_api = os.getenv("FREESOUND_API_KEY")
