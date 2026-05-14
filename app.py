@@ -1358,7 +1358,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             # Highlight missing selections with a warning emoji if priority isn't 'none'
             pick_status = f"✅ {len(sel)}" if sel else ("⏭ skip" if shot.get("skipped") else "—")
             if not sel and shot.get("priority") != "none" and not shot.get("skipped"):
-                pick_status = "⚠️ MISSING"
+                pick_status = "🔖 FLAGGED" if shot.get("flagged") else "⚠️ MISSING"
             rows.append({
                 "#":          shot.get("slot_id", 0),
                 "Time":       f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}",
@@ -1658,7 +1658,79 @@ elif app_mode in ["Director", "Smart Mode"]:
                     save_cache()
                 finally:
                     st.session_state.is_fetching = False
-    # Step 4 — LLM Ranking 
+    # Regenerate Failed — shown after any fetch when some shots still have 0 candidates
+    empty_shots = [
+        s for s in st.session_state.get("director_shots", [])
+        if len(s.get("video_results", [])) == 0
+        and s.get("priority") != "none"
+        and s.get("search_queries")
+    ]
+    if empty_shots and not st.session_state.get("is_fetching"):
+        st.divider()
+        with st.container():
+            st.subheader(f"⚠️ {len(empty_shots)} shot(s) returned no candidates")
+            st.caption(
+                "The AI will re-read surrounding script context to rewrite the queries for these "
+                "shots, then re-fetch automatically. Previously tried queries are shown to the "
+                "model so it produces something different."
+            )
+            if st.button("🔄 Regenerate Queries & Re-fetch", key="d_regen_failed", type="primary"):
+                if not os.getenv("GROQ_API_KEY"):
+                    st.error("Groq API key required.")
+                else:
+                    failed_ids = {s["slot_id"] for s in empty_shots}
+                    regen_pbar   = st.progress(0)
+                    regen_status = st.empty()
+                    regen_status.text(f"Regenerating queries for {len(failed_ids)} shot(s)…")
+                    try:
+                        from core.director import regenerate_shot_queries
+                        from core.director_search import clear_query_cache
+                        st.session_state.director_shots = regenerate_shot_queries(
+                            st.session_state.director_shots,
+                            slot_ids=failed_ids,
+                            api_key=os.getenv("GROQ_API_KEY"),
+                            video_topic=st.session_state.get("d_video_topic", ""),
+                            custom_instructions=st.session_state.get("d_style", ""),
+                            progress_callback=lambda p: regen_pbar.progress(p * 0.45),
+                        )
+                        regen_status.text("Re-fetching candidates for regenerated shots…")
+                        clear_query_cache()
+                        d_regen_errors = []
+                        updated = fetch_director_footage(
+                            st.session_state.director_shots,
+                            use_pexels=st.session_state.get("d_pex_cb", True),
+                            use_pixabay=st.session_state.get("d_pix_cb", True),
+                            use_youtube_search=st.session_state.get("d_yt_search_cb", True),
+                            use_youtube_api=st.session_state.get("d_yt_api_cb", False),
+                            pexels_num_results=int(st.session_state.get("d_pex_nr", 3)),
+                            pixabay_num_results=int(st.session_state.get("d_pix_nr", 3)),
+                            youtube_api_num_results=int(st.session_state.get("d_ytapi_nr", 3)),
+                            youtube_search_num_results=int(st.session_state.get("d_yts_nr", 3)),
+                            min_height={"None": 0, "720p": 720, "1080p": 1080, "2K": 1440, "4K": 2160}.get(
+                                st.session_state.get("d_min_res_sel", "None"), 0
+                            ),
+                            retry_only=True,
+                            errors=d_regen_errors,
+                            progress_callback=lambda p: regen_pbar.progress(0.45 + p * 0.55),
+                        )
+                        st.session_state.director_shots = updated
+                        regen_pbar.progress(1.0)
+                        newly_found = sum(
+                            len(s.get("video_results", []))
+                            for s in updated if s.get("slot_id") in failed_ids
+                        )
+                        regen_status.text("Done.")
+                        st.success(f"Found {newly_found} new candidates across {len(failed_ids)} shots.")
+                        if d_regen_errors:
+                            with st.expander(f"⚠️ {len(d_regen_errors)} error(s)"):
+                                for e in d_regen_errors[:10]:
+                                    st.write(f"• {e}")
+                        save_cache()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Regeneration error: {e}")
+
+    # Step 4 — LLM Ranking
     # Ranker now also flags single-candidate shots as irrelevant when needed,
     # so we offer it whenever any shot has at least one candidate.
     has_candidates = any(len(s.get("video_results", [])) >= 1 for s in st.session_state.get("director_shots", []))
@@ -1740,7 +1812,8 @@ elif app_mode in ["Director", "Smart Mode"]:
         # --- Variables used for display ---
         n_selected = sum(1 for s in review_shots if s.get("selected_results"))
         n_skipped  = sum(1 for s in review_shots if s.get("skipped"))
-        n_pending  = len(review_shots) - n_selected - n_skipped
+        n_flagged  = sum(1 for s in review_shots if s.get("flagged") and not s.get("selected_results") and not s.get("skipped"))
+        n_pending  = len(review_shots) - n_selected - n_skipped - n_flagged
         slot_id  = shot.get("slot_id", "?")
         ts       = f"{shot.get('timestamp_start_str')} – {shot.get('timestamp_end_str')}"
         reason   = shot.get("rank_reason", "")
@@ -1753,38 +1826,81 @@ elif app_mode in ["Director", "Smart Mode"]:
         else:
             st.markdown("---")
             st.subheader("🖼️ Selection Gallery")
-            # 1. Navigation Strip (Now at the top of the gallery)
-            nav1, nav2, nav3, nav4 = st.columns([1.2, 2, 4, 1.2])
+            # ── Shot context (TOP) ────────────────────────────────────────────
+            with st.container(border=True):
+                pri = shot.get("priority", "medium")
+                pri_badge = {"high": "🔴 HIGH", "medium": "🟡 MED", "low": "⚪ LOW"}.get(pri, pri)
+                st.markdown(
+                    f"**Shot {slot_id}** &nbsp;·&nbsp; 🕒 {ts} &nbsp;·&nbsp; "
+                    f"🎬 {shot.get('shot_intent', '—')} &nbsp;·&nbsp; {pri_badge}"
+                )
+                st.markdown(f"💬 _{shot.get('text', '')}_")
+                top_queries = shot.get("search_queries", [])
+                if top_queries:
+                    st.markdown(" &nbsp;·&nbsp; ".join(f"`{q}`" for q in top_queries))
+                if reason:
+                    st.caption(f"🤖 {reason}")
+            # ── Navigation Strip ──────────────────────────────────────────────
+            # Build jump options with per-shot status icons so users can see
+            # at a glance which shots still need attention.
+            jump_options = []
+            for _ji, _js in enumerate(review_shots):
+                _sel = _js.get("selected_results")
+                if _sel:                    _icon = "✅"
+                elif _js.get("skipped"):    _icon = "⏭"
+                elif _js.get("flagged"):    _icon = "🔖"
+                else:                       _icon = "⏳"
+                _tag = " [H]" if _js.get("priority") == "high" else ""
+                jump_options.append(
+                    f"Shot {_ji+1} {_icon}{_tag} — {(_js.get('shot_intent') or '')[:30]}"
+                )
+            next_unpicked_idx = next(
+                (j for j in range(idx + 1, len(review_shots))
+                 if not review_shots[j].get("selected_results")
+                 and not review_shots[j].get("skipped")
+                 and not review_shots[j].get("flagged")),
+                None,
+            )
+            nav1, nav2, nav3, nav4, nav5 = st.columns([1.2, 2.5, 2.5, 1.8, 1.2])
             with nav1:
                 if st.button("◀ Prev", key="d_prev", disabled=idx == 0, use_container_width=True):
                     save_cache()
                     st.session_state.d_review_idx -= 1
                     st.rerun()
             with nav2:
-                options = [f"Shot {i+1} / {len(review_shots)}" for i in range(len(review_shots))]
-                st.session_state["d_jump_top"] = options[idx]
-                selected = st.selectbox("Jump", options=options, label_visibility="collapsed", key="d_jump_top")
-                new_idx_top = int(selected.split(" ")[1]) - 1
+                st.session_state["d_jump_top"] = jump_options[idx]
+                sel_top = st.selectbox("Jump", options=jump_options, label_visibility="collapsed", key="d_jump_top")
+                new_idx_top = jump_options.index(sel_top)
                 if new_idx_top != idx:
                     save_cache()
                     st.session_state.d_review_idx = new_idx_top
                     st.rerun()
             with nav3:
                 st.markdown(
-                    f"<div style='text-align:center; padding-top:0.4em; font-size:14px;'>"
-                    f"✅ {n_selected} selected"
-                    f" &nbsp;·&nbsp; ⏭ {n_skipped} skipped"
-                    f" &nbsp;·&nbsp; ⏳ {n_pending} pending"
+                    f"<div style='text-align:center; padding-top:0.4em; font-size:13px;'>"
+                    f"✅ {n_selected} &nbsp;·&nbsp; ⏭ {n_skipped} "
+                    f"&nbsp;·&nbsp; 🔖 {n_flagged} &nbsp;·&nbsp; ⏳ {n_pending}"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
             with nav4:
+                if st.button(
+                    "⏭ Next Unpicked",
+                    key="d_next_unpicked",
+                    disabled=next_unpicked_idx is None,
+                    use_container_width=True,
+                    help="Jump to the next shot with no selection yet.",
+                ):
+                    save_cache()
+                    st.session_state.d_review_idx = next_unpicked_idx
+                    st.rerun()
+            with nav5:
                 if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1, use_container_width=True):
                     save_cache()
                     st.session_state.d_review_idx += 1
                     st.rerun()
             st.progress((idx + 1) / len(review_shots))
-            # Bulk Actions & Quality Filter
+            # ── Bulk Actions & Quality Filter ─────────────────────────────────
             ba1, ba2, ba3 = st.columns([1, 1, 2])
             with ba1:
                 q_filter_key = "director_global_q_filter"
@@ -1794,7 +1910,6 @@ elif app_mode in ["Director", "Smart Mode"]:
                     temp_filtered = [c for c in temp_filtered if (c.get("height") or 0) >= 720 or c.get("source") == "youtube"]
                 elif temp_q_filter == "1080p and above":
                     temp_filtered = [c for c in temp_filtered if (c.get("height") or 0) >= 1080 or c.get("source") == "youtube"]
-                
                 if st.button("☑ Select All", key=f"sel_all_{slot_id}", use_container_width=True):
                     shot["selected_results"] = list(temp_filtered)
                     shot["skipped"] = False
@@ -1814,6 +1929,20 @@ elif app_mode in ["Director", "Smart Mode"]:
                     label_visibility="collapsed",
                     help="Filter candidates by minimum resolution."
                 )
+            # ── Auto-advance & Pick Top ───────────────────────────────────────
+            aa1, aa2 = st.columns([2, 3])
+            with aa1:
+                st.checkbox("⚡ Auto-advance after picking", key="d_auto_advance", value=False)
+            is_ranked = any(s.get("rank_reason") for s in review_shots)
+            with aa2:
+                if is_ranked and candidates and idx < len(review_shots) - 1:
+                    if st.button("🥇 Pick Top & Next", key=f"pick_top_{slot_id}", use_container_width=True,
+                                 help="Pick the AI's top-ranked clip and advance to the next shot."):
+                        top_cand = candidates[0]
+                        if top_cand.get("url") not in sel_urls:
+                            toggle_pick(top_cand["url"], top_cand, shot)
+                        st.session_state.d_review_idx = idx + 1
+                        st.rerun()
             # CSS for cards
             st.markdown("""<style>.gallery-card { border-radius: 8px; }</style>""", unsafe_allow_html=True)
             # Apply quality filter
@@ -1862,6 +1991,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     st.markdown(f'<div style="position:relative;{border_style}"><img src="{thumb}" style="width:100%;border-radius:4px;aspect-ratio:16/9;object-fit:cover;display:block;">{selected_badge}{used_badge}</div>', unsafe_allow_html=True)
                                 st.markdown(f"**{title}**")
                                 st.caption(f"{source_display} · {dur_str} · {res_str}")
+                                mq = cand.get("matched_query", "")
+                                if mq:
+                                    st.caption(f"🔍 _{mq}_")
                                 extra_info = cand.get("tags") if (source_val not in ("YOUTUBE", "SMART_LIBRARY") and cand.get("tags")) else cand.get("description")
                                 if extra_info:
                                     with st.expander("📄 Details", expanded=False): st.write(extra_info)
@@ -1872,11 +2004,25 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     st.markdown(f'<a href="{url}" target="_blank" style="text-decoration:none;font-size:12px;">📺 Watch</a>', unsafe_allow_html=True)
                                 btn_label = "✅ SELECTED" if is_picked else "⬜ PICK CLIP"
                                 if st.button(btn_label, key=f"galpick_{slot_id}_{hash(cand.get('url'))}", use_container_width=True, type="primary" if is_picked else "secondary"):
+                                    was_selected = cand_url in sel_urls
                                     toggle_pick(cand.get("url"), cand, shot)
+                                    if not was_selected and st.session_state.get("d_auto_advance") and idx < len(review_shots) - 1:
+                                        st.session_state.d_review_idx = idx + 1
                                     st.rerun()
+                                if mq and source_val.lower() in ("pexels", "pixabay", "youtube"):
+                                    if st.button("➕ More like this", key=f"mlt_{slot_id}_{hash(cand_url)}", use_container_width=True):
+                                        with st.spinner("Fetching more…"):
+                                            from core.director_search import fetch_more_like_this
+                                            more = fetch_more_like_this(shot, mq, source_val.lower())
+                                        if more:
+                                            shot["video_results"] = shot.get("video_results", []) + more
+                                            save_cache()
+                                            st.rerun()
+                                        else:
+                                            st.toast("No new results found for this query.")
                             st.markdown('</div>', unsafe_allow_html=True)
-            # 2. Footer Navigation Bar (Immediately below gallery)
-            fa1, fa2, fa3, fa4, fa5 = st.columns([1.2, 1.2, 2.5, 2.5, 1.2])
+            # 2. Footer Navigation Bar
+            fa1, fa2, fa3, fa4, fa5, fa6 = st.columns([1.2, 1.2, 1.2, 2.2, 2.5, 1.2])
             with fa1:
                 if st.button("◀ Prev", key=f"d_prev_bot_{slot_id}", disabled=idx == 0, use_container_width=True):
                     save_cache(); st.session_state.d_review_idx -= 1; st.rerun()
@@ -1885,19 +2031,26 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if st.button(skip_label, key=f"skip_{slot_id}", use_container_width=True):
                     shot["skipped"] = not skipped; shot["selected_results"] = []; save_cache(); st.rerun()
             with fa3:
-                options = [f"Shot {i+1} / {len(review_shots)}" for i in range(len(review_shots))]
-                st.session_state[f"d_jump_bot_{slot_id}"] = options[idx]
-                selected = st.selectbox("Jump", options=options, label_visibility="collapsed", key=f"d_jump_bot_{slot_id}")
-                new_idx_bot = int(selected.split(" ")[1]) - 1
-                if new_idx_bot != idx: save_cache(); st.session_state.d_review_idx = new_idx_bot; st.rerun()
+                flag_label = "🔖 Unflag" if shot.get("flagged") else "🔖 Flag"
+                if st.button(flag_label, key=f"flag_{slot_id}", use_container_width=True,
+                             help="Mark this shot to revisit later without skipping it."):
+                    shot["flagged"] = not shot.get("flagged", False)
+                    if shot["flagged"]:
+                        shot["skipped"] = False
+                    save_cache(); st.rerun()
             with fa4:
+                st.session_state[f"d_jump_bot_{slot_id}"] = jump_options[idx]
+                sel_bot = st.selectbox("Jump", options=jump_options, label_visibility="collapsed", key=f"d_jump_bot_{slot_id}")
+                new_idx_bot = jump_options.index(sel_bot)
+                if new_idx_bot != idx: save_cache(); st.session_state.d_review_idx = new_idx_bot; st.rerun()
+            with fa5:
                 if idx < len(review_shots) - 1:
                     if st.button("Save & Next ▶", key=f"d_save_next_{slot_id}", type="primary", use_container_width=True):
                         save_cache(); st.session_state.d_review_idx += 1; st.rerun()
                 else:
                     if st.button("✅ Finish Review", key=f"d_finish_{slot_id}", type="primary", use_container_width=True):
                         save_cache(); st.success("Review complete! Scroll down to Step 6 to start downloads.")
-            with fa5:
+            with fa6:
                 if st.button("Next ▶", key=f"d_next_bot_{slot_id}", disabled=idx == len(review_shots) - 1, use_container_width=True):
                     save_cache(); st.session_state.d_review_idx += 1; st.rerun()
             # 3. Shot Details / Recap (At the bottom)
@@ -1910,7 +2063,8 @@ elif app_mode in ["Director", "Smart Mode"]:
                     st.markdown(f"🔍 **Searched:** {q_md}")
                 if reason: st.markdown(f"🤖 _{reason}_")
             if rank_err: st.warning(f"⚠️ AI ranking failed for this shot ({rank_err}). Showing unranked candidates.")
-            if skipped: st.warning("⏭ This shot is marked as skipped. Selecting any clip will unskip it.")
+            if skipped: st.info("⏭ This shot is marked as skipped. Selecting any clip will unskip it.")
+            if shot.get("flagged") and not shot.get("selected_results"): st.info("🔖 This shot is flagged for review. Pick a clip or click Unflag to clear.")
             # 4. Tweak & Refetch
             st.markdown("---")
             with st.expander("🔄 Tweak & Refetch THIS Shot", expanded=False):

@@ -74,13 +74,13 @@ def _pexels_slug_to_text(page_url: str) -> str:
         return ""
 
 
-def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list = None) -> list:
+def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list = None, page: int = 1) -> list:
     if not api_key or not keyword:
         return []
 
     url = "https://api.pexels.com/videos/search"
     headers = {"Authorization": api_key}
-    params = {"query": keyword, "per_page": min(num_results, 80)}
+    params = {"query": keyword, "per_page": min(num_results, 80), "page": max(1, page)}
 
     results = []
     try:
@@ -129,12 +129,12 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
 
     return results
 
-def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: list = None) -> list:
+def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: list = None, page: int = 1) -> list:
     if not api_key or not keyword:
         return []
 
     url = "https://pixabay.com/api/videos/"
-    params = {"key": api_key, "q": keyword, "per_page": min(max(3, num_results), 100)}
+    params = {"key": api_key, "q": keyword, "per_page": min(max(3, num_results), 100), "page": max(1, page)}
 
     results = []
     try:

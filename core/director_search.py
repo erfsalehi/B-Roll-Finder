@@ -100,6 +100,37 @@ def _classic_youtube_candidate(item: dict, query: str) -> dict:
     }
 
 
+def fetch_more_like_this(shot: dict, query: str, source: str, num_results: int = 6) -> list:
+    """Fetch a second page of results for a single (query, source) pair.
+
+    Used by the gallery 'More like this' button.  Pexels and Pixabay use
+    page=2 so the results are genuinely new.  YouTube classic simply
+    requests a larger batch and deduplicates against what is already in
+    shot['video_results'].
+    """
+    existing_urls = {r.get("url") for r in shot.get("video_results", [])}
+    pexels_key  = os.getenv("PEXELS_API_KEY", "")
+    pixabay_key = os.getenv("PIXABAY_API_KEY", "")
+    errors: list = []
+    raw: list = []
+
+    if source == "pexels" and pexels_key:
+        raw = search_pexels(query, pexels_key, num_results, errors=errors, page=2)
+    elif source == "pixabay" and pixabay_key:
+        raw = search_pixabay(query, pixabay_key, num_results, errors=errors, page=2)
+    elif source == "youtube":
+        # yt-dlp is not page-based; request a larger pool and strip known URLs
+        raw = search_youtube_classic(query, num_results=len(existing_urls) + num_results, errors=errors)
+
+    new = []
+    for r in raw:
+        url = r.get("url")
+        if url and url not in existing_urls:
+            r["matched_query"] = query
+            new.append(r)
+    return new
+
+
 def search_youtube_classic(keyword: str, num_results: int = 3,
                             errors: list = None, min_height: int = 0) -> list:
     results = search_youtube_single(keyword, num_shorts=0, num_longs=num_results,
