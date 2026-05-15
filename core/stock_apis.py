@@ -287,3 +287,62 @@ def search_youtube_data_api(keyword: str, api_key: str, num_results: int = 3,
             errors.append(msg)
 
     return results
+
+
+def fetch_youtube_definition(video_url_or_id: str, api_key: str,
+                              errors: list = None) -> str:
+    """Look up a YouTube video's HD/SD definition via the Data API v3.
+
+    Calls ``videos.list?part=contentDetails`` and returns the
+    ``contentDetails.definition`` field, which is one of:
+
+      * ``"hd"``      — at least one stream is 720p or higher
+      * ``"sd"``      — every stream is below 720p
+      * ``"unknown"`` — video missing, API key invalid, network error, or
+                        no API key configured
+
+    The Data API doesn't expose exact pixel resolution (only this two-way
+    bucket), but the answer is authoritative — it comes directly from
+    YouTube's own metadata, not from inferring through yt-dlp's format
+    list. That makes it the reliable choice when storyboard-based
+    inference is too inaccurate.
+
+    Quota cost: 1 unit per call. With the default 10,000-unit daily
+    budget, this comfortably supports thousands of inspect-button
+    clicks per day.
+    """
+    if not api_key:
+        return "unknown"
+
+    # Accept either a full URL or a bare video ID. Mirrors the parsing in
+    # core/youtube.py:_yt_video_id so callers can pass either form.
+    video_id = video_url_or_id
+    if "/" in video_id or "=" in video_id:
+        import re as _re
+        m = _re.search(r'(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})', video_url_or_id)
+        if m:
+            video_id = m.group(1)
+        else:
+            return "unknown"
+    if not (len(video_id) == 11 and video_id.replace("_", "").replace("-", "").isalnum()):
+        return "unknown"
+
+    url = "https://www.googleapis.com/youtube/v3/videos"
+    params = {
+        "part": "contentDetails",
+        "id": video_id,
+        "key": api_key,
+    }
+    try:
+        response = _http_get_with_retry(url, params=params, timeout=10)
+        data = response.json()
+        items = data.get("items") or []
+        if not items:
+            return "unknown"
+        return items[0].get("contentDetails", {}).get("definition", "unknown")
+    except Exception as e:
+        msg = f"YouTube Data API definition lookup failed for '{video_id}': {e}"
+        print(msg)
+        if errors is not None:
+            errors.append(msg)
+        return "unknown"

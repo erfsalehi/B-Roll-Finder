@@ -2215,55 +2215,40 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     if st.button("🎬 Preview", key=f"prev_{slot_id}_{i_g+j_g}"): st.video(cand.get("segment_path"))
                                 else:
                                     st.markdown(f'<a href="{url}" target="_blank" style="text-decoration:none;font-size:12px;">📺 Watch</a>', unsafe_allow_html=True)
-                                # ── Inspect exact resolution (YouTube clips only) ──
-                                # Step 3's fast-path search doesn't fetch per-video
-                                # resolution unless min_height>0, so YT cards often
-                                # show "Resolution Unknown". This lets the editor
-                                # probe a single clip on demand (one extra yt-dlp
-                                # call, cached for the session via
-                                # _fetch_full_info_cached) without paying that cost
-                                # up-front for every candidate.
+                                # ── Inspect HD/SD via YouTube Data API ──
+                                # Switched from yt-dlp-based exact-resolution
+                                # probing to YouTube Data API's
+                                # videos.list?part=contentDetails. The Data API
+                                # returns 'hd' (>=720p available) or 'sd'
+                                # authoritatively — no JS-runtime / SABR /
+                                # storyboard guesswork. Costs 1 quota unit per
+                                # lookup (default budget: 10,000/day).
                                 if cand.get("source") == "youtube":
-                                    if not cand.get("exact_res_checked"):
-                                        if st.button(
-                                            "🔍 Check Exact Resolution",
-                                            key=f"check_res_{slot_id}_{hash(cand_url)}",
+                                    if not cand.get("definition_checked"):
+                                        yt_api_key = os.getenv("YOUTUBE_API_KEY")
+                                        if not yt_api_key:
+                                            st.caption("⚙️ Set `YOUTUBE_API_KEY` in Setup to enable HD check")
+                                        elif st.button(
+                                            "🔍 Check HD/SD",
+                                            key=f"check_def_{slot_id}_{hash(cand_url)}",
                                             use_container_width=True,
-                                            help="Probe YouTube for the maximum resolution this video actually offers. Useful when the gallery says 'Resolution Unknown'.",
+                                            help="Look up this video's HD/SD status via the YouTube Data API. Costs 1 quota unit (default budget: 10,000/day).",
                                         ):
                                             with st.spinner("Checking…"):
-                                                from core.youtube import _fetch_full_info_cached, infer_video_resolution
-                                                full_info = _fetch_full_info_cached(cand["url"])
-                                            if full_info:
-                                                # infer_video_resolution detects when yt-dlp returned
-                                                # only storyboard formats (the n-challenge-failure
-                                                # case) and maps the storyboard sheet height back
-                                                # to the likely source video resolution — so the
-                                                # user sees "1080p" instead of "180p" even when
-                                                # the JS solver couldn't unlock the real video
-                                                # format URLs.
-                                                cand["height"] = infer_video_resolution(full_info)
-                                                if full_info.get("width"):
-                                                    cand["width"] = full_info.get("width")
-                                                cand["available_resolutions"] = sorted(
-                                                    {f.get("height") for f in full_info.get("formats", []) if f.get("height")},
-                                                    reverse=True,
-                                                )
-                                                cand["exact_res_checked"] = True
-                                                save_cache()
-                                                st.rerun(scope="app")
-                                            else:
-                                                # Don't mark as checked on failure — let the
-                                                # user retry. _fetch_full_info_cached returns
-                                                # {} when yt-dlp gives up after the 429/503
-                                                # backoff ladder exhausts.
-                                                st.warning("Could not retrieve resolution (rate-limited or video unavailable). Try again in a moment.")
+                                                from core.stock_apis import fetch_youtube_definition
+                                                definition = fetch_youtube_definition(cand["url"], yt_api_key)
+                                            cand["definition"] = definition
+                                            cand["definition_checked"] = True
+                                            save_cache()
+                                            st.rerun(scope="app")
                                     else:
-                                        h = cand.get("height") or 0
-                                        if h > 0:
-                                            st.caption(f"**Exact Resolution:** {h}p")
+                                        defn = (cand.get("definition") or "unknown").lower()
+                                        if defn == "hd":
+                                            st.caption("✅ **HD** (720p+)")
+                                        elif defn == "sd":
+                                            st.caption("⚠️ **SD** (under 720p)")
                                         else:
-                                            st.caption("**Exact Resolution:** unknown")
+                                            st.caption("❓ Definition unknown (API lookup failed)")
                                 btn_label = "✅ SELECTED" if is_picked else "⬜ PICK CLIP"
                                 if st.button(btn_label, key=f"galpick_{slot_id}_{hash(cand.get('url'))}", use_container_width=True, type="primary" if is_picked else "secondary"):
                                     was_selected = cand_url in sel_urls
