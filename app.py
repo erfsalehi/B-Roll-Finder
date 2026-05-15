@@ -2279,7 +2279,25 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 if source_val == "SMART_LIBRARY":
                                     if st.button("🎬 Preview", key=f"prev_{slot_id}_{i_g+j_g}"): st.video(cand.get("segment_path"))
                                 else:
-                                    st.markdown(f'<a href="{url}" target="_blank" style="text-decoration:none;font-size:12px;">📺 Watch</a>', unsafe_allow_html=True)
+                                    st.markdown(f'<a href="{url}" target="_blank" style="text-decoration:none;font-size:12px;">📺 Watch on source ↗</a>', unsafe_allow_html=True)
+                                    # ── Inline preview ────────────────────────
+                                    # st.popover lazy-loads its content — the
+                                    # video iframe / direct stream only loads
+                                    # when the user clicks the trigger, so all
+                                    # 30+ cards don't preload players. For
+                                    # YouTube URLs Streamlit auto-embeds the
+                                    # official player; for Pexels/Pixabay the
+                                    # `url` is a direct MP4 which the HTML5
+                                    # player streams natively.
+                                    _preview_src = cand.get("preview_url") or cand.get("url")
+                                    if _preview_src:
+                                        with st.popover("▶️ Preview here", use_container_width=True):
+                                            try:
+                                                st.video(_preview_src)
+                                                st.caption(f"Source: {source_display} · {res_str}")
+                                            except Exception as _e:
+                                                st.warning(f"Cannot preview inline: {_e}")
+                                                st.caption("Use the 'Watch on source' link above.")
                                 # ── Inspect HD/SD via YouTube Data API ──
                                 # Switched from yt-dlp-based exact-resolution
                                 # probing to YouTube Data API's
