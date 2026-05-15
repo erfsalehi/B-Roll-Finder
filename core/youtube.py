@@ -202,21 +202,34 @@ def _fetch_full_info(url: str) -> dict:
         # lists depending on which player_client yt-dlp identifies as:
         # 'web' often returns only low-res progressive streams (which
         # is why probing a 1080p video could come back as 320x180), while
-        # 'ios', 'tv', and 'mweb' return higher-resolution DASH entries.
-        # yt-dlp queries each client in turn and merges their format
-        # lists during _real_extract — *before* the process step we've
+        # 'tv' and 'mweb' return higher-resolution DASH entries. yt-dlp
+        # queries each client in turn and merges their format lists
+        # during _real_extract — *before* the process step we've
         # disabled — so this is safe to use alongside process=False.
-        # The full merged list is then available via info['formats']
-        # for our height/width backfill below.
+        # 'ios' is intentionally EXCLUDED: YouTube routinely returns
+        # playabilityStatus=DRM responses to the ios client even for
+        # videos that aren't actually DRM-protected, which causes the
+        # whole extraction to raise "This video is DRM protected" before
+        # we can read formats from the other clients' responses.
         'extractor_args': {
             'youtube': {
-                'player_client': ['default', 'tv', 'mweb', 'ios'],
+                'player_client': ['default', 'tv', 'mweb'],
             },
         },
         # DASH is where the high-res entries live — explicit True even
         # though it's the yt-dlp default, in case a future release
         # flips the default.
         'youtube_include_dash_manifest': True,
+        # Safety nets for the remaining edge cases:
+        #   * ignore_no_formats_error: if a client's response triggers
+        #     a "no formats" raise (DRM, age-gate, etc.) yt-dlp downgrades
+        #     to a warning instead of raising, so we still return the
+        #     metadata we *did* collect from the other clients.
+        #   * allow_unplayable_formats: keeps DRM-flagged/region-locked
+        #     entries in the formats list rather than dropping them, so
+        #     resolution metadata survives even when playability doesn't.
+        'ignore_no_formats_error': True,
+        'allow_unplayable_formats': True,
         **_get_cookie_opts(),
     }
     try:
