@@ -168,20 +168,29 @@ def _yt_thumbnail(url: str, entry: dict) -> str:
 
 
 def _fetch_full_info(url: str) -> dict:
-    """Helper to fetch full metadata for a single video URL."""
-    # Two key choices vs. the search-path config:
-    #   * `format='bestvideo/best'` — even with download=False, yt-dlp still
-    #     runs format-selection during extract_info() to populate the `format`
-    #     field of the returned dict. Without a permissive selector, recent
-    #     YouTube backends return only audio+video DASH pairs that fail the
-    #     default-selector's merge check and raise "Requested format is not
-    #     available". `bestvideo/best` matches any video-only stream first,
-    #     falling back to any combined stream — both always exist.
-    #   * No `extractor_args` override — YouTube has been retiring legacy
-    #     player_clients (the old `android` endpoint in particular), and
-    #     pinning to a stale whitelist breaks faster than letting yt-dlp's
-    #     default client-rotation logic pick whatever YouTube is serving
-    #     this week.
+    """Helper to fetch full metadata for a single video URL.
+
+    YouTube has been migrating its responses to SABR (Server-Adaptive
+    BitRate) streams that yt-dlp's default selector can't pick, so a
+    naive ``extract_info(download=False)`` raises:
+
+        ERROR: [youtube] xyz: Requested format is not available.
+
+    even though we only want metadata. The combination below has been
+    the most reliable workaround:
+
+      * ``player_client=['tv', 'web_safari']`` — these two clients still
+        serve progressive (non-SABR) formats, so the format list isn't
+        empty when yt-dlp runs its selector.
+      * ``format='bestvideo/best/b/w'`` — an aggressively permissive
+        fallback chain. ``bestvideo`` matches any video-only stream;
+        ``best`` matches any combined stream; ``b``/``w`` are the
+        single-format aliases. At least one of the four always matches
+        whenever the format list has *anything* in it.
+      * ``allow_unplayable_formats=True`` — accept entries yt-dlp would
+        otherwise reject (DRM-flagged, geo-restricted, etc.) so we
+        still see their resolution metadata for the inspect button.
+    """
     ydl_opts = {
         'logger': _QuietLogger(),
         'quiet': True,
@@ -189,7 +198,13 @@ def _fetch_full_info(url: str) -> dict:
         'skip_download': True,
         'extract_flat': False,
         'socket_timeout': 15,
-        'format': 'bestvideo/best',
+        'format': 'bestvideo/best/b/w',
+        'allow_unplayable_formats': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['tv', 'web_safari'],
+            },
+        },
         **_get_cookie_opts(),
     }
     try:
