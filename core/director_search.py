@@ -51,6 +51,11 @@ def _fetch_query(query: str, source: str, api_key: str, num_results: int,
             results = search_pixabay(query, api_key, num_results, errors=errors)
         elif source == 'youtube':
             results = search_youtube_data_api(query, api_key, num_results, errors=errors, min_height=min_height)
+        elif source == 'youtube_classic':
+            # api_key is ignored — yt-dlp doesn't need one. Routing through
+            # _fetch_query lets multiple shots that share a query (e.g.
+            # "car engine") hit the cache instead of duplicating the search.
+            results = search_youtube_classic(query, num_results, errors=errors, min_height=min_height)
         for r in results:
             r['matched_query'] = query
     finally:
@@ -182,13 +187,19 @@ def _process_shot(
                 results.append(item)
 
     # Run all stock-API jobs + YouTube Classic jobs in one shared pool.
+    # YouTube Classic now also flows through _fetch_query so identical
+    # queries across shots hit the shared cross-shot cache instead of
+    # firing duplicate yt-dlp searches.
     all_futures = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=inner_workers) as ex:
         for q, src, key, n in jobs:
             f = ex.submit(_fetch_query, q, src, key, n, errors, min_height)
             all_futures[f] = ('stock', q, src)
         for q in yt_classic_jobs:
-            f = ex.submit(search_youtube_classic, q, youtube_search_num_results, errors, min_height)
+            f = ex.submit(
+                _fetch_query, q, 'youtube_classic', '',
+                youtube_search_num_results, errors, min_height,
+            )
             all_futures[f] = ('yt_classic', q, None)
 
         for future in concurrent.futures.as_completed(all_futures):
@@ -275,8 +286,11 @@ def fetch_director_footage(
     # worker threads can inherit it and avoid "missing ScriptRunContext" noise.
     _st_ctx = _get_st_ctx()
 
-    # Per-shot inner concurrency: one thread per (query × source) job.
-    inner_workers = max_workers
+    # Per-shot inner concurrency: capped so the multiplication of
+    #   outer × inner × (yt-dlp internal pool of up to 6)
+    # doesn't spawn hundreds of concurrent network threads, which causes
+    # socket exhaustion and rate-limit cascades.
+    inner_workers = min(max_workers, 4)
 
     def _run_shot(shot: dict) -> None:
         # Propagate Streamlit session context so st.* calls inside the
@@ -307,8 +321,13 @@ def fetch_director_footage(
                 completed[0] += 1
                 progress_callback(completed[0] / progress_total)
 
-    # Outer parallelism: all shots concurrently.
-    outer_workers = min(len(work_shots), max(max_workers, 16))
+    # Outer parallelism: shots concurrently. Capped low (4) because each
+    # shot itself runs `inner_workers` query jobs, and YouTube-classic
+    # queries can each spawn a yt-dlp metadata pool of up to 6 — the
+    # multiplication previously produced 200+ concurrent network threads
+    # which exhausted sockets and triggered rate-limits faster than the
+    # actual fetches could complete.
+    outer_workers = min(len(work_shots), max_workers, 4)
     if work_shots:
         with concurrent.futures.ThreadPoolExecutor(max_workers=outer_workers) as executor:
             futures = {executor.submit(_run_shot, shot): shot for shot in work_shots}

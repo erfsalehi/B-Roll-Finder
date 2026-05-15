@@ -299,6 +299,11 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
             future_to_item: dict = {}
             pending:        set  = set()
 
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=MAX_CONCURRENT,
+                thread_name_prefix="ytmeta",
+            )
+
             def _submit_next() -> None:
                 while still_needed and len(pending) < MAX_CONCURRENT and not _have_enough():
                     item = still_needed.pop(0)
@@ -306,7 +311,7 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
                     pending.add(f)
                     future_to_item[f] = item
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as executor:
+            try:
                 _submit_next()
 
                 while pending and not _have_enough():
@@ -325,10 +330,13 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
                         except Exception:
                             pass
                         _submit_next()
-
-                # Cancel futures we no longer need
-                for f in pending:
-                    f.cancel()
+            finally:
+                # Once we have enough results we don't want to wait for any
+                # in-flight yt-dlp metadata fetches — those are slow blocking
+                # network calls and the implicit `with`-block shutdown(wait=True)
+                # was a major source of stalls. Drop unstarted work and let
+                # already-running fetches finish as orphan daemon threads.
+                executor.shutdown(wait=False, cancel_futures=True)
 
         return shorts_final + longs_final
 
