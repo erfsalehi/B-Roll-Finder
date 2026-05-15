@@ -169,6 +169,19 @@ def _yt_thumbnail(url: str, entry: dict) -> str:
 
 def _fetch_full_info(url: str) -> dict:
     """Helper to fetch full metadata for a single video URL."""
+    # Two key choices vs. the search-path config:
+    #   * `format='bestvideo/best'` — even with download=False, yt-dlp still
+    #     runs format-selection during extract_info() to populate the `format`
+    #     field of the returned dict. Without a permissive selector, recent
+    #     YouTube backends return only audio+video DASH pairs that fail the
+    #     default-selector's merge check and raise "Requested format is not
+    #     available". `bestvideo/best` matches any video-only stream first,
+    #     falling back to any combined stream — both always exist.
+    #   * No `extractor_args` override — YouTube has been retiring legacy
+    #     player_clients (the old `android` endpoint in particular), and
+    #     pinning to a stale whitelist breaks faster than letting yt-dlp's
+    #     default client-rotation logic pick whatever YouTube is serving
+    #     this week.
     ydl_opts = {
         'logger': _QuietLogger(),
         'quiet': True,
@@ -176,7 +189,7 @@ def _fetch_full_info(url: str) -> dict:
         'skip_download': True,
         'extract_flat': False,
         'socket_timeout': 15,
-        'extractor_args': _YT_EXTRACTOR_ARGS,
+        'format': 'bestvideo/best',
         **_get_cookie_opts(),
     }
     try:
