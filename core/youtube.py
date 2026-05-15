@@ -213,7 +213,17 @@ def _fetch_full_info(url: str) -> dict:
         # we can read formats from the other clients' responses.
         'extractor_args': {
             'youtube': {
-                'player_client': ['default', 'tv', 'mweb'],
+                # 'tv_simply' is listed first because YouTube ships its
+                # high-res DASH URLs to that client **without** the
+                # n-parameter JS challenge that protects the URLs every
+                # other client receives. Without a working JS runtime
+                # (Deno / Node / phantomjs), n-challenge solving fails
+                # silently and every challenge-protected format is
+                # dropped — which is why probes return 320x180 even
+                # though 1080p actually exists. tv_simply gives us a
+                # working fallback even on machines with no JS runtime
+                # installed.
+                'player_client': ['tv_simply', 'default', 'tv', 'mweb'],
             },
         },
         # DASH is where the high-res entries live — explicit True even
