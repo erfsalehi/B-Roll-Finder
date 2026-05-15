@@ -85,7 +85,8 @@ class _QuietLogger:
 
 def _extract_info_with_backoff(ydl_opts: dict, target: str,
                                 max_attempts: int = 6,
-                                maximum_backoff: float = 32.0):
+                                maximum_backoff: float = 32.0,
+                                **extract_kwargs):
     """Run ``yt-dlp``'s extract_info with truncated exponential backoff.
 
     Retries only on HTTP 429 ("Too Many Requests") and HTTP 503 ("Service
@@ -100,12 +101,14 @@ def _extract_info_with_backoff(ydl_opts: dict, target: str,
 
     Per attempt a fresh ``yt_dlp.YoutubeDL`` is opened so cookie state and
     extractor caches stay isolated between retries.
+
+    Extra kwargs (e.g. ``process=False``) flow through to ``extract_info``.
     """
     last_exc: Exception | None = None
     for attempt in range(max_attempts):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(target, download=False)
+                return ydl.extract_info(target, download=False, **extract_kwargs)
         except Exception as e:
             last_exc = e
             error_msg = str(e).lower()
@@ -170,26 +173,23 @@ def _yt_thumbnail(url: str, entry: dict) -> str:
 def _fetch_full_info(url: str) -> dict:
     """Helper to fetch full metadata for a single video URL.
 
-    YouTube has been migrating its responses to SABR (Server-Adaptive
-    BitRate) streams that yt-dlp's default selector can't pick, so a
-    naive ``extract_info(download=False)`` raises:
+    Key trick: we call ``extract_info`` with ``process=False`` so yt-dlp
+    skips its internal format-selection step entirely. That step is
+    what raises:
 
         ERROR: [youtube] xyz: Requested format is not available.
 
-    even though we only want metadata. The combination below has been
-    the most reliable workaround:
+    when YouTube returns only SABR (Server-Adaptive BitRate) streams
+    that yt-dlp's selector can't pick from. Since we only need
+    resolution metadata (not playback), there's no reason to run
+    selection at all — we just want the raw ``formats`` list. With
+    ``process=False`` the call essentially behaves like a list-formats
+    probe: every format yt-dlp could extract is returned, no merge or
+    playability check is attempted, and the error becomes impossible.
 
-      * ``player_client=['tv', 'web_safari']`` — these two clients still
-        serve progressive (non-SABR) formats, so the format list isn't
-        empty when yt-dlp runs its selector.
-      * ``format='bestvideo/best/b/w'`` — an aggressively permissive
-        fallback chain. ``bestvideo`` matches any video-only stream;
-        ``best`` matches any combined stream; ``b``/``w`` are the
-        single-format aliases. At least one of the four always matches
-        whenever the format list has *anything* in it.
-      * ``allow_unplayable_formats=True`` — accept entries yt-dlp would
-        otherwise reject (DRM-flagged, geo-restricted, etc.) so we
-        still see their resolution metadata for the inspect button.
+    After extraction we backfill top-level ``height``/``width``/
+    ``resolution`` from the formats list, because skipping ``process``
+    also means yt-dlp doesn't set those convenience fields itself.
     """
     ydl_opts = {
         'logger': _QuietLogger(),
@@ -198,23 +198,32 @@ def _fetch_full_info(url: str) -> dict:
         'skip_download': True,
         'extract_flat': False,
         'socket_timeout': 15,
-        'format': 'bestvideo/best/b/w',
-        'allow_unplayable_formats': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv', 'web_safari'],
-            },
-        },
         **_get_cookie_opts(),
     }
     try:
-        return _extract_info_with_backoff(ydl_opts, url) or {}
+        info = _extract_info_with_backoff(ydl_opts, url, process=False) or {}
     except Exception as e:
         # _QuietLogger silenced yt-dlp's own stderr — surface the actual
         # exception here so callers (Step 5 inspect button, slow-path
         # resolution filter) can be debugged.
         print(f"\n[Deep Fetch Failed] URL: {url} | Error: {e}\n")
         return {}
+
+    # process=False returns raw extracted info. Backfill the convenience
+    # fields callers expect (top-level height/width/resolution) from the
+    # formats list so behaviour matches the old process=True shape.
+    formats = info.get('formats') or []
+    if formats:
+        heights = [f.get('height') for f in formats if f.get('height')]
+        widths = [f.get('width') for f in formats if f.get('width')]
+        if heights and not info.get('height'):
+            info['height'] = max(heights)
+        if widths and not info.get('width'):
+            info['width'] = max(widths)
+        if not info.get('resolution') and info.get('width') and info.get('height'):
+            info['resolution'] = f"{info['width']}x{info['height']}"
+
+    return info
 
 def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3, errors: list = None, min_height: int = 0) -> list:
     """
