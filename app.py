@@ -2793,11 +2793,39 @@ elif app_mode in ["Director", "Smart Mode"]:
             
             if st.session_state.text_overlays:
                 st.subheader("Fine-tune Overlays & SFX")
-                # Data Editor for fine-tuning
-                # We use the session state directly. To avoid refreshing/losing focus on edits, 
-                # we don't write back to session_state.text_overlays on every rerun.
-                edited_df = st.data_editor(st.session_state.text_overlays, num_rows="dynamic", use_container_width=True, key="ov_editor")
-                # st.session_state.text_overlays = edited_df.to_dict('records') # REMOVED to prevent refresh loop
+                # Editable data table. The previous version commented out the
+                # write-back to session_state to "prevent refresh loop", but
+                # that meant edits never persisted — the user could change a
+                # row but the next downstream step (PNG generation, FCPXML
+                # export, etc.) still saw the original AI-extracted data.
+                #
+                # Refresh-loop fix: only write back when the edited data
+                # genuinely differs from what's already in session state.
+                # If we wrote back unconditionally Streamlit would detect a
+                # session_state change on every rerun and bounce the data
+                # editor's widget value, causing the cursor to jump out of
+                # the cell mid-edit. The equality guard breaks that loop —
+                # writes happen only on actual changes, no-ops on identity.
+                edited_df = st.data_editor(
+                    st.session_state.text_overlays,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="ov_editor",
+                )
+                # data_editor returns a DataFrame when input is dict-list AND
+                # the editor added/removed rows in some Streamlit versions;
+                # normalise to a list-of-dicts for the equality check and the
+                # downstream PNG generator (which iterates dicts).
+                if edited_df is not None:
+                    if hasattr(edited_df, "to_dict"):
+                        _new_overlays = edited_df.to_dict("records")
+                    elif isinstance(edited_df, list):
+                        _new_overlays = edited_df
+                    else:
+                        _new_overlays = list(edited_df)
+                    if _new_overlays != st.session_state.text_overlays:
+                        st.session_state.text_overlays = _new_overlays
+                        save_cache()
                 
                 st.divider()
                 st.subheader("Visual Settings")
