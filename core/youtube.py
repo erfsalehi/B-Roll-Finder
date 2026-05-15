@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+import random
 import glob
 
 
@@ -82,6 +83,53 @@ class _QuietLogger:
     def error(self, msg):   pass
 
 
+def _extract_info_with_backoff(ydl_opts: dict, target: str,
+                                max_attempts: int = 6,
+                                maximum_backoff: float = 32.0):
+    """Run ``yt-dlp``'s extract_info with truncated exponential backoff.
+
+    Retries only on HTTP 429 ("Too Many Requests") and HTTP 503 ("Service
+    Unavailable") — the two responses YouTube uses when it's actively
+    rate-limiting or shedding load. Any other error (deleted video, bad
+    cookies, geo-block, etc.) is re-raised immediately so the caller's
+    existing handlers (e.g. DPAPI fallback) still get to run.
+
+    The wait formula matches Google's recommended pattern:
+        min((2 ** attempt) + jitter, maximum_backoff)
+    where ``jitter`` is uniform in [0, 1) seconds.
+
+    Per attempt a fresh ``yt_dlp.YoutubeDL`` is opened so cookie state and
+    extractor caches stay isolated between retries.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(target, download=False)
+        except Exception as e:
+            last_exc = e
+            error_msg = str(e).lower()
+            is_rate_limited = (
+                "http error 429" in error_msg
+                or "http error 503" in error_msg
+                or "too many requests" in error_msg
+            )
+            if not is_rate_limited or attempt >= max_attempts - 1:
+                raise
+            wait = min((2 ** attempt) + random.uniform(0, 1), maximum_backoff)
+            print(
+                f"[yt-dlp] Rate limit hit for '{target}'. "
+                f"Backing off for {wait:.2f}s "
+                f"(attempt {attempt + 1}/{max_attempts})."
+            )
+            time.sleep(wait)
+    # Should be unreachable, but kept as a defensive fallback so static
+    # analyzers don't think the function can return None implicitly.
+    if last_exc is not None:
+        raise last_exc
+    return None
+
+
 _YT_EXTRACTOR_ARGS = {
     'youtube': {
         # Prefer clients that serve traditional (non-SABR) formats so
@@ -132,8 +180,7 @@ def _fetch_full_info(url: str) -> dict:
         **_get_cookie_opts(),
     }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=False)
+        return _extract_info_with_backoff(ydl_opts, url)
     except Exception:
         return {}
 
@@ -180,8 +227,9 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
     }
 
     try:
-        with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch{search_pool_size}:{keyword}", download=False)
+        info = _extract_info_with_backoff(
+            ydl_search_opts, f"ytsearch{search_pool_size}:{keyword}"
+        )
 
         initial_candidates = []
         for entry in (info.get('entries') or []):
