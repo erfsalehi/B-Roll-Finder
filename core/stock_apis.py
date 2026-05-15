@@ -346,3 +346,70 @@ def fetch_youtube_definition(video_url_or_id: str, api_key: str,
         if errors is not None:
             errors.append(msg)
         return "unknown"
+
+
+def fetch_youtube_definitions_batch(video_urls_or_ids: list, api_key: str,
+                                     errors: list = None) -> dict:
+    """Batch-lookup HD/SD definition for many videos in a single API call.
+
+    YouTube Data API's ``videos.list`` accepts up to 50 video IDs in a
+    single ``id=`` parameter and costs **1 quota unit per call** regardless
+    of how many IDs are inside. That makes this 50× cheaper than calling
+    :func:`fetch_youtube_definition` in a loop — perfect for the Step 5
+    "check all clips in this shot" button.
+
+    Returns a dict keyed by the **caller's original input** (URL or bare
+    ID) mapped to ``"hd"`` / ``"sd"`` / ``"unknown"``. Missing inputs
+    (couldn't parse a video ID) map to ``"unknown"``.
+    """
+    if not api_key or not video_urls_or_ids:
+        return {inp: "unknown" for inp in (video_urls_or_ids or [])}
+
+    import re as _re
+
+    # Parse each input to a video ID, remembering the mapping so we can
+    # return the result keyed by what the caller passed in.
+    input_to_id: dict = {}
+    for inp in video_urls_or_ids:
+        if not inp:
+            continue
+        if isinstance(inp, str) and len(inp) == 11 and _re.match(r'^[A-Za-z0-9_-]{11}$', inp):
+            input_to_id[inp] = inp
+            continue
+        m = _re.search(r'(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})', inp or "")
+        if m:
+            input_to_id[inp] = m.group(1)
+
+    unique_ids = list({vid for vid in input_to_id.values()})
+    id_to_def: dict = {}
+
+    BATCH = 50  # YouTube Data API hard limit
+    url = "https://www.googleapis.com/youtube/v3/videos"
+    for start in range(0, len(unique_ids), BATCH):
+        batch = unique_ids[start:start + BATCH]
+        params = {
+            "part": "contentDetails",
+            "id": ",".join(batch),
+            "maxResults": BATCH,
+            "key": api_key,
+        }
+        try:
+            response = _http_get_with_retry(url, params=params, timeout=15)
+            data = response.json()
+            for item in data.get("items", []):
+                vid_id = item.get("id")
+                defn = (item.get("contentDetails") or {}).get("definition", "unknown")
+                if vid_id:
+                    id_to_def[vid_id] = defn
+        except Exception as e:
+            msg = f"YouTube Data API batch lookup failed (batch {start}-{start+len(batch)}): {e}"
+            print(msg)
+            if errors is not None:
+                errors.append(msg)
+
+    # Map back to the caller's input keys; anything we couldn't parse
+    # or couldn't fetch defaults to 'unknown'.
+    return {
+        inp: id_to_def.get(input_to_id.get(inp), "unknown")
+        for inp in video_urls_or_ids
+    }
