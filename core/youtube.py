@@ -198,6 +198,25 @@ def _fetch_full_info(url: str) -> dict:
         'skip_download': True,
         'extract_flat': False,
         'socket_timeout': 15,
+        # Force a multi-client query. YouTube serves different format
+        # lists depending on which player_client yt-dlp identifies as:
+        # 'web' often returns only low-res progressive streams (which
+        # is why probing a 1080p video could come back as 320x180), while
+        # 'ios', 'tv', and 'mweb' return higher-resolution DASH entries.
+        # yt-dlp queries each client in turn and merges their format
+        # lists during _real_extract — *before* the process step we've
+        # disabled — so this is safe to use alongside process=False.
+        # The full merged list is then available via info['formats']
+        # for our height/width backfill below.
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['default', 'tv', 'mweb', 'ios'],
+            },
+        },
+        # DASH is where the high-res entries live — explicit True even
+        # though it's the yt-dlp default, in case a future release
+        # flips the default.
+        'youtube_include_dash_manifest': True,
         **_get_cookie_opts(),
     }
     try:
