@@ -2232,10 +2232,17 @@ elif app_mode in ["Director", "Smart Mode"]:
                                             help="Probe YouTube for the maximum resolution this video actually offers. Useful when the gallery says 'Resolution Unknown'.",
                                         ):
                                             with st.spinner("Checking…"):
-                                                from core.youtube import _fetch_full_info_cached
+                                                from core.youtube import _fetch_full_info_cached, infer_video_resolution
                                                 full_info = _fetch_full_info_cached(cand["url"])
                                             if full_info:
-                                                cand["height"] = full_info.get("height") or 0
+                                                # infer_video_resolution detects when yt-dlp returned
+                                                # only storyboard formats (the n-challenge-failure
+                                                # case) and maps the storyboard sheet height back
+                                                # to the likely source video resolution — so the
+                                                # user sees "1080p" instead of "180p" even when
+                                                # the JS solver couldn't unlock the real video
+                                                # format URLs.
+                                                cand["height"] = infer_video_resolution(full_info)
                                                 if full_info.get("width"):
                                                     cand["width"] = full_info.get("width")
                                                 cand["available_resolutions"] = sorted(

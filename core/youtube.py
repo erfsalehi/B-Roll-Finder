@@ -267,6 +267,71 @@ def _fetch_full_info(url: str) -> dict:
 
     return info
 
+
+# ── Storyboard-aware resolution inference ────────────────────────────────────
+# When yt-dlp's JS solver fails (n-challenge missing, runtime not on PATH,
+# etc.) the formats list comes back with only storyboard entries — small
+# preview-thumbnail sheets used by the scrubber. Their reported heights
+# (90, 180, 360) correlate roughly with the *source video* resolution but
+# aren't the same thing. This map captures the typical correspondence
+# observed in the wild on YouTube:
+#
+#     storyboard sheet height → likely source video resolution
+#
+# Pairs not in the table fall through unchanged. Storyboard heights that
+# could plausibly be real video resolutions (360, 720) are mapped only
+# when we're confident no real video formats came back from yt-dlp.
+_STORYBOARD_TO_RESOLUTION = {
+    45:  480,
+    90:  720,
+    180: 1080,
+    270: 1440,
+    360: 1440,
+    540: 2160,
+    720: 2160,
+}
+
+
+def _is_real_video_format(fmt: dict) -> bool:
+    """True if this format entry represents an actual video stream (not a
+    storyboard sheet or an audio-only track)."""
+    if (fmt.get("format_id") or "").startswith("sb"):
+        return False
+    if fmt.get("protocol") == "mhtml":
+        return False
+    vcodec = fmt.get("vcodec")
+    if vcodec in (None, "none"):
+        return False
+    return bool(fmt.get("height"))
+
+
+def infer_video_resolution(info: dict) -> int:
+    """Return the best estimate of the *source video* resolution from an
+    info_dict returned by ``_fetch_full_info``.
+
+    Logic:
+      1. If the formats list contains real video formats (vcodec set,
+         non-mhtml protocol, non-sb format_id) → take ``max(height)`` of
+         those. yt-dlp's JS solver worked; the number is reliable.
+      2. Otherwise the formats list is storyboard-only → look up the
+         largest storyboard sheet height in ``_STORYBOARD_TO_RESOLUTION``
+         to recover the likely source video resolution.
+      3. If neither applies → return whatever ``info['height']`` already
+         has (0 if missing).
+    """
+    if not info:
+        return 0
+    formats = info.get("formats") or []
+    real = [f for f in formats if _is_real_video_format(f)]
+    if real:
+        heights = [f["height"] for f in real if f.get("height")]
+        return max(heights) if heights else (info.get("height") or 0)
+    # Storyboard-only path: find the largest storyboard height we have
+    sb_heights = [f.get("height") for f in formats if f.get("height")]
+    raw = max(sb_heights) if sb_heights else (info.get("height") or 0)
+    return _STORYBOARD_TO_RESOLUTION.get(raw, raw)
+
+
 def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3, errors: list = None, min_height: int = 0) -> list:
     """
     Uses yt-dlp to search for a single keyword and returns a mix of shorts and long videos.
