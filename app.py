@@ -201,6 +201,26 @@ def _render_chunk_status_final():
         _render_chunk_status_body()
     st.session_state.is_fetching = False
 
+
+# ── Quality-selectbox label formatter ────────────────────────────────────────
+# The Quality dropdowns in the downloader (Classic Step 6 / Global / Director
+# Step 6) all share the same option list. The raw values like "1080p" are
+# ambiguous — they read as "exactly 1080p" but actually mean "best stream
+# capped at 1080p". This format_func makes that explicit in the UI without
+# changing the underlying option strings, so the backend (download_video)
+# and any cached selections in session state keep working unchanged.
+_QUALITY_LABELS = {
+    "Best":  "Best available (no cap — may be 4K)",
+    "1080p": "Best up to 1080p",
+    "720p":  "Best up to 720p",
+    "480p":  "Best up to 480p",
+    "Worst": "Worst (smallest, fastest)",
+}
+
+
+def _quality_label(opt: str) -> str:
+    return _QUALITY_LABELS.get(opt, opt)
+
 def toggle_global_pick(url):
     if 'picked_global_urls' not in st.session_state:
         st.session_state.picked_global_urls = set()
@@ -764,7 +784,13 @@ def render_classic_mode():
     st.header("Step 6: Download Videos")
     col_vid1, col_vid2, col_vid3, col_vid4, col_vid5 = st.columns(5)
     with col_vid1:
-        video_quality = st.selectbox("Video Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0)
+        video_quality = st.selectbox(
+            "Video Quality",
+            ["1080p", "720p", "480p", "Best", "Worst"],
+            index=0,
+            format_func=_quality_label,
+            help="Each option downloads the BEST stream available within that cap. '1080p' = best stream up to 1080p (not exactly 1080p).",
+        )
     with col_vid2:
         strict_quality = st.checkbox("Strict Quality", value=False)
     with col_vid3:
@@ -958,7 +984,14 @@ def render_classic_mode():
             g_pixabay = st.number_input("Pixabay", value=2, min_value=0, max_value=5, key="g_pix")
         with col_gsrc3:
             st.write("**Quality**")
-            g_vq = st.selectbox("Quality", ["1080p", "720p", "480p", "Best", "Worst"], index=0, key="g_vq")
+            g_vq = st.selectbox(
+                "Quality",
+                ["1080p", "720p", "480p", "Best", "Worst"],
+                index=0,
+                key="g_vq",
+                format_func=_quality_label,
+                help="Each option downloads the BEST stream available within that cap. '1080p' = best stream up to 1080p (not exactly 1080p).",
+            )
             g_strict = st.checkbox("Strict Quality", value=False, key="g_strict")
             g_max_size = st.number_input("Max Size (MB)", value=100, min_value=1, key="g_size")
         c_gf1, c_gf2 = st.columns(2)
@@ -2370,7 +2403,13 @@ elif app_mode in ["Director", "Smart Mode"]:
         # Live-bound settings — read on each render so retry/new-download both see them.
         col_dv1, col_dv2, col_dv3, col_dv4 = st.columns(4)
         with col_dv1:
-            d_quality  = st.selectbox("Quality", ["1080p", "720p", "480p", "Best", "Worst"], key="d_vq")
+            d_quality  = st.selectbox(
+                "Quality",
+                ["1080p", "720p", "480p", "Best", "Worst"],
+                key="d_vq",
+                format_func=_quality_label,
+                help="Each option downloads the BEST stream available within that cap. '1080p' = best stream up to 1080p (not exactly 1080p).",
+            )
         with col_dv2:
             d_max_size = st.number_input("Max Size (MB)", value=200, min_value=1, key="d_maxsize")
         with col_dv3:
