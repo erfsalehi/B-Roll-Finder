@@ -16,10 +16,12 @@ tqdm
 # YouTube obfuscates high-res DASH URLs with a JS-based n-parameter challenge.
 # Without a runtime + solver, yt-dlp drops every challenge-protected format
 # and the resolution probe in Step 5 returns ~360p even for 1080p/4K videos.
-#   * deno-bin   — packages Deno (~25 MB single binary) as a pip wheel; adds
-#                  `deno` to the venv's Scripts/bin dir so yt-dlp auto-detects
-#                  it on PATH. Cross-platform (Win/Mac/Linux).
+#   * nodejs-bin — packages Node.js as a pip wheel; adds `node` to the venv's
+#                  Scripts/bin dir so yt-dlp auto-detects it on PATH. Cross-
+#                  platform (Win/Mac/Linux). (Deno would be lighter, but
+#                  `deno-bin` is not on PyPI — nodejs-bin is the closest
+#                  pip-installable equivalent.)
 #   * yt-dlp-ejs — the official External JavaScript Solver script distribution
 #                  referenced in https://github.com/yt-dlp/yt-dlp/wiki/EJS .
-deno-bin
+nodejs-bin
 yt-dlp-ejs
