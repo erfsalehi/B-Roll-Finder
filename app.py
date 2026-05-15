@@ -2215,6 +2215,48 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     if st.button("🎬 Preview", key=f"prev_{slot_id}_{i_g+j_g}"): st.video(cand.get("segment_path"))
                                 else:
                                     st.markdown(f'<a href="{url}" target="_blank" style="text-decoration:none;font-size:12px;">📺 Watch</a>', unsafe_allow_html=True)
+                                # ── Inspect exact resolution (YouTube clips only) ──
+                                # Step 3's fast-path search doesn't fetch per-video
+                                # resolution unless min_height>0, so YT cards often
+                                # show "Resolution Unknown". This lets the editor
+                                # probe a single clip on demand (one extra yt-dlp
+                                # call, cached for the session via
+                                # _fetch_full_info_cached) without paying that cost
+                                # up-front for every candidate.
+                                if cand.get("source") == "youtube":
+                                    if not cand.get("exact_res_checked"):
+                                        if st.button(
+                                            "🔍 Check Exact Resolution",
+                                            key=f"check_res_{slot_id}_{hash(cand_url)}",
+                                            use_container_width=True,
+                                            help="Probe YouTube for the maximum resolution this video actually offers. Useful when the gallery says 'Resolution Unknown'.",
+                                        ):
+                                            with st.spinner("Checking…"):
+                                                from core.youtube import _fetch_full_info_cached
+                                                full_info = _fetch_full_info_cached(cand["url"])
+                                            if full_info:
+                                                cand["height"] = full_info.get("height") or 0
+                                                if full_info.get("width"):
+                                                    cand["width"] = full_info.get("width")
+                                                cand["available_resolutions"] = sorted(
+                                                    {f.get("height") for f in full_info.get("formats", []) if f.get("height")},
+                                                    reverse=True,
+                                                )
+                                                cand["exact_res_checked"] = True
+                                                save_cache()
+                                                st.rerun(scope="app")
+                                            else:
+                                                # Don't mark as checked on failure — let the
+                                                # user retry. _fetch_full_info_cached returns
+                                                # {} when yt-dlp gives up after the 429/503
+                                                # backoff ladder exhausts.
+                                                st.warning("Could not retrieve resolution (rate-limited or video unavailable). Try again in a moment.")
+                                    else:
+                                        h = cand.get("height") or 0
+                                        if h > 0:
+                                            st.caption(f"**Exact Resolution:** {h}p")
+                                        else:
+                                            st.caption("**Exact Resolution:** unknown")
                                 btn_label = "✅ SELECTED" if is_picked else "⬜ PICK CLIP"
                                 if st.button(btn_label, key=f"galpick_{slot_id}_{hash(cand.get('url'))}", use_container_width=True, type="primary" if is_picked else "secondary"):
                                     was_selected = cand_url in sel_urls
