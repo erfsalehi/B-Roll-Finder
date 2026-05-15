@@ -60,7 +60,13 @@ def _fetch_query(query: str, source: str, api_key: str, num_results: int,
             r['matched_query'] = query
     finally:
         with _query_cache_lock:
-            _query_cache[cache_key] = results
+            # Only cache successful results. An empty list almost always
+            # means the call failed (network blip, rate-limit, exception);
+            # caching it would make Retry Empty re-hit the empty cache
+            # forever instead of actually re-querying. Truly "no matches"
+            # queries are rare enough that re-issuing them on retry is fine.
+            if results:
+                _query_cache[cache_key] = results
             _query_pending.pop(cache_key, None)
         evt.set()
 
