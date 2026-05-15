@@ -180,8 +180,12 @@ def _fetch_full_info(url: str) -> dict:
         **_get_cookie_opts(),
     }
     try:
-        return _extract_info_with_backoff(ydl_opts, url)
-    except Exception:
+        return _extract_info_with_backoff(ydl_opts, url) or {}
+    except Exception as e:
+        # _QuietLogger silenced yt-dlp's own stderr — surface the actual
+        # exception here so callers (Step 5 inspect button, slow-path
+        # resolution filter) can be debugged.
+        print(f"\n[Deep Fetch Failed] URL: {url} | Error: {e}\n")
         return {}
 
 def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3, errors: list = None, min_height: int = 0) -> list:
