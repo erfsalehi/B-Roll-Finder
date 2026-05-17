@@ -622,32 +622,43 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
     # Format selector: video-only by default (no_audio=True) — skips downloading
     # a separate audio stream and the subsequent FFmpeg merge, roughly halving
     # download time. Falls back progressively to avoid "format not available".
+    #
+    # The last two tiers are unfiltered safety nets: bv*+ba*/b are yt-dlp's
+    # wildcard forms that match any video-or-audio stream and any combined
+    # stream respectively. Without them, YouTube videos that only ship
+    # DASH manifests (no progressive file) and don't match the codec filter
+    # at the requested height surface as "Requested format is not available".
     if no_audio:
         format_selector = (
             f"bestvideo{q_filter}[vcodec^=avc1]"   # H.264 video only (Premiere Pro ideal)
             f"/bestvideo{q_filter}"                  # any codec at target res
-            f"/best{q_filter}"                       # combined stream fallback
+            f"/best{q_filter}"                       # combined stream at target res
+            f"/bestvideo"                            # any video at any res
+            f"/bv*"                                  # wildcard: any stream with video
             f"/best"                                 # absolute fallback
         )
         if quality == 'Worst':
-            format_selector = 'worstvideo/worst'
+            format_selector = 'worstvideo/bv*/worst/b'
         elif quality == 'Best':
-            format_selector = 'bestvideo[vcodec^=avc1]/bestvideo/best'
+            format_selector = 'bestvideo[vcodec^=avc1]/bestvideo/bv*/best'
     else:
         format_selector = (
             f"bestvideo{q_filter}[vcodec^=avc1]+bestaudio[acodec^=mp4a]"
             f"/bestvideo{q_filter}[vcodec^=avc1]+bestaudio"
             f"/bestvideo{q_filter}+bestaudio"
             f"/best{q_filter}"
-            f"/best"
+            f"/bestvideo+bestaudio"                  # any res, separate streams
+            f"/bv*+ba*"                              # wildcard merge
+            f"/best"                                 # absolute fallback
         )
         if quality == 'Worst':
-            format_selector = 'worstvideo+worstaudio/worst'
+            format_selector = 'worstvideo+worstaudio/wv*+wa*/worst/b'
         elif quality == 'Best':
             format_selector = (
                 'bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]'
                 '/bestvideo[vcodec^=avc1]+bestaudio'
-                '/bestvideo+bestaudio/best'
+                '/bestvideo+bestaudio'
+                '/bv*+ba*/best'
             )
 
     def my_hook(d):
