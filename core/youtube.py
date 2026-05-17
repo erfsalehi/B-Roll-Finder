@@ -135,9 +135,10 @@ def _extract_info_with_backoff(ydl_opts: dict, target: str,
 
 _YT_EXTRACTOR_ARGS = {
     'youtube': {
-        # Prefer clients that serve traditional (non-SABR) formats so
-        # yt-dlp can inspect the format list without "format not available" errors.
-        'player_client': ['web', 'tv_embedded', 'android'],
+        # YouTube (2025+) broke the 'web' client without a JS runtime and
+        # rate-limited 'android'. Prefer clients that still return full
+        # format lists without a JS runtime.
+        'player_client': ['android_vr', 'tv_simply', 'tv_embedded', 'web', 'mweb'],
     }
 }
 
@@ -706,10 +707,13 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         },
         'extractor_args': {
             'youtube': {
-                # 'web' is the most compatible client and least likely to get
-                # 403-blocked. 'tv_embedded' is a solid fallback. 'android'
-                # and 'ios' are increasingly rate-limited by YouTube (2024+).
-                'player_client': ['web', 'tv_embedded', 'android'],
+                # YouTube (2025+) broke the 'web' client without a JS runtime
+                # (needs Deno/Node for PO tokens) and rate-limited 'android'.
+                # 'android_vr' and 'tv_simply' still return full format lists
+                # without JS, so they go first. 'tv_embedded' / 'web' are
+                # kept as last-resort fallbacks in case those two are blocked
+                # for a given video.
+                'player_client': ['android_vr', 'tv_simply', 'tv_embedded', 'web', 'mweb'],
             }
         },
         # Premiere Pro compatibility: ensure standard MP4 container
