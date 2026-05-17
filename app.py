@@ -2100,16 +2100,17 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if st.button("◀ Prev", key="d_prev", disabled=idx == 0, use_container_width=True):
                     save_cache()
                     st.session_state.d_review_idx -= 1
-                    st.session_state["d_jump_top"] = jump_options[st.session_state.d_review_idx]
                     st.rerun()
             with nav2:
-                # index=idx keeps the widget in sync when Prev/Next buttons fire.
-                # We must NOT write st.session_state["d_jump_top"] here before the
-                # widget — doing so overrides the user's selection on every rerun
-                # and makes the dropdown unable to navigate anywhere.
+                # No key= on this selectbox: without an owned session-state slot
+                # the widget reinitialises to index=idx on every rerun, so it
+                # always tracks the current shot after Prev/Next navigation.
+                # Streamlit forbids writing a widget-owned key after the widget
+                # has rendered, so a key here would crash when Prev/Next buttons
+                # (which appear later in the script) tried to sync it.
                 sel_top = st.selectbox(
                     "Jump", options=jump_options, index=idx,
-                    label_visibility="collapsed", key="d_jump_top",
+                    label_visibility="collapsed",
                 )
                 new_idx_top = jump_options.index(sel_top)
                 if new_idx_top != idx:
@@ -2134,13 +2135,11 @@ elif app_mode in ["Director", "Smart Mode"]:
                 ):
                     save_cache()
                     st.session_state.d_review_idx = next_unpicked_idx
-                    st.session_state["d_jump_top"] = jump_options[next_unpicked_idx]
                     st.rerun()
             with nav5:
                 if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1, use_container_width=True):
                     save_cache()
                     st.session_state.d_review_idx += 1
-                    st.session_state["d_jump_top"] = jump_options[st.session_state.d_review_idx]
                     st.rerun()
             st.progress((idx + 1) / len(review_shots))
             # ── Bulk Actions & Quality Filter ─────────────────────────────────
@@ -2387,23 +2386,21 @@ elif app_mode in ["Director", "Smart Mode"]:
                         shot["skipped"] = False
                     save_cache(); st.rerun()
             with fa4:
+                # Same no-key pattern as the top dropdown.
                 sel_bot = st.selectbox(
                     "Jump", options=jump_options, index=idx,
-                    label_visibility="collapsed", key="d_jump_bot",
+                    label_visibility="collapsed",
                 )
                 new_idx_bot = jump_options.index(sel_bot)
                 if new_idx_bot != idx:
                     save_cache()
                     st.session_state.d_review_idx = new_idx_bot
-                    st.session_state["d_jump_top"] = jump_options[new_idx_bot]
                     st.rerun()
             with fa5:
                 if idx < len(review_shots) - 1:
                     if st.button("Save & Next ▶", key=f"d_save_next_{slot_id}", type="primary", use_container_width=True):
                         save_cache()
                         st.session_state.d_review_idx += 1
-                        st.session_state["d_jump_top"] = jump_options[st.session_state.d_review_idx]
-                        st.session_state["d_jump_bot"] = jump_options[st.session_state.d_review_idx]
                         st.rerun()
                 else:
                     if st.button("✅ Finish Review", key=f"d_finish_{slot_id}", type="primary", use_container_width=True):
@@ -2412,8 +2409,6 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if st.button("Next ▶", key=f"d_next_bot_{slot_id}", disabled=idx == len(review_shots) - 1, use_container_width=True):
                     save_cache()
                     st.session_state.d_review_idx += 1
-                    st.session_state["d_jump_top"] = jump_options[st.session_state.d_review_idx]
-                    st.session_state["d_jump_bot"] = jump_options[st.session_state.d_review_idx]
                     st.rerun()
             # 3. Shot Details / Recap (At the bottom)
             with st.container(border=True):
