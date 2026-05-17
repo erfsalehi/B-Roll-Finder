@@ -15,7 +15,10 @@ from core.output import (
     generate_transcription_srt, generate_failed_downloads_txt,
     generate_fcpxml, generate_shot_list_txt, filter_overlays_for_shots, _safe_for_fs
 )
-from core.captions import extract_highlights, create_text_overlay, get_available_fonts
+from core.captions import (
+    extract_highlights, create_text_overlay, get_available_fonts,
+    render_overlay_preview,
+)
 from core.clip_library import store_clip, search_library, get_library_stats
 from core.sfx import search_freesound, download_sfx
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
@@ -2856,11 +2859,28 @@ elif app_mode in ["Director", "Smart Mode"]:
                 # editor's widget value, causing the cursor to jump out of
                 # the cell mid-edit. The equality guard breaks that loop —
                 # writes happen only on actual changes, no-ops on identity.
+                # Ensure each overlay row has a 'size' field so the data_editor
+                # renders the per-row size column without "None" gaps in the UI.
+                # None means "use global size"; a number overrides for that row.
+                for _ov_row in st.session_state.text_overlays:
+                    _ov_row.setdefault("size", None)
                 edited_df = st.data_editor(
                     st.session_state.text_overlays,
                     num_rows="dynamic",
                     use_container_width=True,
                     key="ov_editor",
+                    column_config={
+                        "size": st.column_config.NumberColumn(
+                            "Size (px)",
+                            help=(
+                                "Per-row font size override (in 1080p pixels). "
+                                "Leave blank to use the global Font Size set below."
+                            ),
+                            min_value=20,
+                            max_value=500,
+                            step=2,
+                        ),
+                    },
                 )
                 # data_editor returns a DataFrame when input is dict-list AND
                 # the editor added/removed rows in some Streamlit versions;
@@ -2888,7 +2908,11 @@ elif app_mode in ["Director", "Smart Mode"]:
                     _font_names = list(_avail_fonts.keys()) or ["Arial Bold"]
                     _fi = _font_names.index(_ov["font_family"]) if _ov["font_family"] in _font_names else 0
                     _ov["font_family"] = st.selectbox("Font Family", _font_names, index=_fi)
-                    _ov["size"] = st.slider("Font Size", 50, 250, _ov["size"])
+                    _ov["size"] = st.slider(
+                        "Font Size (global default, px @ 1080p)",
+                        20, 500, _ov["size"],
+                        help="Used for any row that doesn't set its own Size column above.",
+                    )
                 with c_v2:
                     _ov["color"] = st.color_picker("Text Color", _ov["color"])
                     _ov["text_opacity"] = st.slider("Text Opacity", 0, 255, _ov.get("text_opacity", 255))
@@ -2934,7 +2958,136 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 cat.title(), _ov["category_colors"].get(cat, _cat_defaults[cat]),
                                 key=f"catcol_{cat}"
                             )
-                    
+
+                # ── Live 1080p preview ──────────────────────────────────────────
+                # Lets the user judge size/contrast against a real frame before
+                # committing to a full PNG batch — pulls a still from one of
+                # their downloaded clips so it looks like the actual edit.
+                with st.expander("🖼️ Live 1080p Preview", expanded=True):
+                    p_name_prev = st.session_state.get("project_name", "default")
+                    proj_folder_prev = _safe_for_fs(p_name_prev, 50)
+                    proj_dl_dir = os.path.abspath(
+                        os.path.join("downloads", "director", proj_folder_prev)
+                    )
+
+                    # Collect downloaded video files from this project (recursively
+                    # — clips may live in chunk subfolders).
+                    _video_exts = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+                    clip_paths = []
+                    if os.path.isdir(proj_dl_dir):
+                        for root, _, files in os.walk(proj_dl_dir):
+                            # Skip overlay and sfx output folders
+                            if os.path.basename(root) in ("overlays", "sfx"):
+                                continue
+                            for f in files:
+                                if f.lower().endswith(_video_exts):
+                                    clip_paths.append(os.path.join(root, f))
+                    clip_paths.sort()
+
+                    pc1, pc2 = st.columns([2, 3])
+                    with pc1:
+                        if clip_paths:
+                            _clip_labels = ["(neutral gradient)"] + [
+                                os.path.relpath(p, proj_dl_dir) for p in clip_paths
+                            ]
+                            _last_choice = st.session_state.get("ov_preview_clip", _clip_labels[0])
+                            if _last_choice not in _clip_labels:
+                                _last_choice = _clip_labels[0]
+                            picked = st.selectbox(
+                                "Background clip",
+                                _clip_labels,
+                                index=_clip_labels.index(_last_choice),
+                                key="ov_preview_clip",
+                                help="Pick a downloaded clip; a frame is grabbed at the timestamp below.",
+                            )
+                            picked_path = None if picked == _clip_labels[0] else clip_paths[_clip_labels.index(picked) - 1]
+                        else:
+                            st.info("No downloaded clips found in this project — preview will use a neutral gradient.")
+                            picked_path = None
+
+                        frame_ts = st.slider(
+                            "Frame timestamp (sec)", 0.0, 30.0,
+                            float(st.session_state.get("ov_preview_ts", 1.0)),
+                            0.5, key="ov_preview_ts",
+                        )
+
+                        # Source the sample text from the overlay rows so the
+                        # preview reflects real content. Heading rows use the
+                        # full caption; others use highlight_text.
+                        sample_options = []
+                        for _i, _ov_row in enumerate(st.session_state.text_overlays or []):
+                            _cat = str(_ov_row.get("category", "")).lower()
+                            _is_hdg = "heading" in _cat
+                            _txt = str(_ov_row.get("original_caption", "") if _is_hdg else _ov_row.get("highlight_text", "")).strip()
+                            if _txt:
+                                sample_options.append((f"#{_i+1}: {_txt[:60]}", _txt, _ov_row.get("size"), _cat))
+                        sample_options.append(("(custom text)", "$10,000 SAVED", None, ""))
+
+                        _labels = [o[0] for o in sample_options]
+                        _last_label = st.session_state.get("ov_preview_sample_label", _labels[0])
+                        if _last_label not in _labels:
+                            _last_label = _labels[0]
+                        chosen_label = st.selectbox(
+                            "Sample highlight", _labels,
+                            index=_labels.index(_last_label),
+                            key="ov_preview_sample_label",
+                        )
+                        chosen = sample_options[_labels.index(chosen_label)]
+                        if chosen[0] == "(custom text)":
+                            preview_text = st.text_input("Custom text", chosen[1], key="ov_preview_custom_text")
+                            preview_row_size = None
+                            preview_cat = ""
+                        else:
+                            preview_text = chosen[1]
+                            preview_row_size = chosen[2]
+                            preview_cat = chosen[3]
+
+                    with pc2:
+                        # Resolve effective size: per-row override wins, then global.
+                        try:
+                            eff_size = int(preview_row_size) if preview_row_size not in (None, "", 0) else _ov["size"]
+                        except (TypeError, ValueError):
+                            eff_size = _ov["size"]
+
+                        # Per-category color: same logic as PNG generator.
+                        eff_color = _ov["color"]
+                        _cat_colors_pv = _ov.get("category_colors", {})
+                        for _ck, _cv in _cat_colors_pv.items():
+                            if preview_cat and (_ck in preview_cat or preview_cat in _ck):
+                                eff_color = _cv
+                                break
+
+                        placement_map_pv = {"Top": 120, "Middle": 480, "Bottom": 850}
+                        y_pv = placement_map_pv.get(_ov.get("placement", "Bottom"), 850)
+
+                        _avail_fonts_pv = get_available_fonts()
+                        _font_path_pv = _avail_fonts_pv.get(_ov.get("font_family", ""), None)
+                        _is_hdg_pv = "heading" in preview_cat
+
+                        try:
+                            preview_img = render_overlay_preview(
+                                text=preview_text or " ",
+                                video_path=picked_path,
+                                video_timestamp_sec=frame_ts,
+                                font_path=_font_path_pv,
+                                font_size=eff_size,
+                                color=eff_color,
+                                shadow_color=_ov["shadow"],
+                                y_position=y_pv,
+                                bg_color=_ov.get("bg_box_color") if _ov.get("bg_box") else None,
+                                bg_opacity=_ov.get("bg_box_opacity", 160),
+                                outline=_ov.get("effect_type", "Shadow") == "Outline",
+                                auto_scale=_is_hdg_pv,
+                                text_opacity=_ov.get("text_opacity", 255),
+                            )
+                            st.image(
+                                preview_img,
+                                caption=f"1080p preview · effective size {eff_size}px · placement {_ov.get('placement','Bottom')}",
+                                use_container_width=True,
+                            )
+                        except Exception as _e:
+                            st.error(f"Preview render failed: {_e}")
+
                 if st.button("Generate & Preview Overlays", type="primary"):
                     p_name = st.session_state.get("project_name", "default")
                     proj_folder = _safe_for_fs(p_name, 50)
@@ -3009,11 +3162,19 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     ov_color = cv
                                     break
 
+                            # Per-row size override → blank cell falls back to global.
+                            _row_size_raw = ov.get("size")
+                            try:
+                                _row_size = int(_row_size_raw) if _row_size_raw not in (None, "", 0) else None
+                            except (TypeError, ValueError):
+                                _row_size = None
+                            row_font_size = _row_size if _row_size else _ov_s["size"]
+
                             create_text_overlay(
                                 overlay_text,
                                 fname,
                                 font_path=_sel_font_path,
-                                font_size=_ov_s["size"],
+                                font_size=row_font_size,
                                 color=ov_color,
                                 shadow_color=_ov_s["shadow"],
                                 y_position=target_y,
