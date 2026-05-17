@@ -87,17 +87,24 @@ class VideoIndexer:
     def download_and_index_youtube(self, url, progress_cb=None):
         """Downloads a YouTube video at 720p and indexes it into the Smart Library."""
         import yt_dlp
-        from core.youtube import _get_cookie_opts
+        from core.youtube import _get_cookie_opts, _YT_EXTRACTOR_ARGS
 
         if progress_cb:
             progress_cb(0.05, "Downloading YouTube video…")
 
         ydl_opts = {
-            "format": "bestvideo[height<=720]+bestaudio/best[height<=720]",
+            # Add wildcard fallbacks so DASH-only videos still match.
+            "format": (
+                "bestvideo[height<=720]+bestaudio"
+                "/best[height<=720]"
+                "/bv*+ba*/best"
+            ),
             "outtmpl": os.path.join(self.download_dir, "%(title)s.%(ext)s"),
             "noplaylist": True,
             "merge_output_format": "mp4",
             "socket_timeout": 30,
+            # Without this YouTube's default clients fail without a JS runtime.
+            "extractor_args": _YT_EXTRACTOR_ARGS,
             **_get_cookie_opts(),
         }
 
@@ -116,13 +123,18 @@ class VideoIndexer:
         Uses yt-dlp's download_ranges to avoid fetching the entire file.
         """
         import yt_dlp
-        from core.youtube import _get_cookie_opts
+        from core.youtube import _get_cookie_opts, _YT_EXTRACTOR_ARGS
 
         if progress_cb:
             progress_cb(0.1, f"Downloading {int(start_time//60):02d}:{int(start_time%60):02d}"
                              f" → {int(end_time//60):02d}:{int(end_time%60):02d} at {quality}p…")
 
-        fmt = f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]"
+        # Wildcard fallbacks for DASH-only or codec-limited videos.
+        fmt = (
+            f"bestvideo[height<={quality}]+bestaudio"
+            f"/best[height<={quality}]"
+            f"/bv*+ba*/best"
+        )
 
         ydl_opts = {
             "format": fmt,
@@ -136,6 +148,8 @@ class VideoIndexer:
             "quiet": True,
             "no_warnings": True,
             "socket_timeout": 30,
+            # Without this YouTube's default clients fail without a JS runtime.
+            "extractor_args": _YT_EXTRACTOR_ARGS,
             **_get_cookie_opts(),
         }
 

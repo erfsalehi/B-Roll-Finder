@@ -86,19 +86,19 @@ class ProxyFetcher:
 
         _cookie_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cookies.txt')
 
+        from core.youtube import _YT_EXTRACTOR_ARGS
         ydl_opts = {
-            "format": "worstvideo[ext=mp4]+worstaudio/worst[ext=mp4]/worst",
+            # Wildcard fallbacks so DASH-only videos still match.
+            "format": "worstvideo[ext=mp4]+worstaudio/worst[ext=mp4]/wv*+wa*/worst/b",
             "outtmpl": os.path.join(self.proxy_cache_dir, f"{video_id}_proxy.%(ext)s"),
             "quiet": True,
             "no_warnings": True,
             "merge_output_format": "mp4",
             "retries": 5,
             "extractor_retries": 3,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web', 'tv_embedded', 'android'],
-                }
-            },
+            # Shared client list — the old hard-coded one (web/tv_embedded/
+            # android) no longer returns formats without a JS runtime.
+            "extractor_args": _YT_EXTRACTOR_ARGS,
         }
         if os.path.exists(_cookie_file):
             ydl_opts["cookiefile"] = _cookie_file
