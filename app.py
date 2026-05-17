@@ -2196,43 +2196,30 @@ elif app_mode in ["Director", "Smart Mode"]:
             n_picked_in_shot = sum(1 for c in filtered_cands if c.get("url") in sel_urls)
             st.caption(f"**{n_picked_in_shot} selected** · Showing {len(filtered_cands)} of {len(candidates)} candidates.")
             # ── Bulk HD/SD check for YouTube clips in this shot ───────────────
-            # Kept in a collapsed expander so it doesn't sit at the top of the
-            # gallery as a large call-to-action that can be accidentally
-            # activated by keyboard focus or a mis-click after navigating.
+            # ── Auto HD/SD check ──────────────────────────────────────────────
+            # Runs automatically on every page load for any YouTube clip that
+            # hasn't been checked yet. Mutates candidates in-place before the
+            # gallery renders, so labels appear on the cards immediately.
+            # New clips added by a refetch are also handled here since they
+            # won't have definition_checked=True.
+            _yt_api_key = os.getenv("YOUTUBE_API_KEY")
             _yt_unchecked = [
                 c for c in filtered_cands
                 if c.get("source") == "youtube" and not c.get("definition_checked")
             ]
             if _yt_unchecked:
-                _yt_api_key = os.getenv("YOUTUBE_API_KEY")
-                with st.expander(
-                    f"🔍 Bulk HD/SD check — {len(_yt_unchecked)} YouTube clip(s) unchecked",
-                    expanded=False,
-                ):
-                    if _yt_api_key:
-                        _n_batches = (len(_yt_unchecked) + 49) // 50
-                        st.caption(
-                            f"Checks every unchecked YouTube clip in one API call. "
-                            f"Costs {_n_batches} quota unit(s) (daily budget: 10,000)."
+                if _yt_api_key:
+                    from core.stock_apis import fetch_youtube_definitions_batch
+                    with st.spinner(f"Checking HD/SD for {len(_yt_unchecked)} YouTube clip(s)…"):
+                        _defs = fetch_youtube_definitions_batch(
+                            [c["url"] for c in _yt_unchecked], _yt_api_key,
                         )
-                        if st.button(
-                            f"Check HD/SD for all {len(_yt_unchecked)} clip(s)",
-                            key=f"bulk_check_def_{slot_id}",
-                            use_container_width=True,
-                        ):
-                            from core.stock_apis import fetch_youtube_definitions_batch
-                            with st.spinner(f"Checking {len(_yt_unchecked)} clip(s)…"):
-                                _defs = fetch_youtube_definitions_batch(
-                                    [c["url"] for c in _yt_unchecked],
-                                    _yt_api_key,
-                                )
-                            for _c in _yt_unchecked:
-                                _c["definition"] = _defs.get(_c["url"], "unknown")
-                                _c["definition_checked"] = True
-                            save_cache()
-                            st.rerun()
-                    else:
-                        st.caption("⚙️ Set `YOUTUBE_API_KEY` in Setup to enable bulk HD/SD check")
+                    for _c in _yt_unchecked:
+                        _c["definition"] = _defs.get(_c["url"], "unknown")
+                        _c["definition_checked"] = True
+                    save_cache()
+                else:
+                    st.caption("⚙️ Set `YOUTUBE_API_KEY` in Setup to enable automatic HD/SD check")
             # Gallery Grid
             n_cols = 3
             for i_g in range(0, len(filtered_cands), n_cols):
