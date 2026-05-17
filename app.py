@@ -2102,15 +2102,17 @@ elif app_mode in ["Director", "Smart Mode"]:
                     st.session_state.d_review_idx -= 1
                     st.rerun()
             with nav2:
-                # No key= on this selectbox: without an owned session-state slot
-                # the widget reinitialises to index=idx on every rerun, so it
-                # always tracks the current shot after Prev/Next navigation.
-                # Streamlit forbids writing a widget-owned key after the widget
-                # has rendered, so a key here would crash when Prev/Next buttons
-                # (which appear later in the script) tried to sync it.
+                # Pop the key BEFORE rendering if its stored value no longer
+                # matches the current shot (happens after Prev/Next navigation).
+                # Popping forces the widget to reinitialise from index=idx.
+                # Writing AFTER the widget renders would crash; writing BEFORE
+                # is fine. Buttons never touch this key, so the post-render
+                # write rule is never violated.
+                if st.session_state.get("d_jump_top") != jump_options[idx]:
+                    st.session_state.pop("d_jump_top", None)
                 sel_top = st.selectbox(
                     "Jump", options=jump_options, index=idx,
-                    label_visibility="collapsed",
+                    label_visibility="collapsed", key="d_jump_top",
                 )
                 new_idx_top = jump_options.index(sel_top)
                 if new_idx_top != idx:
@@ -2373,10 +2375,12 @@ elif app_mode in ["Director", "Smart Mode"]:
                         shot["skipped"] = False
                     save_cache(); st.rerun()
             with fa4:
-                # Same no-key pattern as the top dropdown.
+                # Same pop-before-render pattern as the top dropdown.
+                if st.session_state.get("d_jump_bot") != jump_options[idx]:
+                    st.session_state.pop("d_jump_bot", None)
                 sel_bot = st.selectbox(
                     "Jump", options=jump_options, index=idx,
-                    label_visibility="collapsed",
+                    label_visibility="collapsed", key="d_jump_bot",
                 )
                 new_idx_bot = jump_options.index(sel_bot)
                 if new_idx_bot != idx:
