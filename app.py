@@ -763,7 +763,7 @@ def render_classic_mode():
                         "Source": st.column_config.TextColumn("Source", width="small"),
                     },
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                     disabled=True,
                     key="classic_review_table"
                 )
@@ -1133,7 +1133,7 @@ def render_classic_mode():
                                     )
                                 is_g_picked = res.get('url') in st.session_state.picked_global_urls
                                 g_btn_label = "✅ SELECTED" if is_g_picked else "⬜ PICK CLIP"
-                                if st.button(g_btn_label, key=f"gbtn_{hash(res.get('url'))}", use_container_width=True, type="primary" if is_g_picked else "secondary"):
+                                if st.button(g_btn_label, key=f"gbtn_{hash(res.get('url'))}", width="stretch", type="primary" if is_g_picked else "secondary"):
                                     toggle_global_pick(res.get('url'))
                                     st.rerun()
                                 st.markdown(f"**{source}** · {res_str} · {dur_str}")
@@ -1209,7 +1209,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             
             with tab_yt:
                 lib_urls = st.text_area("Paste YouTube URLs (one per line)", placeholder="https://youtube.com/watch?v=...\nhttps://youtube.com/watch?v=...", height=100, key="lib_urls_bulk")
-                if st.button("🚀 Start Bulk Ingestion", use_container_width=True):
+                if st.button("🚀 Start Bulk Ingestion", width="stretch"):
                     urls = [u.strip() for u in lib_urls.split("\n") if u.strip()]
                     if urls:
                         with st.status(f"Ingesting {len(urls)} videos...") as status:
@@ -1224,7 +1224,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             
             with tab_local:
                 local_dir = st.text_input("Local Folder Path", placeholder="C:/Users/Name/Videos/MyStock", key="lib_local_dir")
-                if st.button("ðŸâ€   Index Local Folder", use_container_width=True):
+                if st.button("ðŸâ€   Index Local Folder", width="stretch"):
                     if os.path.isdir(local_dir):
                         video_files = [f for f in os.listdir(local_dir) if f.lower().endswith(('.mp4', '.mov', '.mkv', '.avi'))]
                         if video_files:
@@ -1365,7 +1365,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             cta_a, cta_b = st.columns([3, 1])
             with cta_a:
                 if st.button("🎙️ Transcribe", key="d_transcribe", type="primary",
-                             use_container_width=True):
+                             width="stretch"):
                     if not os.getenv("GROQ_API_KEY"):
                         st.error("Set Groq API Key in Setup above.")
                     else:
@@ -1396,7 +1396,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             with cta_b:
                 if st.session_state.get("transcription_segments"):
                     if st.button("Reset", key="d_reset_transcription",
-                                 use_container_width=True,
+                                 width="stretch",
                                  help="Discard the current transcription."):
                         st.session_state.transcription_segments = []
                         st.session_state.transcription_chunks   = []
@@ -1431,7 +1431,7 @@ elif app_mode in ["Director", "Smart Mode"]:
     # "cannot be modified after instantiation" error.
     with col_topic_btn:
         st.markdown("<div style='padding-top: 1.7rem;'></div>", unsafe_allow_html=True)
-        if st.button("✨ Suggest", key="d_suggest_topic", use_container_width=True, help="AI analyzes your script to suggest a topic description."):
+        if st.button("✨ Suggest", key="d_suggest_topic", width="stretch", help="AI analyzes your script to suggest a topic description."):
             if not st.session_state.get("script_text"):
                 st.error("Upload audio and transcribe first.")
             elif not os.getenv("GROQ_API_KEY"):
@@ -1544,7 +1544,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             },
             disabled=["#", "Time", "Cand", "Picked"],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             num_rows="fixed",
             key="d_shotlist_editor",
         )
@@ -1586,7 +1586,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         st.caption("💡 **YouTube Keyword Tools:** Use these to bulk-fill the YouTube Keywords column in the table above.")
         yk1, yk2, yk3 = st.columns([2, 2, 6])
         with yk1:
-            if st.button("✨ Seed from Queries", key="d_seed_yt_keywords", use_container_width=True):
+            if st.button("✨ Seed from Queries", key="d_seed_yt_keywords", width="stretch"):
                 st.session_state.director_shots = seed_youtube_keywords(
                     st.session_state.director_shots,
                     max_keywords=2,
@@ -1594,7 +1594,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 save_cache()
                 st.rerun()
         with yk2:
-            if st.button("🤖 Generate with AI", key="d_gen_yt_keywords", use_container_width=True):
+            if st.button("🤖 Generate with AI", key="d_gen_yt_keywords", width="stretch"):
                 if not os.getenv("GROQ_API_KEY"):
                     st.error("Groq API key required.")
                 else:
@@ -1696,9 +1696,9 @@ elif app_mode in ["Director", "Smart Mode"]:
             )
         col_btn1, col_btn2, col_btn3 = st.columns([2, 2, 1])
         with col_btn1:
-            fetch_clicked = st.button("Fetch", disabled=st.session_state.is_fetching, key="d_fetch", use_container_width=True)
+            fetch_clicked = st.button("Fetch", disabled=st.session_state.is_fetching, key="d_fetch", width="stretch")
         with col_btn2:
-            retry_clicked = st.button("Retry Empty", disabled=st.session_state.is_fetching, key="d_retry", use_container_width=True, help="Only searches for shots that currently have 0 candidates. Preserves existing successful searches.")
+            retry_clicked = st.button("Retry Empty", disabled=st.session_state.is_fetching, key="d_retry", width="stretch", help="Only searches for shots that currently have 0 candidates. Preserves existing successful searches.")
         with col_btn3:
             _new_chunk_size = st.number_input(
                 "Chunk size",
@@ -2112,7 +2112,7 @@ elif app_mode in ["Director", "Smart Mode"]:
 
             nav1, nav2, nav3, nav4, nav5 = st.columns([1.2, 2.5, 2.5, 1.8, 1.2])
             with nav1:
-                if st.button("◀ Prev", key="d_prev", disabled=idx == 0, use_container_width=True):
+                if st.button("◀ Prev", key="d_prev", disabled=idx == 0, width="stretch"):
                     save_cache()
                     st.session_state.d_review_idx -= 1
                     st.rerun()
@@ -2142,14 +2142,14 @@ elif app_mode in ["Director", "Smart Mode"]:
                     "⏭ Next Unpicked",
                     key="d_next_unpicked",
                     disabled=next_unpicked_idx is None,
-                    use_container_width=True,
+                    width="stretch",
                     help="Jump to the next shot with no selection yet.",
                 ):
                     save_cache()
                     st.session_state.d_review_idx = next_unpicked_idx
                     st.rerun()
             with nav5:
-                if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1, use_container_width=True):
+                if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1, width="stretch"):
                     save_cache()
                     st.session_state.d_review_idx += 1
                     st.rerun()
@@ -2164,13 +2164,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                     temp_filtered = [c for c in temp_filtered if (c.get("height") or 0) >= 720 or c.get("source") == "youtube"]
                 elif temp_q_filter == "1080p and above":
                     temp_filtered = [c for c in temp_filtered if (c.get("height") or 0) >= 1080 or c.get("source") == "youtube"]
-                if st.button("☑ Select All", key=f"sel_all_{slot_id}", use_container_width=True):
+                if st.button("☑ Select All", key=f"sel_all_{slot_id}", width="stretch"):
                     shot["selected_results"] = list(temp_filtered)
                     shot["skipped"] = False
                     save_cache()
                     st.rerun()
             with ba2:
-                if st.button("☒ Clear All", key=f"sel_none_{slot_id}", use_container_width=True):
+                if st.button("☒ Clear All", key=f"sel_none_{slot_id}", width="stretch"):
                     shot["selected_results"] = []
                     save_cache()
                     st.rerun()
@@ -2190,7 +2190,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             is_ranked = any(s.get("rank_reason") for s in review_shots)
             with aa2:
                 if is_ranked and candidates and idx < len(review_shots) - 1:
-                    if st.button("🥇 Pick Top & Next", key=f"pick_top_{slot_id}", use_container_width=True,
+                    if st.button("🥇 Pick Top & Next", key=f"pick_top_{slot_id}", width="stretch",
                                  help="Pick the AI's top-ranked clip and advance to the next shot."):
                         top_cand = candidates[0]
                         if top_cand.get("url") not in sel_urls:
@@ -2307,7 +2307,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     # player streams natively.
                                     _preview_src = cand.get("preview_url") or cand.get("url")
                                     if _preview_src:
-                                        with st.popover("▶️ Preview here", use_container_width=True):
+                                        with st.popover("▶️ Preview here", width="stretch"):
                                             try:
                                                 st.video(_preview_src)
                                                 st.caption(f"Source: {source_display} · {res_str}")
@@ -2330,7 +2330,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                         elif st.button(
                                             "🔍 Check HD/SD",
                                             key=f"check_def_{slot_id}_{hash(cand_url)}",
-                                            use_container_width=True,
+                                            width="stretch",
                                             help="Look up this video's HD/SD status via the YouTube Data API. Costs 1 quota unit (default budget: 10,000/day).",
                                         ):
                                             with st.spinner("Checking…"):
@@ -2349,14 +2349,14 @@ elif app_mode in ["Director", "Smart Mode"]:
                                         else:
                                             st.caption("❓ Definition unknown (API lookup failed)")
                                 btn_label = "✅ SELECTED" if is_picked else "⬜ PICK CLIP"
-                                if st.button(btn_label, key=f"galpick_{slot_id}_{hash(cand.get('url'))}", use_container_width=True, type="primary" if is_picked else "secondary"):
+                                if st.button(btn_label, key=f"galpick_{slot_id}_{hash(cand.get('url'))}", width="stretch", type="primary" if is_picked else "secondary"):
                                     was_selected = cand_url in sel_urls
                                     toggle_pick(cand.get("url"), cand, shot)
                                     if not was_selected and st.session_state.get("d_auto_advance") and idx < len(review_shots) - 1:
                                         st.session_state.d_review_idx = idx + 1
                                     st.rerun()
                                 if mq and source_val.lower() in ("pexels", "pixabay", "youtube"):
-                                    if st.button("➕ More like this", key=f"mlt_{slot_id}_{hash(cand_url)}", use_container_width=True):
+                                    if st.button("➕ More like this", key=f"mlt_{slot_id}_{hash(cand_url)}", width="stretch"):
                                         with st.spinner("Fetching more…"):
                                             from core.director_search import fetch_more_like_this
                                             more = fetch_more_like_this(shot, mq, source_val.lower())
@@ -2370,15 +2370,15 @@ elif app_mode in ["Director", "Smart Mode"]:
             # 2. Footer Navigation Bar
             fa1, fa2, fa3, fa4, fa5, fa6 = st.columns([1.2, 1.2, 1.2, 2.2, 2.5, 1.2])
             with fa1:
-                if st.button("◀ Prev", key=f"d_prev_bot_{slot_id}", disabled=idx == 0, use_container_width=True):
+                if st.button("◀ Prev", key=f"d_prev_bot_{slot_id}", disabled=idx == 0, width="stretch"):
                     save_cache(); st.session_state.d_review_idx -= 1; st.rerun()
             with fa2:
                 skip_label = "↺ Unskip" if skipped else "⏭ Skip"
-                if st.button(skip_label, key=f"skip_{slot_id}", use_container_width=True):
+                if st.button(skip_label, key=f"skip_{slot_id}", width="stretch"):
                     shot["skipped"] = not skipped; shot["selected_results"] = []; save_cache(); st.rerun()
             with fa3:
                 flag_label = "🔖 Unflag" if shot.get("flagged") else "🔖 Flag"
-                if st.button(flag_label, key=f"flag_{slot_id}", use_container_width=True,
+                if st.button(flag_label, key=f"flag_{slot_id}", width="stretch",
                              help="Mark this shot to revisit later without skipping it."):
                     shot["flagged"] = not shot.get("flagged", False)
                     if shot["flagged"]:
@@ -2394,15 +2394,15 @@ elif app_mode in ["Director", "Smart Mode"]:
                 )
             with fa5:
                 if idx < len(review_shots) - 1:
-                    if st.button("Save & Next ▶", key=f"d_save_next_{slot_id}", type="primary", use_container_width=True):
+                    if st.button("Save & Next ▶", key=f"d_save_next_{slot_id}", type="primary", width="stretch"):
                         save_cache()
                         st.session_state.d_review_idx += 1
                         st.rerun()
                 else:
-                    if st.button("✅ Finish Review", key=f"d_finish_{slot_id}", type="primary", use_container_width=True):
+                    if st.button("✅ Finish Review", key=f"d_finish_{slot_id}", type="primary", width="stretch"):
                         save_cache(); st.success("Review complete! Scroll down to Step 6 to start downloads.")
             with fa6:
-                if st.button("Next ▶", key=f"d_next_bot_{slot_id}", disabled=idx == len(review_shots) - 1, use_container_width=True):
+                if st.button("Next ▶", key=f"d_next_bot_{slot_id}", disabled=idx == len(review_shots) - 1, width="stretch"):
                     save_cache()
                     st.session_state.d_review_idx += 1
                     st.rerun()
@@ -2426,7 +2426,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 new_queries_str = st.text_input("Stock Queries", value=curr_queries, key=f"refetch_q_{slot_id}")
                 curr_yt = " | ".join(shot.get("youtube_keywords", []))
                 new_yt_str = st.text_input("YouTube Keywords", value=curr_yt, key=f"refetch_yt_{slot_id}")
-                if st.button("Refetch Candidates", key=f"refetch_btn_{slot_id}", type="primary", use_container_width=True):
+                if st.button("Refetch Candidates", key=f"refetch_btn_{slot_id}", type="primary", width="stretch"):
                     shot["search_queries"] = [q.strip() for q in new_queries_str.split("|") if q.strip()]
                     shot["youtube_keywords"] = [q.strip() for q in new_yt_str.split("|") if q.strip()]
                     save_cache()
@@ -2498,9 +2498,9 @@ elif app_mode in ["Director", "Smart Mode"]:
         col_dl1, col_dl2 = st.columns([2, 1])
         with col_dl1:
             start_dl = st.button(f"📥 Download {total_selected_files} selected videos",
-                                key="d_dl_start", type="primary", use_container_width=True)
+                                key="d_dl_start", type="primary", width="stretch")
         with col_dl2:
-            if st.button("📄 Export Manifest", key="d_manifest", use_container_width=True, help="Generate a text file listing all shots, grouped by chunk."):
+            if st.button("📄 Export Manifest", key="d_manifest", width="stretch", help="Generate a text file listing all shots, grouped by chunk."):
                 def _safe_for_fs(text: str, max_len: int = 30) -> str:
                     if not text: return ""
                     cleaned = "".join(c if (c.isalnum() or c in " -_") else " " for c in text)
@@ -2697,7 +2697,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 )
             with cancel_col:
                 if stats["downloading"] + stats["queued"] + stats.get("paused", 0) > 0:
-                    if st.button("âÅ“– Cancel All", key="d_cancel", use_container_width=True):
+                    if st.button("âÅ“– Cancel All", key="d_cancel", width="stretch"):
                         st.session_state.dm.cancel_all()
                         st.rerun()
             # ── Active tasks ─────────────────────────────────────────────
@@ -2720,12 +2720,12 @@ elif app_mode in ["Director", "Smart Mode"]:
                     b1, b2, _b3 = st.columns([1, 1, 5])
                     if not is_proc:
                         if t["status"] == "downloading":
-                            if b1.button("Pause", key=f"pd_{t['id']}", use_container_width=True):
+                            if b1.button("Pause", key=f"pd_{t['id']}", width="stretch"):
                                 st.session_state.dm.pause_download(t["id"]); st.rerun()
                         elif t["status"] == "paused":
-                            if b1.button("Resume", key=f"rd_{t['id']}", use_container_width=True):
+                            if b1.button("Resume", key=f"rd_{t['id']}", width="stretch"):
                                 st.session_state.dm.resume_download(t["id"]); st.rerun()
-                    if b2.button("Cancel", key=f"cd_{t['id']}", use_container_width=True):
+                    if b2.button("Cancel", key=f"cd_{t['id']}", width="stretch"):
                         st.session_state.dm.cancel_download(t["id"]); st.rerun()
             # ── Failed tasks (URL + per-task retry with current settings) ──
             failed = st.session_state.dm.get_failed_tasks()
@@ -2735,7 +2735,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if retryable:
                     if st.button(
                         f"ââ€ » Retry all ({len(retryable)}) with current settings",
-                        key="d_retry_all", use_container_width=True,
+                        key="d_retry_all", width="stretch",
                     ):
                         st.session_state.dm.retry_all_failed(overrides={
                             "quality": d_quality, "max_size_mb": d_max_size,
@@ -2757,7 +2757,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                              if st.button(
                                 "ââ€ » Retry",
                                 key=f"retry_{ft['id']}",
-                                use_container_width=True,
+                                width="stretch",
                                 help="Retry with the current Quality / Max Size settings.",
                             ):
                                 st.session_state.dm.retry_failed(ft["id"], overrides={
@@ -2771,7 +2771,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                             st.code(ft.get("url", ""), language=None)
                         with link_col:
                             if ft.get("url"):
-                                st.link_button("Open ââ€ —", ft["url"], use_container_width=True)
+                                st.link_button("Open ââ€ —", ft["url"], width="stretch")
                         # Full error in a collapsed expander for power users
                         if ft.get("error_msg") and ft["error_msg"] != ft.get("error_summary"):
                             with st.expander("Full error"):
@@ -2887,7 +2887,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 edited_df = st.data_editor(
                     st.session_state.text_overlays,
                     num_rows="dynamic",
-                    use_container_width=True,
+                    width="stretch",
                     key="ov_editor",
                     column_config={
                         "size": st.column_config.NumberColumn(
@@ -3103,7 +3103,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                             st.image(
                                 preview_img,
                                 caption=f"1080p preview · effective size {eff_size}px · placement {_ov.get('placement','Bottom')}",
-                                use_container_width=True,
+                                width="stretch",
                             )
                         except Exception as _e:
                             st.error(f"Preview render failed: {_e}")

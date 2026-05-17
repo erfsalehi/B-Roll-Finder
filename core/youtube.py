@@ -774,4 +774,16 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                            normalize=normalize, no_audio=no_audio)
             return
         task_state['status'] = 'error'
-        task_state['error_msg'] = str(e)
+        err_str = str(e)
+        # 'Requested format is not available' from yt-dlp when ALL of our
+        # configured player_clients (android_vr, tv_simply, tv_embedded, web,
+        # mweb) returned zero formats. The format chain itself is fine — the
+        # extractor was blocked. Tell the user what to do.
+        if 'Requested format is not available' in err_str and not _get_cookie_opts():
+            err_str = (
+                "YouTube returned no formats for this video (blocked by anti-bot / rate limit). "
+                "Set YT_COOKIE_BROWSER=firefox (or chrome/edge) in your .env so yt-dlp can use "
+                "your browser's logged-in YouTube session. "
+                "Original: " + err_str
+            )
+        task_state['error_msg'] = err_str

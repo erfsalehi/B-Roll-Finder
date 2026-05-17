@@ -51,12 +51,14 @@ class ProxyFetcher:
     def search_youtube(self, query, max_results=3):
         """Returns a list of {url, title, duration} dicts — no download."""
         import yt_dlp
+        from core.youtube import _YT_EXTRACTOR_ARGS
         results = []
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
             "extract_flat": True,
             "default_search": "ytsearch",
+            "extractor_args": _YT_EXTRACTOR_ARGS,
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
