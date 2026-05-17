@@ -2095,6 +2095,21 @@ elif app_mode in ["Director", "Smart Mode"]:
                  and not review_shots[j].get("flagged")),
                 None,
             )
+
+            # on_change callback for the jump dropdowns. Streamlit fires
+            # on_change BEFORE the script reruns, so by the time we read
+            # d_review_idx below, it already reflects the user's pick. This
+            # lets the dropdown both *show* the current shot (via the sync
+            # writes below) AND *change* it (via this callback) without the
+            # two clobbering each other.
+            def _on_jump_change(state_key):
+                sel = st.session_state.get(state_key)
+                if sel in jump_options:
+                    new_i = jump_options.index(sel)
+                    if new_i != st.session_state.d_review_idx:
+                        save_cache()
+                        st.session_state.d_review_idx = new_i
+
             nav1, nav2, nav3, nav4, nav5 = st.columns([1.2, 2.5, 2.5, 1.8, 1.2])
             with nav1:
                 if st.button("◀ Prev", key="d_prev", disabled=idx == 0, use_container_width=True):
@@ -2102,23 +2117,18 @@ elif app_mode in ["Director", "Smart Mode"]:
                     st.session_state.d_review_idx -= 1
                     st.rerun()
             with nav2:
-                # Pop the key BEFORE rendering if its stored value no longer
-                # matches the current shot (happens after Prev/Next navigation).
-                # Popping forces the widget to reinitialise from index=idx.
-                # Writing AFTER the widget renders would crash; writing BEFORE
-                # is fine. Buttons never touch this key, so the post-render
-                # write rule is never violated.
-                if st.session_state.get("d_jump_top") != jump_options[idx]:
-                    st.session_state.pop("d_jump_top", None)
-                sel_top = st.selectbox(
-                    "Jump", options=jump_options, index=idx,
+                # Force the widget's stored value to match the current shot
+                # BEFORE the widget renders. on_change already aligned
+                # d_review_idx with the user's pick (if any) before the script
+                # started, so this write is a no-op in the user-pick case.
+                # When Prev/Next changed d_review_idx, this write is what
+                # actually moves the dropdown to the new shot.
+                st.session_state["d_jump_top"] = jump_options[idx]
+                st.selectbox(
+                    "Jump (top)", options=jump_options,
                     label_visibility="collapsed", key="d_jump_top",
+                    on_change=_on_jump_change, args=("d_jump_top",),
                 )
-                new_idx_top = jump_options.index(sel_top)
-                if new_idx_top != idx:
-                    save_cache()
-                    st.session_state.d_review_idx = new_idx_top
-                    st.rerun()
             with nav3:
                 st.markdown(
                     f"<div style='text-align:center; padding-top:0.4em; font-size:13px;'>"
@@ -2375,18 +2385,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                         shot["skipped"] = False
                     save_cache(); st.rerun()
             with fa4:
-                # Same pop-before-render pattern as the top dropdown.
-                if st.session_state.get("d_jump_bot") != jump_options[idx]:
-                    st.session_state.pop("d_jump_bot", None)
-                sel_bot = st.selectbox(
-                    "Jump", options=jump_options, index=idx,
+                # Same sync-then-on_change pattern as the top dropdown.
+                st.session_state["d_jump_bot"] = jump_options[idx]
+                st.selectbox(
+                    "Jump (bottom)", options=jump_options,
                     label_visibility="collapsed", key="d_jump_bot",
+                    on_change=_on_jump_change, args=("d_jump_bot",),
                 )
-                new_idx_bot = jump_options.index(sel_bot)
-                if new_idx_bot != idx:
-                    save_cache()
-                    st.session_state.d_review_idx = new_idx_bot
-                    st.rerun()
             with fa5:
                 if idx < len(review_shots) - 1:
                     if st.button("Save & Next ▶", key=f"d_save_next_{slot_id}", type="primary", use_container_width=True):
