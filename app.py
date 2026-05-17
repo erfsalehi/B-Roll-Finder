@@ -2100,10 +2100,17 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if st.button("◀ Prev", key="d_prev", disabled=idx == 0, use_container_width=True):
                     save_cache()
                     st.session_state.d_review_idx -= 1
+                    st.session_state["d_jump_top"] = jump_options[st.session_state.d_review_idx]
                     st.rerun()
             with nav2:
-                st.session_state["d_jump_top"] = jump_options[idx]
-                sel_top = st.selectbox("Jump", options=jump_options, label_visibility="collapsed", key="d_jump_top")
+                # index=idx keeps the widget in sync when Prev/Next buttons fire.
+                # We must NOT write st.session_state["d_jump_top"] here before the
+                # widget — doing so overrides the user's selection on every rerun
+                # and makes the dropdown unable to navigate anywhere.
+                sel_top = st.selectbox(
+                    "Jump", options=jump_options, index=idx,
+                    label_visibility="collapsed", key="d_jump_top",
+                )
                 new_idx_top = jump_options.index(sel_top)
                 if new_idx_top != idx:
                     save_cache()
@@ -2127,11 +2134,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                 ):
                     save_cache()
                     st.session_state.d_review_idx = next_unpicked_idx
+                    st.session_state["d_jump_top"] = jump_options[next_unpicked_idx]
                     st.rerun()
             with nav5:
                 if st.button("Next ▶", key="d_next", disabled=idx == len(review_shots) - 1, use_container_width=True):
                     save_cache()
                     st.session_state.d_review_idx += 1
+                    st.session_state["d_jump_top"] = jump_options[st.session_state.d_review_idx]
                     st.rerun()
             st.progress((idx + 1) / len(review_shots))
             # ── Bulk Actions & Quality Filter ─────────────────────────────────
