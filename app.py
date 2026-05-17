@@ -2197,37 +2197,43 @@ elif app_mode in ["Director", "Smart Mode"]:
             n_picked_in_shot = sum(1 for c in filtered_cands if c.get("url") in sel_urls)
             st.caption(f"**{n_picked_in_shot} selected** · Showing {len(filtered_cands)} of {len(candidates)} candidates.")
             # ── Bulk HD/SD check for YouTube clips in this shot ───────────────
-            # Each card has its own 🔍 button, but clicking through 10+ clips
-            # is tedious. This batches the unchecked YouTube candidates into a
-            # single Data API videos.list call (50 IDs per call, still 1 quota
-            # unit), so checking all of them costs the same as checking one.
+            # Kept in a collapsed expander so it doesn't sit at the top of the
+            # gallery as a large call-to-action that can be accidentally
+            # activated by keyboard focus or a mis-click after navigating.
             _yt_unchecked = [
                 c for c in filtered_cands
                 if c.get("source") == "youtube" and not c.get("definition_checked")
             ]
             if _yt_unchecked:
                 _yt_api_key = os.getenv("YOUTUBE_API_KEY")
-                if _yt_api_key:
-                    _n_batches = (len(_yt_unchecked) + 49) // 50
-                    if st.button(
-                        f"🔍 Check HD/SD for all {len(_yt_unchecked)} YouTube clip(s) in this shot",
-                        key=f"bulk_check_def_{slot_id}",
-                        use_container_width=True,
-                        help=f"Looks up the HD/SD status of every unchecked YouTube clip via the YouTube Data API. Costs {_n_batches} quota unit(s) total (default daily budget: 10,000).",
-                    ):
-                        from core.stock_apis import fetch_youtube_definitions_batch
-                        with st.spinner(f"Checking {len(_yt_unchecked)} clip(s)…"):
-                            _defs = fetch_youtube_definitions_batch(
-                                [c["url"] for c in _yt_unchecked],
-                                _yt_api_key,
-                            )
-                        for _c in _yt_unchecked:
-                            _c["definition"] = _defs.get(_c["url"], "unknown")
-                            _c["definition_checked"] = True
-                        save_cache()
-                        st.rerun()
-                else:
-                    st.caption("⚙️ Set `YOUTUBE_API_KEY` in Setup to enable bulk HD/SD check")
+                with st.expander(
+                    f"🔍 Bulk HD/SD check — {len(_yt_unchecked)} YouTube clip(s) unchecked",
+                    expanded=False,
+                ):
+                    if _yt_api_key:
+                        _n_batches = (len(_yt_unchecked) + 49) // 50
+                        st.caption(
+                            f"Checks every unchecked YouTube clip in one API call. "
+                            f"Costs {_n_batches} quota unit(s) (daily budget: 10,000)."
+                        )
+                        if st.button(
+                            f"Check HD/SD for all {len(_yt_unchecked)} clip(s)",
+                            key=f"bulk_check_def_{slot_id}",
+                            use_container_width=True,
+                        ):
+                            from core.stock_apis import fetch_youtube_definitions_batch
+                            with st.spinner(f"Checking {len(_yt_unchecked)} clip(s)…"):
+                                _defs = fetch_youtube_definitions_batch(
+                                    [c["url"] for c in _yt_unchecked],
+                                    _yt_api_key,
+                                )
+                            for _c in _yt_unchecked:
+                                _c["definition"] = _defs.get(_c["url"], "unknown")
+                                _c["definition_checked"] = True
+                            save_cache()
+                            st.rerun()
+                    else:
+                        st.caption("⚙️ Set `YOUTUBE_API_KEY` in Setup to enable bulk HD/SD check")
             # Gallery Grid
             n_cols = 3
             for i_g in range(0, len(filtered_cands), n_cols):
@@ -2381,20 +2387,34 @@ elif app_mode in ["Director", "Smart Mode"]:
                         shot["skipped"] = False
                     save_cache(); st.rerun()
             with fa4:
-                st.session_state[f"d_jump_bot_{slot_id}"] = jump_options[idx]
-                sel_bot = st.selectbox("Jump", options=jump_options, label_visibility="collapsed", key=f"d_jump_bot_{slot_id}")
+                sel_bot = st.selectbox(
+                    "Jump", options=jump_options, index=idx,
+                    label_visibility="collapsed", key="d_jump_bot",
+                )
                 new_idx_bot = jump_options.index(sel_bot)
-                if new_idx_bot != idx: save_cache(); st.session_state.d_review_idx = new_idx_bot; st.rerun()
+                if new_idx_bot != idx:
+                    save_cache()
+                    st.session_state.d_review_idx = new_idx_bot
+                    st.session_state["d_jump_top"] = jump_options[new_idx_bot]
+                    st.rerun()
             with fa5:
                 if idx < len(review_shots) - 1:
                     if st.button("Save & Next ▶", key=f"d_save_next_{slot_id}", type="primary", use_container_width=True):
-                        save_cache(); st.session_state.d_review_idx += 1; st.rerun()
+                        save_cache()
+                        st.session_state.d_review_idx += 1
+                        st.session_state["d_jump_top"] = jump_options[st.session_state.d_review_idx]
+                        st.session_state["d_jump_bot"] = jump_options[st.session_state.d_review_idx]
+                        st.rerun()
                 else:
                     if st.button("✅ Finish Review", key=f"d_finish_{slot_id}", type="primary", use_container_width=True):
                         save_cache(); st.success("Review complete! Scroll down to Step 6 to start downloads.")
             with fa6:
                 if st.button("Next ▶", key=f"d_next_bot_{slot_id}", disabled=idx == len(review_shots) - 1, use_container_width=True):
-                    save_cache(); st.session_state.d_review_idx += 1; st.rerun()
+                    save_cache()
+                    st.session_state.d_review_idx += 1
+                    st.session_state["d_jump_top"] = jump_options[st.session_state.d_review_idx]
+                    st.session_state["d_jump_bot"] = jump_options[st.session_state.d_review_idx]
+                    st.rerun()
             # 3. Shot Details / Recap (At the bottom)
             with st.container(border=True):
                 st.markdown(f"**Shot {slot_id}** &nbsp;·&nbsp; 🕒 {ts} &nbsp;·&nbsp; 🎬 {shot.get('shot_intent', '—')}")
