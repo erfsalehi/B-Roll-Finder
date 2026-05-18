@@ -605,6 +605,10 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
     Downloads a video using yt-dlp with progress tracking and interruption support.
     Supports Premiere Pro compatibility, strict quality, and size limits.
     """
+    # Declared here so the format-error retry block below can flip the
+    # module-level _cookies_broken flag without Python complaining about
+    # using the name before the global declaration.
+    global _cookies_broken
     # Map simple quality strings to yt-dlp format strings
     # We prioritize h264 for Premiere Pro compatibility
     if strict_quality:
@@ -773,12 +777,32 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                            max_size_mb=max_size_mb, strict_quality=strict_quality,
                            normalize=normalize, no_audio=no_audio)
             return
-        task_state['status'] = 'error'
+
         err_str = str(e)
-        # 'Requested format is not available' from yt-dlp when ALL of our
-        # configured player_clients (android_vr, tv_simply, tv_embedded, web,
-        # mweb) returned zero formats. The format chain itself is fine — the
-        # extractor was blocked. Tell the user what to do.
+
+        # "Requested format is not available" with cookies configured almost
+        # always means YouTube's logged-in pipeline kicked us onto a PO-token-
+        # gated client (web/mweb) which then returned zero formats. The same
+        # request without cookies usually succeeds because yt-dlp falls back
+        # to android_vr / tv_simply which still serve format lists publicly.
+        # Auto-retry once without cookies before reporting the error.
+        if ('Requested format is not available' in err_str
+                and _get_cookie_opts()
+                and not task_state.get('_retried_no_cookies')):
+            print(f"[yt-dlp] {url}: format not available with cookies — retrying without cookies")
+            task_state['_retried_no_cookies'] = True
+            # Strip cookies for this retry by reaching past _get_cookie_opts.
+            _was_broken = _cookies_broken
+            _cookies_broken = True
+            try:
+                download_video(url, output_path, quality, task_state,
+                               max_size_mb=max_size_mb, strict_quality=strict_quality,
+                               normalize=normalize, no_audio=no_audio)
+            finally:
+                _cookies_broken = _was_broken
+            return
+
+        task_state['status'] = 'error'
         if 'Requested format is not available' in err_str and not _get_cookie_opts():
             err_str = (
                 "YouTube returned no formats for this video (blocked by anti-bot / rate limit). "
