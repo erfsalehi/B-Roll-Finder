@@ -696,12 +696,22 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         'quiet': True,
         'no_warnings': True,
         'merge_output_format': 'mp4',
-        'retries': 10,
-        'fragment_retries': 10,
+        # ── Resume + retry configuration ─────────────────────────────────
+        # continuedl=True is yt-dlp's API default, but set explicitly so
+        # nobody accidentally turns it off. With this on, the .part file
+        # from a previous failed attempt is reused — yt-dlp issues a Range
+        # request and downloads only the remaining bytes.
+        'continuedl': True,
+        # Bumped from 10 → 30: transient HTTP errors during long downloads
+        # (large 4K clips, slow proxy, weak Wi-Fi) often need many internal
+        # retries before yt-dlp gives up. Each retry costs nothing if the
+        # next chunk arrives, so being generous is safe.
+        'retries': 30,
+        'fragment_retries': 30,
         'extractor_retries': 5,
         'file_access_retries': 5,
         'http_chunk_size': 10485760,  # 10 MB
-        'socket_timeout': 30,
+        'socket_timeout': 60,
         'nocheckcertificate': True,
         'geo_bypass': True,
         'http_headers': {

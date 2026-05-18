@@ -2734,8 +2734,14 @@ elif app_mode in ["Director", "Smart Mode"]:
                 retryable = [f for f in failed if st.session_state.dm.can_retry(f["id"])]
                 if retryable:
                     if st.button(
-                        f"ââ€ » Retry all ({len(retryable)}) with current settings",
+                        f"ââ€ » Retry / resume all ({len(retryable)}) with current settings",
                         key="d_retry_all", width="stretch",
+                        help=(
+                            "Re-queues each failed task. yt-dlp resumes from any "
+                            "existing .part file via Range requests, so progress "
+                            "is preserved — only the bytes that didn't arrive "
+                            "get re-downloaded."
+                        ),
                     ):
                         st.session_state.dm.retry_all_failed(overrides={
                             "quality": d_quality, "max_size_mb": d_max_size,

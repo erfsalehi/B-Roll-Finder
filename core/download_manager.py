@@ -178,11 +178,15 @@ class DownloadManager:
             Waiting 30-60 s is usually enough for the block to lift.
           - Transient (short backoff): network drops, timeouts, SSL glitches.
         """
-        MAX_AUTO_RETRIES = 3
+        MAX_AUTO_RETRIES = 6
         # Backoff durations per attempt (index 0 = after 1st failure).
-        # 403 uses its own longer schedule defined below.
-        _TRANSIENT_BACKOFF = [5, 15]   # seconds between attempts 1→2 and 2→3
-        _RATELIMIT_BACKOFF = [30, 60]  # longer wait for 403 rate-limit
+        # Long downloads of large clips can fail mid-stream multiple times
+        # before completing — each retry resumes from the .part file via
+        # yt-dlp's continuedl, so attempt N starts where attempt N-1 left
+        # off. Bumped from 3 to 6 attempts with progressive backoff so
+        # genuinely flaky network conditions can still finish a file.
+        _TRANSIENT_BACKOFF = [5, 15, 30, 60, 120]   # seconds between attempts
+        _RATELIMIT_BACKOFF = [30, 60, 120, 180, 300]  # longer for 403 rate-limit
 
         for attempt in range(MAX_AUTO_RETRIES):
             if state.get('status') == 'cancelled':
