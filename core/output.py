@@ -279,42 +279,54 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     for i, shot in enumerate(shots):
         start_sec = float(shot.get('timestamp', 0)) - time_offset
 
-        # Each shot ends when the *voice* ends, not when the next shot starts.
-        # Closing the gap with `shots[i+1].timestamp` would absorb every pause
-        # between sentences into the previous clip and push every visual cut
-        # late by the length of that pause — exactly the drift the user sees
-        # when silences aren't accounted for.
-        end_sec = float(shot.get('end_timestamp', start_sec + time_offset + 5)) - time_offset
-        if i < len(shots) - 1:
-            next_start = float(shots[i+1].get('timestamp', end_sec + time_offset)) - time_offset
-            # Never overlap into the next shot if the LLM produced an
-            # end_timestamp slightly past the next shot's start.
-            if next_start < end_sec:
-                end_sec = next_start
+        # Voice end is where the shot's audio actually finishes. Sub-clip
+        # cuts inside the shot divide *this* range evenly so visible
+        # transitions land on the voice instead of drifting through silences.
+        voice_end = float(shot.get('end_timestamp', start_sec + time_offset + 5)) - time_offset
 
-        total_duration_sec = end_sec - start_sec
-        if total_duration_sec <= 0:
-            total_duration_sec = 1.0
+        # next_start: where the next shot's voice begins. Used to clamp a
+        # slightly-overlapping LLM answer and — more importantly — to extend
+        # the very last sub-clip across the trailing silence so the timeline
+        # has no gap before the next shot starts.
+        if i < len(shots) - 1:
+            next_start = float(shots[i+1].get('timestamp', voice_end + time_offset)) - time_offset
+        else:
+            next_start = voice_end
+        if next_start < voice_end:
+            voice_end = next_start
+
+        voice_duration_sec = voice_end - start_sec
+        if voice_duration_sec <= 0:
+            voice_duration_sec = 1.0
 
         sel = shot.get("selected_results", [])
         if not sel:
             continue
-            
-        # Distribute the total duration among all selected candidates for this shot
+
+        # Distribute the voice range evenly across selected candidates.
         num_clips = len(sel)
-        clip_duration_sec = total_duration_sec / num_clips
-        
+        clip_duration_sec = voice_duration_sec / num_clips
+
         for res_idx, res in enumerate(sel):
             url = res.get("url")
             if not url:
                 continue
-                
+
             # Placement for this specific clip within the shot. Anchor BOTH
             # start_frame and end_frame to absolute seconds (not start+duration)
             # so adjacent sub-clips touch exactly on the same frame and the
             # shot's total length matches the voice down to one frame.
             clip_start_sec = start_sec + (res_idx * clip_duration_sec)
-            clip_end_sec   = clip_start_sec + clip_duration_sec
+            is_last_clip = (res_idx == num_clips - 1)
+            if is_last_clip:
+                # Stretch the last pick of this shot across the silence
+                # before the next shot begins, so the b-roll covers the
+                # pause instead of leaving an empty timeline slot. For the
+                # very last shot of the project next_start == voice_end,
+                # so this just ends on the voice — no extension.
+                clip_end_sec = next_start
+            else:
+                clip_end_sec = clip_start_sec + clip_duration_sec
 
             start_frame     = sec_to_frames(clip_start_sec, fps_exact)
             end_frame       = sec_to_frames(clip_end_sec,   fps_exact)
