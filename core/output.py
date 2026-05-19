@@ -238,13 +238,20 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     # ── Timeline Math & Placement ──
     for i, shot in enumerate(shots):
         start_sec = float(shot.get('timestamp', 0))
-        
-        # Calculate overall shot duration
+
+        # Each shot ends when the *voice* ends, not when the next shot starts.
+        # Closing the gap with `shots[i+1].timestamp` would absorb every pause
+        # between sentences into the previous clip and push every visual cut
+        # late by the length of that pause — exactly the drift the user sees
+        # when silences aren't accounted for.
+        end_sec = float(shot.get('end_timestamp', start_sec + 5))
         if i < len(shots) - 1:
-            end_sec = float(shots[i+1].get('timestamp', start_sec + 5))
-        else:
-            end_sec = float(shot.get('end_timestamp', start_sec + 5))
-            
+            next_start = float(shots[i+1].get('timestamp', end_sec))
+            # Never overlap into the next shot if the LLM produced an
+            # end_timestamp slightly past the next shot's start.
+            if next_start < end_sec:
+                end_sec = next_start
+
         total_duration_sec = end_sec - start_sec
         if total_duration_sec <= 0:
             total_duration_sec = 1.0

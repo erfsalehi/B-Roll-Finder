@@ -2869,11 +2869,20 @@ elif app_mode in ["Director", "Smart Mode"]:
                     st.error("Please upload a script first.")
                 else:
                     with st.spinner("Analyzing script for highlights..."):
+                        # Hand the LLM the Whisper segments when we have them —
+                        # those carry real-audio timestamps that include
+                        # silences, so the highlight start/end times line up
+                        # with the voice instead of being estimated from text.
+                        _segs_for_hl = st.session_state.get("transcription_segments") or None
                         st.session_state.text_overlays = extract_highlights(
-                            st.session_state.script_text, 
-                            os.getenv("GROQ_API_KEY")
+                            st.session_state.script_text,
+                            os.getenv("GROQ_API_KEY"),
+                            segments=_segs_for_hl,
                         )
-                        st.success(f"Extracted {len(st.session_state.text_overlays)} highlights!")
+                        if _segs_for_hl:
+                            st.success(f"Extracted {len(st.session_state.text_overlays)} highlights (timed against the real audio).")
+                        else:
+                            st.success(f"Extracted {len(st.session_state.text_overlays)} highlights!")
             
             if st.session_state.text_overlays:
                 st.subheader("Fine-tune Overlays & SFX")

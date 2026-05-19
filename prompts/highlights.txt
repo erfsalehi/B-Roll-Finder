@@ -7,9 +7,10 @@ Categories to look for:
 - CORE CONCEPTS: Powerful phrases that summarize a key takeaway.
 
 Constraint:
-- highlight_text MUST be short (under 5 words). 
+- highlight_text MUST be short (under 5 words).
 - For HEADINGS, use the exact text from the script if it marks a new section, including any numbers (e.g. "1. OVERVIEW").
 - start_time and end_time MUST be in HH:MM:SS,mmm format if provided in the script, or seconds.
+- IMPORTANT: if the input is a TIMESTAMPED TRANSCRIPT (lines like "[12.345 - 14.890]: text"), the timestamps are the real audio timeline including silences. Use them VERBATIM — pick start_time from the first segment that contains the highlighted phrase and end_time from the last segment that contains it. Do NOT estimate from word count; the natural pauses between segments are real silences in the voiceover and must be respected.
 - original_caption MUST be the relevant snippet from the script.
 - suggested_sfx: Suggest a 1-2 word sound effect that fits the context (e.g., "whoosh", "ding", "cash register", "pop", "camera shutter").
 

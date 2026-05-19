@@ -36,9 +36,32 @@ def load_highlights_prompt() -> str:
     with open(prompt_path, 'r', encoding='utf-8') as f:
         return f.read()
 
-def extract_highlights(script_text: str, groq_key: str = None) -> list:
+def extract_highlights(script_text: str, groq_key: str = None, segments: list = None) -> list:
+    """Pull on-screen highlights out of the script.
+
+    When ``segments`` (Whisper transcription with per-segment start/end times)
+    is provided, the LLM gets the script as a timestamped transcript instead
+    of bare text. That way the highlight start/end times reflect when the
+    voice actually says each phrase — silences and pauses included — instead
+    of being estimated from word count alone, which is what made overlay
+    timing drift away from the audio.
+    """
     system_prompt = load_highlights_prompt()
-    user_content = f"Script for analysis:\n\n{script_text}"
+
+    if segments:
+        lines = [
+            f"[{float(s['start']):.3f} - {float(s['end']):.3f}]: {s['text'].strip()}"
+            for s in segments
+            if s.get('text')
+        ]
+        user_content = (
+            "Timestamped transcript (use these exact times — they reflect the "
+            "real audio including silences):\n\n"
+            + "\n".join(lines)
+        )
+    else:
+        user_content = f"Script for analysis:\n\n{script_text}"
+
     try:
         if groq_key:
             client = Groq(api_key=groq_key)
