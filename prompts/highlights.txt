@@ -7,11 +7,11 @@ Categories to look for:
 - CORE CONCEPTS: Powerful phrases that summarize a key takeaway.
 
 Constraint:
-- highlight_text MUST be short (under 5 words).
-- For HEADINGS, use the exact text from the script if it marks a new section, including any numbers (e.g. "1. OVERVIEW").
+- highlight_text MUST be short (under 5 words) for MONEY, STATISTICS, and CORE CONCEPTS.
+- For HEADINGS/TITLES the short-text rule does NOT apply: both `highlight_text` AND `original_caption` MUST be the EXACT, VERBATIM heading line from the script — character-for-character including punctuation, capitalization, and any leading numbers (e.g. "1. OVERVIEW", "2- Strategy: Why It Works"). Do NOT shorten, paraphrase, summarize, retitle, or "clean up" headings — the on-screen overlay uses this text directly, so any change is visible to the viewer.
 - start_time and end_time MUST be in HH:MM:SS,mmm format if provided in the script, or seconds.
 - IMPORTANT: if the input is a TIMESTAMPED TRANSCRIPT (lines like "[12.345 - 14.890]: text"), the timestamps are the real audio timeline including silences. Use them VERBATIM — pick start_time from the first segment that contains the highlighted phrase and end_time from the last segment that contains it. Do NOT estimate from word count; the natural pauses between segments are real silences in the voiceover and must be respected.
-- original_caption MUST be the relevant snippet from the script.
+- original_caption MUST be the relevant snippet from the script (and for headings, the exact line as described above).
 - suggested_sfx: Suggest a 1-2 word sound effect that fits the context (e.g., "whoosh", "ding", "cash register", "pop", "camera shutter").
 
 Return a JSON array of objects under a top-level "highlights" key.
@@ -25,6 +25,14 @@ Example:
       "highlight_text": "1. $10,000 SAVED",
       "category": "money",
       "suggested_sfx": "cash register"
+    },
+    {
+      "start_time": "00:00:42,000",
+      "end_time": "00:00:45,500",
+      "original_caption": "2- Strategy: Why It Works",
+      "highlight_text": "2- Strategy: Why It Works",
+      "category": "headings/titles",
+      "suggested_sfx": "whoosh"
     }
   ]
 }

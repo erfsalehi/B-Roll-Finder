@@ -2886,22 +2886,29 @@ elif app_mode in ["Director", "Smart Mode"]:
             
             if st.session_state.text_overlays:
                 st.subheader("Fine-tune Overlays & SFX")
-                # Editable data table. The previous version commented out the
-                # write-back to session_state to "prevent refresh loop", but
-                # that meant edits never persisted — the user could change a
-                # row but the next downstream step (PNG generation, FCPXML
-                # export, etc.) still saw the original AI-extracted data.
+                # Editable data table.
                 #
-                # Refresh-loop fix: only write back when the edited data
-                # genuinely differs from what's already in session state.
-                # If we wrote back unconditionally Streamlit would detect a
-                # session_state change on every rerun and bounce the data
-                # editor's widget value, causing the cursor to jump out of
-                # the cell mid-edit. The equality guard breaks that loop —
-                # writes happen only on actual changes, no-ops on identity.
-                # Ensure each overlay row has a 'size' field so the data_editor
-                # renders the per-row size column without "None" gaps in the UI.
-                # None means "use global size"; a number overrides for that row.
+                # Cell-jump fix: we used to eagerly write the editor's
+                # returned DataFrame back into st.session_state.text_overlays
+                # on every rerun. The round-trip through
+                # `DataFrame.to_dict('records')` quietly coerces types
+                # (None -> NaN, int -> np.int64), so the `!=` equality guard
+                # treated every rerun as a "change" and overwrote the input
+                # backing the data_editor. That mutated the widget's input
+                # mid-edit, Streamlit's cached delta got stomped, and the
+                # cell visibly reverted the moment the user pressed Enter.
+                #
+                # The data_editor's own widget state (keyed by "ov_editor")
+                # already persists edits across reruns, and the Generate
+                # PNGs handler below reads `edited_df.to_dict('records')`
+                # directly and writes it to session_state at that point —
+                # which is the right place to commit. So we just render the
+                # editor and stop touching session_state until commit time.
+                #
+                # Ensure each overlay row has a 'size' field so the
+                # data_editor renders the per-row size column without "None"
+                # gaps in the UI. None means "use global size"; a number
+                # overrides for that row.
                 for _ov_row in st.session_state.text_overlays:
                     _ov_row.setdefault("size", None)
                 edited_df = st.data_editor(
@@ -2922,20 +2929,6 @@ elif app_mode in ["Director", "Smart Mode"]:
                         ),
                     },
                 )
-                # data_editor returns a DataFrame when input is dict-list AND
-                # the editor added/removed rows in some Streamlit versions;
-                # normalise to a list-of-dicts for the equality check and the
-                # downstream PNG generator (which iterates dicts).
-                if edited_df is not None:
-                    if hasattr(edited_df, "to_dict"):
-                        _new_overlays = edited_df.to_dict("records")
-                    elif isinstance(edited_df, list):
-                        _new_overlays = edited_df
-                    else:
-                        _new_overlays = list(edited_df)
-                    if _new_overlays != st.session_state.text_overlays:
-                        st.session_state.text_overlays = _new_overlays
-                        save_cache()
                 
                 st.divider()
                 st.subheader("Visual Settings")
@@ -3077,9 +3070,18 @@ elif app_mode in ["Director", "Smart Mode"]:
 
                         # Source the sample text from the overlay rows so the
                         # preview reflects real content. Heading rows use the
-                        # full caption; others use highlight_text.
+                        # full caption; others use highlight_text. Prefer the
+                        # data_editor's live state over session_state so
+                        # in-progress edits show up in the preview without
+                        # waiting for the Generate-PNGs click to commit.
+                        if edited_df is not None and hasattr(edited_df, "to_dict"):
+                            _sample_src = edited_df.to_dict("records")
+                        elif edited_df is not None and isinstance(edited_df, list):
+                            _sample_src = edited_df
+                        else:
+                            _sample_src = st.session_state.text_overlays or []
                         sample_options = []
-                        for _i, _ov_row in enumerate(st.session_state.text_overlays or []):
+                        for _i, _ov_row in enumerate(_sample_src):
                             _cat = str(_ov_row.get("category", "")).lower()
                             _is_hdg = "heading" in _cat
                             _txt = str(_ov_row.get("original_caption", "") if _is_hdg else _ov_row.get("highlight_text", "")).strip()
