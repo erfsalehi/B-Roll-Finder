@@ -3356,10 +3356,28 @@ elif app_mode in ["Director", "Smart Mode"]:
                 chunk_sfx = [{"filepath": s["sfx_path"], "start_sec": s["start_sec"]} for s in chunk_sfx]
 
             part_display_name = p_name if num_parts == 1 else f"{p_name}_Part_{i+1}"
-            xml_content = generate_fcpxml(shot_chunk, project_name=part_display_name, overlays=chunk_overlays, sfx_list=chunk_sfx)
+            # When the timeline is split, re-zero each chunk so its first shot
+            # lives at frame 0 of its own sequence. Otherwise chunk 2's clips
+            # keep their absolute frame positions (shot 29 ≈ 29 s in) and the
+            # imported sequence has a giant empty gap at the head — which is
+            # what showed shot 29's footage landing right after shot 23's.
+            chunk_offset = float(shot_chunk[0].get("timestamp", 0.0)) if num_parts > 1 else 0.0
+            xml_content = generate_fcpxml(
+                shot_chunk,
+                project_name=part_display_name,
+                overlays=chunk_overlays,
+                sfx_list=chunk_sfx,
+                time_offset=chunk_offset,
+            )
             
             fname = "b_roll_sequence.xml" if num_parts == 1 else f"b_roll_sequence_part_{i+1}.xml"
-            xml_parts.append({"filename": fname, "content": xml_content})
+            xml_parts.append({
+                "filename": fname,
+                "content": xml_content,
+                "offset_sec": chunk_offset,
+                "first_slot": shot_chunk[0].get("slot_id"),
+                "last_slot": shot_chunk[-1].get("slot_id"),
+            })
             
             # Auto-save each part to disk
             xml_path = os.path.join("downloads", "director", proj_folder, fname)
@@ -3420,10 +3438,21 @@ elif app_mode in ["Director", "Smart Mode"]:
                 )
             else:
                 st.write("**XML Sequences (Split):**")
+                st.caption(
+                    "Each part is a self-contained sequence starting at frame 0. "
+                    "Drop each part at the listed audio offset on your master timeline "
+                    "to line back up with the voiceover."
+                )
                 for p in xml_parts:
+                    off = p.get("offset_sec", 0.0) or 0.0
+                    h = int(off) // 3600
+                    m = (int(off) % 3600) // 60
+                    s = off - h * 3600 - m * 60
+                    off_str = f"{h:02d}:{m:02d}:{s:06.3f}"
                     st.download_button(
-                        f"Download {p['filename']}", 
-                        data=p["content"], 
-                        file_name=p["filename"], 
-                        mime="text/xml"
+                        f"Download {p['filename']}  (shots {p.get('first_slot')}–{p.get('last_slot')} • starts at {off_str})",
+                        data=p["content"],
+                        file_name=p["filename"],
+                        mime="text/xml",
+                        help=f"Drag this sequence's content to {off_str} on your master timeline to align with the voiceover.",
                     )

@@ -228,10 +228,16 @@ def _safe_for_fs(text: str, max_len: int = 30) -> str:
     cleaned = "-".join(cleaned.split()).lower()
     return cleaned[:max_len].strip("-") or ""
 
-def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None, sfx_list: list = None) -> str:
+def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None,
+                    sfx_list: list = None, time_offset: float = 0.0) -> str:
     """
     Generates a bulletproof Legacy FCP 7 XML (<xmeml>) for Premiere Pro.
     Uses exact frame math and implicit gaps to guarantee compatibility.
+
+    ``time_offset`` (seconds) is subtracted from every shot / overlay / SFX
+    start so a chunked export can begin at frame 0 instead of inheriting an
+    empty gap from the original timeline. Pass ``shots[0]['timestamp']`` when
+    splitting into multiple XML parts; pass 0 for a single-file export.
     """
     proj_folder = _safe_for_fs(project_name, 50)
     # We use absolute paths for the 'pathurl' attribute so Premiere can find them instantly.
@@ -271,16 +277,16 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
 
     # ── Timeline Math & Placement ──
     for i, shot in enumerate(shots):
-        start_sec = float(shot.get('timestamp', 0))
+        start_sec = float(shot.get('timestamp', 0)) - time_offset
 
         # Each shot ends when the *voice* ends, not when the next shot starts.
         # Closing the gap with `shots[i+1].timestamp` would absorb every pause
         # between sentences into the previous clip and push every visual cut
         # late by the length of that pause — exactly the drift the user sees
         # when silences aren't accounted for.
-        end_sec = float(shot.get('end_timestamp', start_sec + 5))
+        end_sec = float(shot.get('end_timestamp', start_sec + time_offset + 5)) - time_offset
         if i < len(shots) - 1:
-            next_start = float(shots[i+1].get('timestamp', end_sec))
+            next_start = float(shots[i+1].get('timestamp', end_sec + time_offset)) - time_offset
             # Never overlap into the next shot if the LLM produced an
             # end_timestamp slightly past the next shot's start.
             if next_start < end_sec:
@@ -412,10 +418,15 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             ov_filename = os.path.basename(ov_path)
             ov_uri = _get_premiere_safe_pathurl(ov_path)
             
-            s_sec = float(ov.get("start_sec", 0))
-            e_sec = float(ov.get("end_sec", s_sec + 3))
+            s_sec = float(ov.get("start_sec", 0)) - time_offset
+            e_sec = float(ov.get("end_sec", s_sec + time_offset + 3)) - time_offset
             if e_sec <= s_sec:
                 e_sec = s_sec + 3
+            # Skip overlays whose audio time falls outside this chunk — the
+            # caller is expected to pre-filter, but a stray entry shouldn't
+            # land at a negative timeline position.
+            if s_sec < 0:
+                continue
 
             # Anchor both endpoints to absolute seconds so the on-screen text
             # appears/disappears exactly with the voice — separately rounding
@@ -555,11 +566,13 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             sfx_filename = os.path.basename(sfx_path)
             sfx_uri = _get_premiere_safe_pathurl(sfx_path)
             
-            s_sec = float(sfx.get("start_sec", 0))
-            
+            s_sec = float(sfx.get("start_sec", 0)) - time_offset
+            if s_sec < 0:
+                continue
+
             # Get actual duration of the SFX file
             sfx_dur_sec = _get_media_duration(sfx_path, fallback_duration=2.0)
-            
+
             s_frame = sec_to_frames(s_sec, fps_exact)
             d_frame = sec_to_frames(sfx_dur_sec, fps_exact)
             e_frame = s_frame + d_frame
