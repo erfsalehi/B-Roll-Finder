@@ -129,6 +129,40 @@ def generate_transcription_srt(segments: list) -> str:
         lines.append("") # Empty line separator
     return "\n".join(lines)
 
+def generate_shots_srt(shots: list) -> str:
+    """SRT mirror of the shot list, for sanity-checking timing against audio.
+
+    Each cue spans from the shot's own start to the *next* shot's start, so
+    any silence after a shot's voice ends is rolled into that shot's cue.
+    The final shot ends at its own ``end_timestamp``. Drop this SRT onto the
+    audio in any player and you should see "Shot N" appear and stay on
+    screen for the entire run of that shot — including the trailing pause —
+    until "Shot N+1" replaces it the moment the next line of voice begins.
+    """
+    lines = []
+    sorted_shots = sorted(shots, key=lambda s: float(s.get('timestamp', 0)))
+    for i, shot in enumerate(sorted_shots, 1):
+        start_val = float(shot.get('timestamp', 0))
+
+        if i < len(sorted_shots):
+            end_val = float(sorted_shots[i].get('timestamp', start_val))
+        else:
+            end_val = float(shot.get('end_timestamp', start_val + 1.0))
+
+        # Guard against zero/negative spans so the cue is always visible in a
+        # player; one second is enough to read the label.
+        if end_val <= start_val:
+            end_val = start_val + 1.0
+
+        slot_id = shot.get('slot_id', i)
+        lines.append(str(i))
+        lines.append(f"{format_srt_time(start_val)} --> {format_srt_time(end_val)}")
+        lines.append(f"Shot {slot_id}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def generate_failed_downloads_txt(failed_tasks: list) -> str:
     """Generates a text file listing failed downloads."""
     lines = []

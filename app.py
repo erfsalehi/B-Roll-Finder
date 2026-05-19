@@ -12,7 +12,7 @@ from core.youtube import fetch_youtube_results
 from core.stock_apis import search_pexels, search_pixabay
 from core.output import (
     generate_keywords_txt, generate_youtube_txt, generate_srt,
-    generate_transcription_srt, generate_failed_downloads_txt,
+    generate_transcription_srt, generate_shots_srt, generate_failed_downloads_txt,
     generate_fcpxml, generate_shot_list_txt, filter_overlays_for_shots, _safe_for_fs
 )
 from core.captions import (
@@ -3373,17 +3373,38 @@ elif app_mode in ["Director", "Smart Mode"]:
         trans_srt = ""
         if st.session_state.transcription_segments:
             trans_srt = generate_transcription_srt(st.session_state.transcription_segments)
-            
+
+        # Mirror SRT showing "Shot N" cues on the same timeline as the audio,
+        # so the user can drag it onto their voiceover and visually verify
+        # each shot lands on the right line (silences included). Auto-saved
+        # next to the XML for convenience.
+        shots_srt = generate_shots_srt(st.session_state.director_shots)
+        try:
+            shots_srt_path = os.path.join("downloads", "director", proj_folder, "shots.srt")
+            os.makedirs(os.path.dirname(shots_srt_path), exist_ok=True)
+            with open(shots_srt_path, "w", encoding="utf-8") as f:
+                f.write(shots_srt)
+        except Exception:
+            pass
+
         failed_tasks = st.session_state.dm.get_failed_tasks()
         failed_txt = ""
         if failed_tasks:
             failed_txt = generate_failed_downloads_txt(failed_tasks)
             
         c1, c2, c3     = st.columns(3)
-        with c1: 
+        with c1:
             st.download_button("shot_list.json", data=shot_list_json, file_name="shot_list.json", mime="application/json")
             if trans_srt:
                 st.download_button("transcription.srt", data=trans_srt, file_name="transcription.srt", mime="text/plain")
+            if shots_srt:
+                st.download_button(
+                    "shots.srt",
+                    data=shots_srt,
+                    file_name="shots.srt",
+                    mime="text/plain",
+                    help="Drop onto your voiceover in any player to verify each shot lands on the right line — silences are folded into the previous shot's cue.",
+                )
         with c2: 
             st.download_button("shot_list.txt",  data=shot_list_txt,  file_name="shot_list.txt",  mime="text/plain")
             if failed_txt:
