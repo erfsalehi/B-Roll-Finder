@@ -82,6 +82,7 @@ def _render_overlay_rgba(
     outline: bool = False,
     auto_scale: bool = False,
     text_opacity: int = 255,
+    x_offset: int = 0,
 ) -> Image.Image:
     """
     Core renderer that returns a 1920x1080 RGBA image with the caption drawn.
@@ -124,13 +125,16 @@ def _render_overlay_rgba(
     total_h      = sum(line_heights) + line_gap * (len(lines) - 1)
     max_w        = max(line_widths) if line_widths else 0
     y_start      = y_position * s - total_h // 2
+    # X offset is specified in 1080p pixels; scale to the super-sampled canvas
+    # so the visual shift matches what the user sees in the preview UI.
+    x_shift      = int(x_offset) * s
 
     if bg_color:
         pad_x = ss_size // 3
         pad_y = ss_size // 5
-        box_x1 = (W - max_w) // 2 - pad_x
+        box_x1 = (W - max_w) // 2 - pad_x + x_shift
         box_y1 = y_start - pad_y
-        box_x2 = (W + max_w) // 2 + pad_x
+        box_x2 = (W + max_w) // 2 + pad_x + x_shift
         box_y2 = y_start + total_h + pad_y
         radius = max(8, ss_size // 6)
         box_layer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
@@ -153,7 +157,7 @@ def _render_overlay_rgba(
         y = y_start
         for ln, bb, lh in zip(lines, line_bboxes, line_heights):
             text_w = bb[2] - bb[0]
-            x = (W - text_w) / 2 - bb[0]
+            x = (W - text_w) / 2 - bb[0] + x_shift
             draw.text(
                 (x, y), ln, font=font, fill=text_rgba,
                 stroke_width=stroke_w, stroke_fill=shadow_rgba,
@@ -169,7 +173,7 @@ def _render_overlay_rgba(
         y = y_start
         for ln, bb, lh in zip(lines, line_bboxes, line_heights):
             text_w = bb[2] - bb[0]
-            x = (W - text_w) / 2 - bb[0]
+            x = (W - text_w) / 2 - bb[0] + x_shift
             sh_draw.text((x + offset, y + offset), ln, font=font, fill=shadow_rgba)
             y += lh + line_gap
         blur_radius = max(2, ss_size // 24)
@@ -180,7 +184,7 @@ def _render_overlay_rgba(
         y = y_start
         for ln, bb, lh in zip(lines, line_bboxes, line_heights):
             text_w = bb[2] - bb[0]
-            x = (W - text_w) / 2 - bb[0]
+            x = (W - text_w) / 2 - bb[0] + x_shift
             draw.text((x, y), ln, font=font, fill=text_rgba)
             y += lh + line_gap
 
@@ -202,9 +206,16 @@ def create_text_overlay(
     outline: bool = False,
     auto_scale: bool = False,
     text_opacity: int = 255,
+    x_offset: int = 0,
 ) -> str:
     """
     Generates a 1920x1080 transparent PNG with centered, wrapped text.
+
+    ``x_offset`` shifts the text (and its background box) horizontally from
+    centre by N 1080p pixels. y_position is the absolute Y centre; any
+    vertical fine-tuning the caller wants should be folded into y_position
+    before the call (the renderer doesn't need a separate y_offset
+    parameter).
     """
     img = _render_overlay_rgba(
         text=text,
@@ -218,6 +229,7 @@ def create_text_overlay(
         outline=outline,
         auto_scale=auto_scale,
         text_opacity=text_opacity,
+        x_offset=x_offset,
     )
 
     dir_part = os.path.dirname(filename)

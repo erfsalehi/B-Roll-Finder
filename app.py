@@ -75,6 +75,11 @@ if "overlay_settings" not in st.session_state:
         "bg_box_color": "#000000",
         "bg_box_opacity": 160,
         "emoji_prefix": False,
+        # Fine-tune offsets applied on top of the Top/Middle/Bottom anchor.
+        # Both are in 1080p pixels; positive y_offset moves text DOWN, positive
+        # x_offset moves text RIGHT.
+        "y_offset": 0,
+        "x_offset": 0,
         "category_colors": {
             "headings/titles": "#FFFFFF",
             "money/pricing":   "#FFD700",
@@ -2949,6 +2954,30 @@ elif app_mode in ["Director", "Smart Mode"]:
                                                    index=0 if _ov.get("effect_type","Shadow") == "Shadow" else 1)
                     _ov["shadow"] = st.color_picker("Effect Color", _ov["shadow"])
 
+                # ── Position fine-tune ──────────────────────────────────────────
+                # Offsets stack on top of the Top/Middle/Bottom anchor above —
+                # picking "Bottom" with Y offset +50 nudges the text 50 px lower
+                # than the default 850. The live preview below uses the same
+                # math the PNG generator does, so what you see is final output.
+                c_p1, c_p2, c_p3 = st.columns([2, 2, 1])
+                with c_p1:
+                    _ov["y_offset"] = st.slider(
+                        "Y offset (px, +down)", -400, 400,
+                        int(_ov.get("y_offset", 0)), 5,
+                        help="Vertical nudge from the placement anchor, in 1080p pixels.",
+                    )
+                with c_p2:
+                    _ov["x_offset"] = st.slider(
+                        "X offset (px, +right)", -800, 800,
+                        int(_ov.get("x_offset", 0)), 5,
+                        help="Horizontal shift from centre, in 1080p pixels.",
+                    )
+                with c_p3:
+                    if st.button("Reset offsets", key="ov_reset_offsets"):
+                        _ov["y_offset"] = 0
+                        _ov["x_offset"] = 0
+                        st.rerun()
+
                 # ── Row 2: Background Box & Animation ───────────────────────────
                 c_a1, c_a2, c_a3 = st.columns(3)
                 with c_a1:
@@ -3084,7 +3113,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 break
 
                         placement_map_pv = {"Top": 120, "Middle": 480, "Bottom": 850}
-                        y_pv = placement_map_pv.get(_ov.get("placement", "Bottom"), 850)
+                        y_anchor_pv = placement_map_pv.get(_ov.get("placement", "Bottom"), 850)
+                        y_off_pv = int(_ov.get("y_offset", 0))
+                        x_off_pv = int(_ov.get("x_offset", 0))
+                        # Clamp the effective Y so the text centre never lands
+                        # outside the 1080p canvas — keeps the preview readable
+                        # even when the user drags the slider to an extreme.
+                        y_pv = max(40, min(1040, y_anchor_pv + y_off_pv))
 
                         _avail_fonts_pv = get_available_fonts()
                         _font_path_pv = _avail_fonts_pv.get(_ov.get("font_family", ""), None)
@@ -3100,6 +3135,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 color=eff_color,
                                 shadow_color=_ov["shadow"],
                                 y_position=y_pv,
+                                x_offset=x_off_pv,
                                 bg_color=_ov.get("bg_box_color") if _ov.get("bg_box") else None,
                                 bg_opacity=_ov.get("bg_box_opacity", 160),
                                 outline=_ov.get("effect_type", "Shadow") == "Outline",
@@ -3108,7 +3144,10 @@ elif app_mode in ["Director", "Smart Mode"]:
                             )
                             st.image(
                                 preview_img,
-                                caption=f"1080p preview · effective size {eff_size}px · placement {_ov.get('placement','Bottom')}",
+                                caption=(
+                                    f"1080p preview · {eff_size}px · "
+                                    f"{_ov.get('placement','Bottom')} (Y={y_pv}, X offset={x_off_pv})"
+                                ),
                                 width="stretch",
                             )
                         except Exception as _e:
@@ -3141,9 +3180,16 @@ elif app_mode in ["Director", "Smart Mode"]:
                         # data_editor returns a DataFrame; convert back to list of dicts
                         import pandas as pd
                         final_ovs = edited_df.to_dict('records') if isinstance(edited_df, pd.DataFrame) else list(edited_df)
-                        # Map placement to Y coordinate for Pillow
+                        # Map placement to Y coordinate for Pillow, then apply
+                        # the Y offset slider on top so the generated PNGs land
+                        # at exactly the position the user dialed in on the
+                        # preview. Clamp to the canvas just like the preview.
                         placement_map = {"Top": 120, "Middle": 480, "Bottom": 850}
-                        target_y = placement_map.get(st.session_state.overlay_settings["placement"], 850)
+                        _placement = st.session_state.overlay_settings["placement"]
+                        _y_anchor = placement_map.get(_placement, 850)
+                        _y_off = int(st.session_state.overlay_settings.get("y_offset", 0))
+                        _x_off = int(st.session_state.overlay_settings.get("x_offset", 0))
+                        target_y = max(40, min(1040, _y_anchor + _y_off))
 
                         import random as _random
                         _ov_s        = st.session_state.overlay_settings
@@ -3204,6 +3250,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 color=ov_color,
                                 shadow_color=_ov_s["shadow"],
                                 y_position=target_y,
+                                x_offset=_x_off,
                                 bg_color=_bg_col,
                                 bg_opacity=_bg_opa,
                                 outline=_use_outline,
