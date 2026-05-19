@@ -91,11 +91,13 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
                 duration = chunk_words / wps if wps > 0 else 1.0
                 end_time = current_time + duration
                 
-                # Build the slot matching the new architecture
+                # Build the slot matching the new architecture. Timestamps are
+                # kept as floats so the FCP XML lines up frame-accurately with
+                # the voice; the *_str fields stay HH:MM:SS for display.
                 all_shots.append({
                     "slot_id": slot_id,
-                    "timestamp": int(current_time),
-                    "end_timestamp": int(end_time),
+                    "timestamp": round(float(current_time), 3),
+                    "end_timestamp": round(float(end_time), 3),
                     "timestamp_start_str": format_time(int(current_time)),
                     "timestamp_end_str": format_time(int(end_time)),
                     "text": chunk_text,
@@ -119,8 +121,8 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
             end_time = current_time + duration
             all_shots.append({
                 "slot_id": slot_id,
-                "timestamp": int(current_time),
-                "end_timestamp": int(end_time),
+                "timestamp": round(float(current_time), 3),
+                "end_timestamp": round(float(end_time), 3),
                 "timestamp_start_str": format_time(int(current_time)),
                 "timestamp_end_str": format_time(int(end_time)),
                 "text": block,
@@ -195,8 +197,8 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
                 all_shots.append({
                     "slot_id": slot_id,
                     "chunk_id": chunk_id,
-                    "timestamp": int(float(s_time)),
-                    "end_timestamp": int(float(e_time)),
+                    "timestamp": round(float(s_time), 3),
+                    "end_timestamp": round(float(e_time), 3),
                     "timestamp_start_str": format_time(int(float(s_time))),
                     "timestamp_end_str": format_time(int(float(e_time))),
                     "text": shot.get("script_chunk", ""),
@@ -218,8 +220,8 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
                 all_shots.append({
                     "slot_id": slot_id,
                     "chunk_id": chunk_id,
-                    "timestamp": int(float(s_time)),
-                    "end_timestamp": int(float(e_time)),
+                    "timestamp": round(float(s_time), 3),
+                    "end_timestamp": round(float(e_time), 3),
                     "timestamp_start_str": format_time(int(float(s_time))),
                     "timestamp_end_str": format_time(int(float(e_time))),
                     "text": " ".join([s["text"] for s in block]),
@@ -321,8 +323,9 @@ def regenerate_shot_queries(
     return shots
 
 
-def format_time(seconds: int) -> str:
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
+def format_time(seconds) -> str:
+    total = int(float(seconds))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
     return f"{h:02d}:{m:02d}:{s:02d}"

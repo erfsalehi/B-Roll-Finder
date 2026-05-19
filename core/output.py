@@ -38,10 +38,12 @@ def _get_media_duration(path: str, fallback_duration: float = 3600.0) -> float:
     return meta['duration']
 
 
-def format_time(seconds: int) -> str:
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
+def format_time(seconds) -> str:
+    # Shots now carry float timestamps; floor to whole seconds for display.
+    total = int(float(seconds))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
     return f"[{h:02d}:{m:02d}:{s:02d}]"
 
 def format_srt_time(seconds: float) -> str:
@@ -260,13 +262,16 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             if not url:
                 continue
                 
-            # Placement for this specific clip within the shot
+            # Placement for this specific clip within the shot. Anchor BOTH
+            # start_frame and end_frame to absolute seconds (not start+duration)
+            # so adjacent sub-clips touch exactly on the same frame and the
+            # shot's total length matches the voice down to one frame.
             clip_start_sec = start_sec + (res_idx * clip_duration_sec)
-            clip_end_sec = clip_start_sec + clip_duration_sec
-            
-            start_frame = sec_to_frames(clip_start_sec, fps_exact)
-            duration_frames = sec_to_frames(clip_duration_sec, fps_exact)
-            end_frame = start_frame + duration_frames
+            clip_end_sec   = clip_start_sec + clip_duration_sec
+
+            start_frame     = sec_to_frames(clip_start_sec, fps_exact)
+            end_frame       = sec_to_frames(clip_end_sec,   fps_exact)
+            duration_frames = max(1, end_frame - start_frame)
 
             # File pathing logic - follow app.py naming exactly
             slot_id = shot.get("slot_id", "X")
@@ -368,11 +373,15 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             
             s_sec = float(ov.get("start_sec", 0))
             e_sec = float(ov.get("end_sec", s_sec + 3))
-            d_sec = e_sec - s_sec
-            
+            if e_sec <= s_sec:
+                e_sec = s_sec + 3
+
+            # Anchor both endpoints to absolute seconds so the on-screen text
+            # appears/disappears exactly with the voice — separately rounding
+            # start and duration could push the overlay off by a frame.
             s_frame = sec_to_frames(s_sec, fps_exact)
-            d_frame = sec_to_frames(d_sec, fps_exact)
-            e_frame = s_frame + d_frame
+            e_frame = sec_to_frames(e_sec, fps_exact)
+            d_frame = max(1, e_frame - s_frame)
             
             # Media duration (PNGs are usually 1 frame or infinite, but FCP7 likes a duration)
             media_dur_frames = sec_to_frames(3600.0, fps_exact) # 1 hour fallback for stills

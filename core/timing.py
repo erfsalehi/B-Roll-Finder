@@ -184,8 +184,8 @@ def parse_script_to_slots(script_text: str, duration_seconds: float, intro_durat
             
         chunk = " ".join(words[current_word_idx:end_idx])
         slots.append({
-            "timestamp": int(current_time),
-            "end_timestamp": int(min(current_time + interval, max_time)),
+            "timestamp": round(float(current_time), 3),
+            "end_timestamp": round(float(min(current_time + interval, max_time)), 3),
             "text": chunk
         })
         

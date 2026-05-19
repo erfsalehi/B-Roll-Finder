@@ -230,10 +230,11 @@ def call_groq_api(client: Groq, system_prompt: str, user_content: str) -> str:
     """
     return _call_llm_str(client, system_prompt, user_content)
 
-def format_time(seconds: int) -> str:
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
+def format_time(seconds) -> str:
+    total = int(float(seconds))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
     return f"[{h:02d}:{m:02d}:{s:02d}]"
 
 def generate_keywords_for_slots(slots: list, api_key: str, num_alternatives: int = 3, batch_size: int = 10, progress_callback=None, custom_instructions: str = "") -> list:
