@@ -421,15 +421,20 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
 
     # ── Track 2: Overlays ──
     if overlays:
+        # Premiere needs every video track to be explicitly enabled/unlocked,
+        # otherwise the overlay track imports as a phantom and the clips don't
+        # show on the timeline.
         xml.append('            <track>')
+        xml.append('              <enabled>TRUE</enabled>')
+        xml.append('              <locked>FALSE</locked>')
         for idx, ov in enumerate(overlays):
             ov_path = ov.get("filepath")
             if not ov_path or not os.path.exists(ov_path):
                 continue
-            
+
             ov_filename = os.path.basename(ov_path)
             ov_uri = _get_premiere_safe_pathurl(ov_path)
-            
+
             s_sec = float(ov.get("start_sec", 0)) - time_offset
             e_sec = float(ov.get("end_sec", s_sec + time_offset + 3)) - time_offset
             if e_sec <= s_sec:
@@ -446,15 +451,24 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             s_frame = sec_to_frames(s_sec, fps_exact)
             e_frame = sec_to_frames(e_sec, fps_exact)
             d_frame = max(1, e_frame - s_frame)
-            
+
             # Media duration (PNGs are usually 1 frame or infinite, but FCP7 likes a duration)
             media_dur_frames = sec_to_frames(3600.0, fps_exact) # 1 hour fallback for stills
-            
+
             file_id = f"file-ov-{idx}"
             clip_id = f"clip-ov-{idx}"
-            
+
+            # FCP7-XML still images require <samplecharacteristics>
+            # (width/height/pixelaspectratio/fielddominance) inside the file's
+            # <media><video>. Without those Premiere silently drops PNG
+            # stills on import — the track is empty even though the XML
+            # looks valid. <alphatype>straight</alphatype> on the clipitem
+            # is what makes Premiere honor the PNG's transparency rather
+            # than rendering the alpha as black. <masterclipid> + <enabled>
+            # are the standard pairing Premiere expects for any clipitem.
             xml.append(f'              <clipitem id="{clip_id}">')
             xml.append(f'                <name>{_xml_attr(ov_filename)}</name>')
+            xml.append('                <enabled>TRUE</enabled>')
             xml.append(f'                <duration>{media_dur_frames}</duration>')
             xml.append('                <rate>')
             xml.append(f'                  <timebase>{timebase}</timebase>')
@@ -464,7 +478,9 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             xml.append(f'                <end>{e_frame}</end>')
             xml.append('                <in>0</in>')
             xml.append(f'                <out>{d_frame}</out>')
-            
+            xml.append(f'                <masterclipid>{file_id}</masterclipid>')
+            xml.append('                <alphatype>straight</alphatype>')
+
             xml.append(f'                <file id="{file_id}">')
             xml.append(f'                  <name>{_xml_attr(ov_filename)}</name>')
             xml.append(f'                  <pathurl>{_xml_attr(ov_uri)}</pathurl>')
@@ -476,6 +492,13 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             xml.append('                  <media>')
             xml.append('                    <video>')
             xml.append(f'                      <duration>{media_dur_frames}</duration>')
+            xml.append('                      <samplecharacteristics>')
+            xml.append('                        <width>1920</width>')
+            xml.append('                        <height>1080</height>')
+            xml.append('                        <anamorphic>FALSE</anamorphic>')
+            xml.append('                        <pixelaspectratio>square</pixelaspectratio>')
+            xml.append('                        <fielddominance>none</fielddominance>')
+            xml.append('                      </samplecharacteristics>')
             xml.append('                    </video>')
             xml.append('                  </media>')
             xml.append('                </file>')
