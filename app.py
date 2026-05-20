@@ -2929,7 +2929,53 @@ elif app_mode in ["Director", "Smart Mode"]:
                         ),
                     },
                 )
-                
+
+                def _resolved_overlays_from_editor():
+                    """Return overlays with the data_editor's deltas applied.
+
+                    Streamlit 1.57's data_editor, when fed a list-of-dicts
+                    AND given a `key`, returns the original input list
+                    unchanged — the user's edits live ONLY in
+                    st.session_state["ov_editor"] as deltas
+                    (edited_rows / added_rows / deleted_rows). That's why
+                    editing `highlight_text` in the table never made it
+                    into the rendered PNG: `edited_df` looked like the
+                    input. The widget state IS authoritative, so we apply
+                    it onto a fresh copy of the input here.
+                    """
+                    base = [dict(o) for o in (st.session_state.text_overlays or [])]
+                    state = st.session_state.get("ov_editor") or {}
+
+                    # edited_rows: {row_idx: {col_name: new_value}}.
+                    # Streamlit stores row_idx as int but be defensive.
+                    for row_key, col_changes in (state.get("edited_rows") or {}).items():
+                        try:
+                            i = int(row_key)
+                        except (TypeError, ValueError):
+                            continue
+                        if 0 <= i < len(base) and isinstance(col_changes, dict):
+                            base[i].update(col_changes)
+
+                    # added_rows: list of dicts the user inserted.
+                    for row in (state.get("added_rows") or []):
+                        if isinstance(row, dict):
+                            new_row = dict(row)
+                            new_row.setdefault("size", None)
+                            base.append(new_row)
+
+                    # deleted_rows: list of row indices the user removed.
+                    deleted_idx = []
+                    for r in (state.get("deleted_rows") or []):
+                        try:
+                            deleted_idx.append(int(r))
+                        except (TypeError, ValueError):
+                            continue
+                    for i in sorted(set(deleted_idx), reverse=True):
+                        if 0 <= i < len(base):
+                            base.pop(i)
+
+                    return base
+
                 st.divider()
                 st.subheader("Visual Settings")
                 _ov = st.session_state.overlay_settings
@@ -3070,16 +3116,11 @@ elif app_mode in ["Director", "Smart Mode"]:
 
                         # Source the sample text from the overlay rows so the
                         # preview reflects real content. Heading rows use the
-                        # full caption; others use highlight_text. Prefer the
-                        # data_editor's live state over session_state so
-                        # in-progress edits show up in the preview without
-                        # waiting for the Generate-PNGs click to commit.
-                        if edited_df is not None and hasattr(edited_df, "to_dict"):
-                            _sample_src = edited_df.to_dict("records")
-                        elif edited_df is not None and isinstance(edited_df, list):
-                            _sample_src = edited_df
-                        else:
-                            _sample_src = st.session_state.text_overlays or []
+                        # full caption; others use highlight_text. Pull from
+                        # the helper so in-progress edits in the table show
+                        # up in the preview immediately — without waiting
+                        # for the Generate-PNGs click to commit.
+                        _sample_src = _resolved_overlays_from_editor()
                         sample_options = []
                         for _i, _ov_row in enumerate(_sample_src):
                             _cat = str(_ov_row.get("category", "")).lower()
@@ -3188,9 +3229,11 @@ elif app_mode in ["Director", "Smart Mode"]:
                             return 0.0
 
                     with st.spinner("Generating transparent PNGs..."):
-                        # data_editor returns a DataFrame; convert back to list of dicts
-                        import pandas as pd
-                        final_ovs = edited_df.to_dict('records') if isinstance(edited_df, pd.DataFrame) else list(edited_df)
+                        # Apply the data_editor's widget-state deltas onto
+                        # a fresh copy of the original overlays. Trusting
+                        # `edited_df` here silently drops every cell edit
+                        # in Streamlit 1.57 (see helper comment above).
+                        final_ovs = _resolved_overlays_from_editor()
                         # Map placement to Y coordinate for Pillow, then apply
                         # the Y offset slider on top so the generated PNGs land
                         # at exactly the position the user dialed in on the
