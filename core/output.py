@@ -663,5 +663,173 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     xml.append('    </children>')
     xml.append('  </project>')
     xml.append('</xmeml>')
-    
+
+    return "\n".join(xml)
+
+
+def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
+                             time_offset: float = 0.0) -> str:
+    """Standalone FCP7 XML containing ONLY the text-overlay PNG track.
+
+    Use case: the user wants to tweak overlay text (or fonts/positions) and
+    re-import just the overlays into an existing Premiere sequence, without
+    re-importing the full b-roll timeline. Importing this XML produces a
+    sequence whose V1 holds every overlay clipitem at the same absolute
+    timecode as the main export — copy/paste that track onto V2 of the
+    main sequence and the overlays land exactly where they belong.
+
+    Frame math, alpha handling, and sample-characteristics mirror the
+    overlay track inside ``generate_fcpxml`` so Premiere accepts the PNGs.
+    """
+    fps_exact = 23.976
+    timebase = 24
+
+    xml = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml.append('<!DOCTYPE xmeml>')
+    xml.append('<xmeml version="4">')
+    xml.append('  <project>')
+    xml.append(f'    <name>{_xml_attr(project_name)} (Overlays)</name>')
+    xml.append('    <children>')
+    xml.append('      <sequence id="b-roll-overlays-seq">')
+    xml.append(f'        <name>{_xml_attr(project_name)} — Overlays</name>')
+    xml.append('        <rate>')
+    xml.append(f'          <timebase>{timebase}</timebase>')
+    xml.append('          <ntsc>TRUE</ntsc>')
+    xml.append('        </rate>')
+    xml.append('        <media>')
+    xml.append('          <video>')
+    xml.append('            <format>')
+    xml.append('              <samplecharacteristics>')
+    xml.append('                <width>1920</width>')
+    xml.append('                <height>1080</height>')
+    xml.append('              </samplecharacteristics>')
+    xml.append('            </format>')
+    xml.append('            <track>')
+    xml.append('              <enabled>TRUE</enabled>')
+    xml.append('              <locked>FALSE</locked>')
+
+    emitted = 0
+    for idx, ov in enumerate(overlays or []):
+        ov_path = ov.get("filepath")
+        if not ov_path or not os.path.exists(ov_path):
+            continue
+
+        ov_filename = os.path.basename(ov_path)
+        ov_uri = _get_premiere_safe_pathurl(ov_path)
+
+        s_sec = float(ov.get("start_sec", 0)) - time_offset
+        e_sec = float(ov.get("end_sec", s_sec + time_offset + 3)) - time_offset
+        if e_sec <= s_sec:
+            e_sec = s_sec + 3
+        if s_sec < 0:
+            continue
+
+        s_frame = sec_to_frames(s_sec, fps_exact)
+        e_frame = sec_to_frames(e_sec, fps_exact)
+        d_frame = max(1, e_frame - s_frame)
+
+        media_dur_frames = sec_to_frames(3600.0, fps_exact)
+
+        file_id = f"file-ov-{idx}"
+        clip_id = f"clip-ov-{idx}"
+
+        xml.append(f'              <clipitem id="{clip_id}">')
+        xml.append(f'                <name>{_xml_attr(ov_filename)}</name>')
+        xml.append('                <enabled>TRUE</enabled>')
+        xml.append(f'                <duration>{media_dur_frames}</duration>')
+        xml.append('                <rate>')
+        xml.append(f'                  <timebase>{timebase}</timebase>')
+        xml.append('                  <ntsc>TRUE</ntsc>')
+        xml.append('                </rate>')
+        xml.append(f'                <start>{s_frame}</start>')
+        xml.append(f'                <end>{e_frame}</end>')
+        xml.append('                <in>0</in>')
+        xml.append(f'                <out>{d_frame}</out>')
+        xml.append(f'                <masterclipid>{file_id}</masterclipid>')
+        xml.append('                <alphatype>straight</alphatype>')
+
+        xml.append(f'                <file id="{file_id}">')
+        xml.append(f'                  <name>{_xml_attr(ov_filename)}</name>')
+        xml.append(f'                  <pathurl>{_xml_attr(ov_uri)}</pathurl>')
+        xml.append('                  <rate>')
+        xml.append(f'                    <timebase>{timebase}</timebase>')
+        xml.append('                    <ntsc>TRUE</ntsc>')
+        xml.append('                  </rate>')
+        xml.append(f'                  <duration>{media_dur_frames}</duration>')
+        xml.append('                  <media>')
+        xml.append('                    <video>')
+        xml.append(f'                      <duration>{media_dur_frames}</duration>')
+        xml.append('                      <samplecharacteristics>')
+        xml.append('                        <width>1920</width>')
+        xml.append('                        <height>1080</height>')
+        xml.append('                        <anamorphic>FALSE</anamorphic>')
+        xml.append('                        <pixelaspectratio>square</pixelaspectratio>')
+        xml.append('                        <fielddominance>none</fielddominance>')
+        xml.append('                      </samplecharacteristics>')
+        xml.append('                    </video>')
+        xml.append('                  </media>')
+        xml.append('                </file>')
+
+        # Animations — same keyframe patterns the main exporter uses, so an
+        # imported overlay carries its fade/slide motion across.
+        anim = ov.get("animation")
+        if anim == "Fade In/Out":
+            fade_frames = sec_to_frames(0.5, fps_exact)
+            xml.append('                <filter>')
+            xml.append('                  <effect>')
+            xml.append('                    <name>Opacity</name>')
+            xml.append('                    <effectid>opacity</effectid>')
+            xml.append('                    <parameter>')
+            xml.append('                      <parameterid>opacity</parameterid>')
+            xml.append('                      <name>Opacity</name>')
+            xml.append('                      <valuemin>0</valuemin>')
+            xml.append('                      <valuemax>100</valuemax>')
+            xml.append('                      <value>100</value>')
+            xml.append('                      <keyframe><when>0</when><value>0</value></keyframe>')
+            xml.append(f'                      <keyframe><when>{fade_frames}</when><value>100</value></keyframe>')
+            xml.append(f'                      <keyframe><when>{d_frame - fade_frames}</when><value>100</value></keyframe>')
+            xml.append(f'                      <keyframe><when>{d_frame}</when><value>0</value></keyframe>')
+            xml.append('                    </parameter>')
+            xml.append('                  </effect>')
+            xml.append('                </filter>')
+        elif anim in ("Slide Up", "Slide In Left"):
+            anim_frames = sec_to_frames(0.6, fps_exact)
+            xml.append('                <filter>')
+            xml.append('                  <effect>')
+            xml.append('                    <name>Basic Motion</name>')
+            xml.append('                    <effectid>basic</effectid>')
+            xml.append('                    <parameter>')
+            xml.append('                      <parameterid>center</parameterid>')
+            xml.append('                      <name>Center</name>')
+            xml.append('                      <value><horiz>0</horiz><vert>0</vert></value>')
+            if anim == "Slide Up":
+                kfs = [(0, 0, 100), (anim_frames, 0, 0),
+                       (d_frame - anim_frames, 0, 0), (d_frame, 0, 100)]
+            else:  # Slide In Left
+                kfs = [(0, -100, 0), (anim_frames, 0, 0),
+                       (d_frame - anim_frames, 0, 0), (d_frame, 100, 0)]
+            for when, h, v in kfs:
+                xml.append('                      <keyframe>')
+                xml.append(f'                        <when>{when}</when>')
+                xml.append(f'                        <value><horiz>{h}</horiz><vert>{v}</vert></value>')
+                xml.append('                      </keyframe>')
+            xml.append('                    </parameter>')
+            xml.append('                  </effect>')
+            xml.append('                </filter>')
+
+        xml.append('              </clipitem>')
+        emitted += 1
+
+    xml.append('            </track>')
+    xml.append('          </video>')
+    # Empty audio block keeps the sequence valid; no SFX in this export.
+    xml.append('          <audio>')
+    xml.append('            <track/>')
+    xml.append('          </audio>')
+    xml.append('        </media>')
+    xml.append('      </sequence>')
+    xml.append('    </children>')
+    xml.append('  </project>')
+    xml.append('</xmeml>')
+
     return "\n".join(xml)

@@ -13,7 +13,8 @@ from core.stock_apis import search_pexels, search_pixabay
 from core.output import (
     generate_keywords_txt, generate_youtube_txt, generate_srt,
     generate_transcription_srt, generate_shots_srt, generate_failed_downloads_txt,
-    generate_fcpxml, generate_shot_list_txt, filter_overlays_for_shots, _safe_for_fs
+    generate_fcpxml, generate_overlays_fcpxml, generate_shot_list_txt,
+    filter_overlays_for_shots, _safe_for_fs
 )
 from core.captions import (
     extract_highlights, create_text_overlay, get_available_fonts,
@@ -3437,6 +3438,25 @@ elif app_mode in ["Director", "Smart Mode"]:
         if st.session_state.transcription_segments:
             trans_srt = generate_transcription_srt(st.session_state.transcription_segments)
 
+        # Standalone overlays-only XML. Lets the user re-import just the text
+        # overlays into an existing Premiere sequence after editing — no need
+        # to re-import the whole b-roll timeline. Same absolute timecode as
+        # the main export, so the clipitems can be pasted onto V2 directly.
+        overlays_xml = ""
+        if st.session_state.text_overlays:
+            try:
+                overlays_xml = generate_overlays_fcpxml(
+                    st.session_state.text_overlays,
+                    project_name=p_name,
+                    time_offset=0.0,
+                )
+                ov_xml_path = os.path.join("downloads", "director", proj_folder, "b_roll_overlays.xml")
+                os.makedirs(os.path.dirname(ov_xml_path), exist_ok=True)
+                with open(ov_xml_path, "w", encoding="utf-8") as f:
+                    f.write(overlays_xml)
+            except Exception:
+                overlays_xml = ""
+
         # Mirror SRT showing "Shot N" cues on the same timeline as the audio,
         # so the user can drag it onto their voiceover and visually verify
         # each shot lands on the right line (silences included). Auto-saved
@@ -3472,14 +3492,28 @@ elif app_mode in ["Director", "Smart Mode"]:
             st.download_button("shot_list.txt",  data=shot_list_txt,  file_name="shot_list.txt",  mime="text/plain")
             if failed_txt:
                 st.download_button("failed_downloads.txt", data=failed_txt, file_name="failed_downloads.txt", mime="text/plain")
-        with c3: 
+        with c3:
             if num_parts == 1:
                 st.download_button(
-                    "B-Roll Sequence (.xml)", 
-                    data=xml_parts[0]["content"], 
-                    file_name="b_roll_sequence.xml", 
-                    mime="text/xml", 
+                    "B-Roll Sequence (.xml)",
+                    data=xml_parts[0]["content"],
+                    file_name="b_roll_sequence.xml",
+                    mime="text/xml",
                     help="Import this file into Premiere Pro to build your sequence."
+                )
+            if overlays_xml:
+                st.download_button(
+                    "Overlays Only (.xml)",
+                    data=overlays_xml,
+                    file_name="b_roll_overlays.xml",
+                    mime="text/xml",
+                    help=(
+                        "Standalone XML containing ONLY the text-overlay PNG track. "
+                        "Use it to re-import just the overlays after editing — "
+                        "no need to re-import the full b-roll sequence. Same "
+                        "timecode as the main export, so paste onto V2 of your "
+                        "existing sequence."
+                    ),
                 )
             else:
                 st.write("**XML Sequences (Split):**")
