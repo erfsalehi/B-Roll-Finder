@@ -177,7 +177,22 @@ def parse_fcpxml(xml_source: str | bytes | os.PathLike) -> list[dict]:
     return results
 
 
-def ingest_reimported_xml(xml_source: str | bytes | os.PathLike) -> dict:
+_VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+
+
+def _shot_desc_from_name(name: str) -> str:
+    """Turn an export filename like '12-2-engine-dipstick-removal.mp4' into a
+    readable 'engine dipstick removal' for use as a trim key / row label."""
+    base = os.path.splitext(os.path.basename(name or ""))[0]
+    # Strip a leading 'slot-footage-' numeric prefix if present.
+    parts = base.split("-")
+    while parts and parts[0].isdigit():
+        parts.pop(0)
+    return " ".join(parts).replace("_", " ").strip()
+
+
+def ingest_reimported_xml(xml_source: str | bytes | os.PathLike,
+                          create_missing: bool = True) -> dict:
     """
     Learn preferred trims from a Premiere-edited FCP7 XML.
 
@@ -186,18 +201,23 @@ def ingest_reimported_xml(xml_source: str | bytes | os.PathLike) -> dict:
     clip's preferred trim. Idempotent — re-ingesting the same XML just
     overwrites with the latest values.
 
+    When ``create_missing`` is True (default), video clipitems that aren't
+    already in the library get a minimal library row created for them, so
+    trims are learned even for footage that was never saved through the normal
+    download flow. Non-video clipitems (audio/SFX/voiceover) are always
+    skipped. When False, only clips already in the library are learned.
+
     Returns a summary::
 
         {
             "parsed":    <clipitems with usable trims>,
-            "matched":   <resolved to a library clip>,
+            "video":     <of those, real video files>,
+            "matched":   <resolved to an existing library clip>,
+            "created":   <new minimal rows created>,
             "recorded":  <trims written>,
-            "unmatched": [name, ...],   # couldn't resolve (capped at 50)
+            "unmatched": [name, ...],   # video clips left unresolved (cap 50)
+            "skipped_non_video": <audio/SFX/etc. ignored>,
         }
-
-    Trims are keyed on the library clip's own stored ``shot_description`` so
-    the recording and the export-time lookup always agree, independent of how
-    the live shot is worded at export.
     """
     # Local import keeps core.xml_reimport import-light and avoids a cycle.
     from core import clip_library
@@ -212,22 +232,44 @@ def ingest_reimported_xml(xml_source: str | bytes | os.PathLike) -> dict:
     ):
         src_path = os.fspath(xml_source)
 
-    summary = {"parsed": len(items), "matched": 0, "recorded": 0, "unmatched": []}
+    summary = {
+        "parsed": len(items), "video": 0, "matched": 0, "created": 0,
+        "recorded": 0, "unmatched": [], "skipped_non_video": 0,
+    }
     for it in items:
         local_path = it.get("local_path", "")
-        row = clip_library.find_clip_by_path_or_url(
-            local_path=local_path,
-            filename=it.get("name", ""),
-        )
-        if not row:
-            label = it.get("name") or os.path.basename(local_path) or it.get("clipitem_id", "?")
-            if len(summary["unmatched"]) < 50:
-                summary["unmatched"].append(label)
+        name = it.get("name", "") or os.path.basename(local_path)
+
+        # Only video clips carry a meaningful source trim; skip SFX/voice/etc.
+        ext = os.path.splitext(name)[1].lower()
+        if ext and ext not in _VIDEO_EXTS:
+            summary["skipped_non_video"] += 1
             continue
-        summary["matched"] += 1
+        summary["video"] += 1
+
+        row = clip_library.find_clip_by_path_or_url(local_path=local_path, filename=name)
+        clip_id = row["id"] if row else None
+        shot_desc = (row.get("shot_description") if row else "") or _shot_desc_from_name(name)
+
+        if clip_id is not None:
+            summary["matched"] += 1
+        elif create_missing:
+            clip_id = clip_library.ensure_clip(
+                local_path=local_path,
+                shot_description=shot_desc,
+                clip_title=name,
+            )
+            if clip_id is not None:
+                summary["created"] += 1
+
+        if clip_id is None:
+            if len(summary["unmatched"]) < 50:
+                summary["unmatched"].append(name or it.get("clipitem_id", "?"))
+            continue
+
         if clip_library.record_trim(
-            clip_id=row["id"],
-            shot_description=row.get("shot_description", "") or "",
+            clip_id=clip_id,
+            shot_description=shot_desc,
             in_seconds=it["in_seconds"],
             out_seconds=it["out_seconds"],
             source_xml_path=src_path,

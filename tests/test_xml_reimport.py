@@ -92,7 +92,9 @@ def test_ingest_records_trim_and_export_applies_it(temp_library, monkeypatch):
 
     summary = xml_reimport.ingest_reimported_xml(SAMPLE_XML.encode("utf-8"))
     assert summary["parsed"] == 1
+    assert summary["video"] == 1
     assert summary["matched"] == 1
+    assert summary["created"] == 0
     assert summary["recorded"] == 1
     assert summary["unmatched"] == []
 
@@ -135,9 +137,44 @@ def test_preferred_in_frame_clamps_when_slot_exceeds_media(temp_library, monkeyp
     assert in_frame == 0
 
 
-def test_ingest_reports_unmatched_when_clip_not_in_library(temp_library):
-    summary = xml_reimport.ingest_reimported_xml(SAMPLE_XML.encode("utf-8"))
+def test_ingest_reports_unmatched_when_not_creating_missing(temp_library):
+    summary = xml_reimport.ingest_reimported_xml(
+        SAMPLE_XML.encode("utf-8"), create_missing=False
+    )
     assert summary["parsed"] == 1
+    assert summary["video"] == 1
     assert summary["matched"] == 0
+    assert summary["created"] == 0
     assert summary["recorded"] == 0
     assert summary["unmatched"] == ["1-1-engine-oil.mp4"]
+
+
+def test_ingest_creates_missing_clip_and_learns_trim(temp_library):
+    """Empty library + create_missing=True: a minimal row is created (no
+    embedding) and the trim is still learned — the path the user hit."""
+    lib = temp_library
+    summary = xml_reimport.ingest_reimported_xml(
+        SAMPLE_XML.encode("utf-8"), create_missing=True
+    )
+    assert summary["video"] == 1
+    assert summary["matched"] == 0
+    assert summary["created"] == 1
+    assert summary["recorded"] == 1
+    assert summary["unmatched"] == []
+
+    # The created row resolves by basename and carries the learned trim.
+    row = lib.find_clip_by_path_or_url(filename="1-1-engine-oil.mp4")
+    assert row is not None
+    trim = lib.get_preferred_trim(row["id"], row["shot_description"])
+    assert trim is not None
+    assert trim["in_seconds"] == pytest.approx(1.001, abs=1e-3)
+
+
+def test_ingest_skips_non_video_clips(temp_library):
+    """SFX/voiceover clipitems must never become library rows."""
+    sfx_xml = SAMPLE_XML.replace("1-1-engine-oil.mp4", "sfx_boom.wav")
+    summary = xml_reimport.ingest_reimported_xml(sfx_xml.encode("utf-8"))
+    assert summary["video"] == 0
+    assert summary["created"] == 0
+    assert summary["recorded"] == 0
+    assert summary["skipped_non_video"] == 1

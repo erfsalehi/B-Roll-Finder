@@ -3604,29 +3604,55 @@ elif app_mode in ["Director", "Smart Mode"]:
             reimport_file = st.file_uploader(
                 "Upload edited sequence (.xml)", type=["xml"], key="d_reimport_xml"
             )
+            create_missing = st.checkbox(
+                "Create library entries for clips not already saved",
+                value=True,
+                key="d_reimport_create",
+                help=(
+                    "On: learn trims for every video clip in the XML, adding any "
+                    "that aren't in your Clip Library yet (audio/SFX are ignored). "
+                    "Off: only learn trims for clips already downloaded through "
+                    "B-Roll Finder."
+                ),
+            )
             if reimport_file is not None and st.button(
                 "Learn trims from this edit", key="d_reimport_btn", type="primary"
             ):
                 try:
                     from core.xml_reimport import ingest_reimported_xml
-                    summary = ingest_reimported_xml(reimport_file.getvalue())
+                    summary = ingest_reimported_xml(
+                        reimport_file.getvalue(), create_missing=create_missing
+                    )
                     if summary["recorded"]:
+                        bits = []
+                        if summary["matched"]:
+                            bits.append(f"{summary['matched']} already in library")
+                        if summary["created"]:
+                            bits.append(f"{summary['created']} newly added")
+                        detail = f" ({', '.join(bits)})" if bits else ""
                         st.success(
                             f"✅ Learned {summary['recorded']} trim(s) from "
-                            f"{summary['matched']} matched clip(s) "
-                            f"(of {summary['parsed']} clip(s) in the sequence). "
-                            "Future exports will use these in-points."
+                            f"{summary['video']} video clip(s){detail}. "
+                            "Future exports of these clips will start at your in-points."
                         )
-                    elif summary["parsed"] == 0:
-                        st.warning("No clipitems with usable trims were found in that XML.")
+                    elif summary["video"] == 0:
+                        st.warning(
+                            "No video clips found in that XML "
+                            f"({summary['skipped_non_video']} audio/SFX clip(s) skipped)."
+                        )
                     else:
                         st.warning(
-                            f"Parsed {summary['parsed']} clip(s) but matched none to your "
-                            "Clip Library. Trims are only learned for clips downloaded "
-                            "through B-Roll Finder."
+                            f"Found {summary['video']} video clip(s) but learned no trims. "
+                            "Enable the checkbox above to add clips that aren't in your "
+                            "library yet."
+                        )
+                    if summary["skipped_non_video"]:
+                        st.caption(
+                            f"Skipped {summary['skipped_non_video']} non-video clip(s) "
+                            "(voiceover / sound effects)."
                         )
                     if summary["unmatched"]:
-                        with st.expander(f"⚠️ {len(summary['unmatched'])} unmatched clip(s)"):
+                        with st.expander(f"⚠️ {len(summary['unmatched'])} unresolved clip(s)"):
                             for nm in summary["unmatched"]:
                                 st.write(f"• {nm}")
                 except Exception as e:

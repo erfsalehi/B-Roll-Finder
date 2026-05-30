@@ -71,6 +71,14 @@ def _embed(text: str) -> np.ndarray:
     Returns a normalised float32 embedding vector (384-dim) for text.
     Lazy-loads all-MiniLM-L6-v2 on first call (~80 MB download once).
     """
+    # Force the PyTorch backend. With Keras 3 installed, transformers tries
+    # the TensorFlow backend and dies with "Keras 3 ... not yet supported;
+    # install tf-keras" — which previously bubbled up through store_clip and
+    # left the whole Clip Library silently empty. sentence-transformers only
+    # needs torch, so opt out of TF/Flax before the import resolves a backend.
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("USE_FLAX", "0")
+    os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError:
@@ -104,7 +112,15 @@ def store_clip(
         if not clip_url:
             return False
 
-        emb_bytes = _embed(shot_description).tobytes()
+        # Embed for semantic search, but never let an embedding failure lose
+        # the clip: a null-embedding row is still recorded (and still usable
+        # for preferred-trim matching by path/url) — it just won't surface in
+        # semantic search until re-embedded.
+        try:
+            emb_bytes = _embed(shot_description).tobytes()
+        except Exception as e:
+            print(f"[ClipLibrary] embedding unavailable, storing without it: {e}")
+            emb_bytes = None
         now = datetime.utcnow().isoformat()
 
         with _conn() as c:
@@ -318,6 +334,58 @@ def find_clip_by_path_or_url(local_path: str = "", clip_url: str = "",
         return dict(row) if row else None
     except Exception as e:
         print(f"[ClipLibrary] find_clip_by_path_or_url error: {e}")
+        return None
+
+
+def ensure_clip(
+    local_path: str,
+    shot_description: str = "",
+    clip_url: str = "",
+    source: str = "reimport",
+    clip_title: str = "",
+) -> int | None:
+    """
+    Find an existing library clip by path / url / basename, or create a
+    minimal row for it. Returns the clip id, or None on error.
+
+    Used by the XML re-import path so trims can be learned for clips that
+    were never saved through the normal download flow (e.g. footage
+    downloaded before the library existed, or when the embedding model was
+    unavailable). The created row carries no embedding — it won't appear in
+    semantic search, but it is fully usable for preferred-trim matching by
+    path/basename, which is how the exporter looks it up.
+    """
+    try:
+        existing = find_clip_by_path_or_url(
+            local_path=local_path, clip_url=clip_url,
+            filename=os.path.basename(local_path or ""),
+        )
+        if existing:
+            return existing["id"]
+
+        # Synthesize a stable, unique key. clip_url is UNIQUE NOT NULL, so fall
+        # back to the local path when no real source URL is known.
+        url_key = clip_url or local_path
+        if not url_key:
+            return None
+        now = datetime.utcnow().isoformat()
+        with _conn() as c:
+            cur = c.execute(
+                """INSERT OR IGNORE INTO clips
+                     (project, shot_description, source, clip_url, clip_title,
+                      local_path, embedding, usage_count, last_used_at, created_at)
+                   VALUES (?,?,?,?,?,?,?,1,?,?)""",
+                ("", shot_description, source, url_key, clip_title,
+                 local_path, None, now, now),
+            )
+            if cur.lastrowid:
+                return cur.lastrowid
+            row = c.execute(
+                "SELECT id FROM clips WHERE clip_url = ?", (url_key,)
+            ).fetchone()
+            return row["id"] if row else None
+    except Exception as e:
+        print(f"[ClipLibrary] ensure_clip error: {e}")
         return None
 
 
