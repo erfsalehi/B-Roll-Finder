@@ -17,6 +17,24 @@ def normalize_video(input_path: str, target_res: str = "1920x1080", task_state: 
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
     width, height = map(int, target_res.split('x'))
+
+    # ── Fast path: skip re-encoding if the file is already conformant ────────
+    # Director Mode can queue 15-20 clips; re-encoding every one through
+    # libx264 saturates the CPU. Most downloaded clips (Pexels/Pixabay 1080p,
+    # and YouTube clips we already pulled as avc1) are *already* the target
+    # resolution in H.264/yuv420p — nothing to do. We check codec + pixel
+    # format too, not just dimensions, so a same-size-but-VP9/HEVC clip (which
+    # Premiere chokes on) is still conformed.
+    meta = get_video_metadata(input_path)
+    already_conformant = (
+        meta.get("width") == width
+        and meta.get("height") == height
+        and meta.get("vcodec") in ("h264", "avc1")
+        and meta.get("pix_fmt") in ("yuv420p", "yuvj420p")
+    )
+    if already_conformant:
+        return input_path
+
     base, _ = os.path.splitext(input_path)
     output_path = f"{base}_normalized.mp4"
 
@@ -29,7 +47,9 @@ def normalize_video(input_path: str, target_res: str = "1920x1080", task_state: 
             f"format=yuv420p"
         ),
         "-c:v", "libx264",
-        "-preset", "fast",
+        # 'veryfast' encodes ~3-4x quicker than 'fast' for a small size bump —
+        # a good trade for B-roll that gets re-encoded again inside Premiere.
+        "-preset", "veryfast",
         "-crf", "23",
         "-c:a", "aac",
         "-b:a", "192k",
@@ -115,33 +135,36 @@ def get_video_metadata(path: str) -> dict:
     Returns a dict with 'duration' (float), 'width' (int), and 'height' (int).
     Returns defaults if ffprobe fails or the file doesn't exist.
     """
-    defaults = {"duration": 3600.0, "width": 1920, "height": 1080}
+    defaults = {"duration": 3600.0, "width": 1920, "height": 1080,
+                "vcodec": "", "pix_fmt": ""}
     if not path or not os.path.exists(path):
         return defaults
-    
+
     cmd = [
         "ffprobe", "-v", "error",
-        "-show_entries", "format=duration:stream=width,height",
+        "-show_entries", "format=duration:stream=width,height,codec_name,pix_fmt",
         "-of", "json", path
     ]
     try:
         import json
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         data = json.loads(result.stdout)
-        
+
         meta = {}
         # Try to get duration from format
         if "format" in data and "duration" in data["format"]:
             meta["duration"] = float(data["format"]["duration"])
-        
-        # Try to get width/height from first video stream
+
+        # Try to get geometry/codec from the first video stream
         if "streams" in data:
             for s in data["streams"]:
                 if s.get("width") and s.get("height"):
-                    meta["width"] = int(s["width"])
-                    meta["height"] = int(s["height"])
+                    meta["width"]   = int(s["width"])
+                    meta["height"]  = int(s["height"])
+                    meta["vcodec"]  = (s.get("codec_name") or "").lower()
+                    meta["pix_fmt"] = (s.get("pix_fmt") or "").lower()
                     break
-        
+
         return {**defaults, **meta}
     except Exception as e:
         print(f"[get_video_metadata] Error probing {path}: {e}")

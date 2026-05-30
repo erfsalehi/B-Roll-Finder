@@ -149,6 +149,31 @@ class DownloadManager:
         self.tasks[task_id] = state
         return task_id
 
+    def set_max_workers(self, max_workers: int) -> None:
+        """Resize the worker pool in place, preserving tasks and history.
+
+        ThreadPoolExecutor can't be resized after creation, so changing
+        concurrency previously meant re-instantiating the whole
+        DownloadManager — which silently discarded ``self.history`` (the
+        record of past batches). This updates ``max_workers`` and, when
+        nothing is in flight, swaps in a fresh executor at the new size
+        without touching tasks/history. If downloads are active we only
+        record the new size; the next ``clear_and_reset`` (which rebuilds
+        the executor from ``self.max_workers``) applies it for the next batch.
+        """
+        if max_workers == self.max_workers:
+            return
+        self.max_workers = max_workers
+        idle = not self.get_active_tasks() and not any(
+            t['status'] == 'queued' for t in self.tasks.values()
+        )
+        if idle:
+            try:
+                self.executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                self.executor.shutdown(wait=False)
+            self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+
     def start_download(self, task_id: str) -> None:
         state = self.tasks.get(task_id)
         if not state:

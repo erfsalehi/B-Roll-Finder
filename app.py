@@ -24,7 +24,7 @@ from core.clip_library import store_clip, search_library, get_library_stats
 from core.sfx import search_freesound, download_sfx
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
 from core import download_cache
-from core.app_utils import check_network, format_speed, format_eta
+from core.app_utils import check_network, format_speed, format_eta, update_yt_dlp_background
 from core.session_cache import load_session_cache, save_session_cache
 import time
 import math
@@ -48,6 +48,21 @@ if os.getenv("BROLL_BYPASS_HTTP_PROXY", "").strip().lower() in ("1", "true", "ye
     for _var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
                  "ALL_PROXY", "all_proxy"):
         os.environ.pop(_var, None)
+
+
+# Keep yt-dlp fresh — YouTube breaks stale versions and downloads start
+# failing. @st.cache_resource makes this fire exactly once per server process
+# (i.e. each time the app is launched), and the helper itself is rate-limited
+# to one pip upgrade per day. It runs in a background thread so startup isn't
+# blocked; a newly-installed version takes effect on the next app restart.
+@st.cache_resource(show_spinner=False)
+def _kickoff_yt_dlp_update():
+    if os.getenv("BROLL_SKIP_YT_DLP_UPDATE", "").strip().lower() not in ("1", "true", "yes"):
+        update_yt_dlp_background()
+    return True
+
+
+_kickoff_yt_dlp_update()
 # Initialize Session State
 if "slots" not in st.session_state:
     st.session_state.slots = []
@@ -202,6 +217,11 @@ def _render_chunk_status_polling():
     last_seen = st.session_state.get("_last_chunk_completed_count", -1)
     if completed != last_seen or not still_running:
         st.session_state._last_chunk_completed_count = completed
+        # The background dispatcher mutates the shot dicts in place but never
+        # touches the on-disk cache. Persist once everything's done so the
+        # fetched candidates survive a browser refresh.
+        if not still_running:
+            save_cache()
         st.rerun(scope="app")
 
 
@@ -314,8 +334,18 @@ def ensure_shots_have_chunk_ids():
                 changed = True
     if changed:
         save_cache()
-if not st.session_state.slots and os.path.exists(CACHE_FILE):
-    load_cache()
+# Load the on-disk session cache exactly ONCE per session, not on every
+# rerun. The old guard (`not st.session_state.slots`) was always true in
+# Director mode — `slots` is the Classic-mode keyword list and stays empty —
+# so the cache was re-read on every 2s poll-rerun. That clobbered the
+# director_shots dicts the background fetch thread mutates in place (it
+# replaced them with stale, empty-result copies from disk), which is why
+# Step 3 results never reached Step 5. session_state already persists across
+# reruns in memory, so a single startup load is all we need.
+if "_cache_loaded" not in st.session_state:
+    st.session_state._cache_loaded = True
+    if os.path.exists(CACHE_FILE):
+        load_cache()
 
 # --- UI Components ---
 st.sidebar.title("App Mode")
@@ -815,9 +845,9 @@ def render_classic_mode():
         elif not check_network():
             st.error("No network connection detected. Please check your internet and try again.")
         else:
-            if st.session_state.dm.max_workers != max_workers:
-                st.session_state.dm = DownloadManager(max_workers=max_workers)
-            
+            # Resize the pool in place (preserves download history) rather
+            # than re-instantiating the manager, which would wipe it.
+            st.session_state.dm.set_max_workers(max_workers)
             st.session_state.dm.clear_and_reset()
             added_count = 0
             for i, slot in enumerate(st.session_state.slots):
@@ -1345,21 +1375,51 @@ elif app_mode in ["Director", "Smart Mode"]:
         )
         if audio_file:
             # ── Project Isolation & Auto-Reset ───────────────────────────
-            current_project = audio_file.name
-            if st.session_state.get("project_name") and st.session_state.project_name != current_project:
+            # Track the audio filename separately from the project name so
+            # the user can rename the project without nuking shots/transcription.
+            # Auto-reset only fires when a *different* audio file is uploaded.
+            current_audio = audio_file.name
+            audio_changed = bool(
+                st.session_state.get("source_audio_name")
+                and st.session_state.source_audio_name != current_audio
+            )
+            if audio_changed:
                 st.session_state.director_shots = []
                 st.session_state.transcription_segments = []
                 st.session_state.transcription_chunks = []
                 st.session_state.active_chunk_indices = [0]
                 st.session_state.script_text = ""
                 st.session_state.d_review_idx = 0
-            st.session_state.project_name = current_project
+            st.session_state.source_audio_name = current_audio
+            # Seed project_name from the audio filename on first load or
+            # whenever the audio file changes. Set BEFORE the text_input so
+            # Streamlit picks it up as the initial value for the key="project_name"
+            # widget; after the widget renders, only the user controls the value.
+            if audio_changed or not st.session_state.get("project_name"):
+                st.session_state.project_name = os.path.splitext(current_audio)[0]
+
             audio_path = os.path.join(
                 ".cache", "temp_audio_director" + os.path.splitext(audio_file.name)[1]
             )
             with open(audio_path, "wb") as f:
                 f.write(audio_file.read())
             st.session_state.audio_duration = get_audio_duration(audio_path)
+
+            # ── Project Name (editable) ──────────────────────────────────
+            proj_a, proj_b = st.columns([3, 2])
+            with proj_a:
+                st.text_input(
+                    "Project name",
+                    key="project_name",
+                    help="Used to organize downloaded media, exports, and Clip Library entries. "
+                         "Type whatever you like — it gets sanitized to a folder-safe slug for disk paths.",
+                )
+            with proj_b:
+                folder_slug = _safe_for_fs(st.session_state.get("project_name", ""), 50) or "default"
+                st.caption(f"📁 `downloads/director/{folder_slug}/`")
+                if folder_slug == "default":
+                    st.caption("⚠️ Empty project name — files will go to the shared `default/` folder.")
+
             top_a, top_b, top_c = st.columns([2, 2, 3])
             with top_a:
                 st.metric("Duration", f"{st.session_state.audio_duration / 60:.1f} min")
@@ -2507,11 +2567,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 key="d_dl_start", type="primary", width="stretch")
         with col_dl2:
             if st.button("📄 Export Manifest", key="d_manifest", width="stretch", help="Generate a text file listing all shots, grouped by chunk."):
-                def _safe_for_fs(text: str, max_len: int = 30) -> str:
-                    if not text: return ""
-                    cleaned = "".join(c if (c.isalnum() or c in " -_") else " " for c in text)
-                    cleaned = "-".join(cleaned.split()).lower()
-                    return cleaned[:max_len].strip("-") or ""
+                # _safe_for_fs is imported from core.output at the top of this file.
                 proj_folder = _safe_for_fs(st.session_state.get("project_name", "default"), 50)
                 manifest = [
                     "B-ROLL FINDER - SHOT MANIFEST",
@@ -2554,17 +2610,12 @@ elif app_mode in ["Director", "Smart Mode"]:
             if not check_network():
                 st.error("No network connection detected.")
             else:
-                if st.session_state.dm.max_workers != d_workers:
-                    st.session_state.dm = DownloadManager(max_workers=d_workers)
+                # Resize the pool in place (preserves download history) rather
+                # than re-instantiating the manager, which would wipe it.
+                st.session_state.dm.set_max_workers(d_workers)
                 st.session_state.dm.clear_and_reset()
                 # ── Group selected clips by URL across all shots ─────────
-                def _safe_for_fs(text: str, max_len: int = 30) -> str:
-                    if not text:
-                        return ""
-                    cleaned = "".join(c if (c.isalnum() or c in " -_") else " "
-                                      for c in text)
-                    cleaned = "-".join(cleaned.split()).lower()
-                    return cleaned[:max_len].strip("-") or ""
+                # _safe_for_fs is imported from core.output at the top of this file.
                 proj_folder = _safe_for_fs(st.session_state.get("project_name", "default"), 50)
                 url_groups = {}      # url -> {"primary": (path, dm_source), "extras": [...], "shots": [...]}
                 seen_filenames = set()

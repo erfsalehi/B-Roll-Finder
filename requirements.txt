@@ -1,6 +1,8 @@
 groq==1.2.0
 mutagen==1.47.0
-yt-dlp==2026.3.17
+# Floor pin, not exact: the app auto-updates yt-dlp daily (see
+# core/app_utils.update_yt_dlp) because YouTube breaks stale versions.
+yt-dlp>=2026.3.17
 streamlit==1.57.0
 python-dotenv==1.2.2
 tenacity==9.1.4
