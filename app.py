@@ -358,6 +358,62 @@ app_mode = st.sidebar.radio(
     ),
 )
 
+
+def render_library_health():
+    """Sidebar panel: at-a-glance Clip Library health, shown in every mode.
+
+    Surfaces the failure mode that silently emptied the library before — clips
+    saved without an embedding (because the embedding model was unavailable)
+    are invisible to semantic search, so we flag them and offer an on-demand
+    model test rather than auto-loading the ~80 MB model on every render.
+    """
+    stats = get_library_stats()
+    total = stats.get("total", 0)
+    no_emb = stats.get("without_embedding", 0)
+    trims = stats.get("trims", 0)
+
+    if total == 0:
+        icon, label = "⚪", "Empty"
+    elif no_emb == 0:
+        icon, label = "🟢", "Healthy"
+    elif no_emb >= total:
+        icon, label = "🔴", "Embeddings missing"
+    else:
+        icon, label = "🟡", "Partially indexed"
+
+    with st.sidebar.expander(f"{icon} Library Health — {label}", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Clips", total)
+        c2.metric("Searchable", stats.get("with_embedding", 0))
+        c3.metric("Trims", trims)
+
+        if total and no_emb:
+            st.warning(
+                f"{no_emb} clip(s) have no embedding — they won't appear in "
+                "semantic search (but still work for downloads and learned "
+                "trims). New downloads embed automatically now."
+            )
+        elif total and no_emb == 0:
+            st.caption("All clips are embedded and semantically searchable.")
+
+        if st.button("Test embedding model", key="lib_health_test",
+                     help="Loads the model once (~60s first time) and embeds a test phrase."):
+            with st.spinner("Loading embedding model…"):
+                try:
+                    from core.clip_library import _embed
+                    vec = _embed("library health check")
+                    st.success(f"✅ Embedding model works (dim={len(vec)}). "
+                               "New downloads will be searchable.")
+                except Exception as e:
+                    st.error(
+                        "❌ Embedding model unavailable — clips save without "
+                        f"semantic search. Detail: {e}"
+                    )
+
+
+render_library_health()
+
+
 def render_classic_mode():
     st.title("🎬 B-Roll Finder")
     # ── Setup: API keys (status pill in header, auto-collapses when ready) ──
@@ -2860,11 +2916,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if _batch_key and _batch_key not in _saved_keys:
                     _done_urls = {t["url"]: t for t in tasks if t["status"] == "completed"}
                     _lib_saved = 0
+                    _lib_attempts = 0
                     for _shot in st.session_state.director_shots:
                         for _res in _shot.get("selected_results", []):
                             _url = _res.get("url", "")
                             if _url in _done_urls:
                                 _task = _done_urls[_url]
+                                _lib_attempts += 1
                                 if store_clip(
                                     shot_description=_shot.get("shot_intent", _shot.get("text", "")),
                                     clip_data={**_res, "local_path": _task.get("output_path", "")},
@@ -2876,6 +2934,14 @@ elif app_mode in ["Director", "Smart Mode"]:
                                     _lib_saved += 1
                     if _lib_saved:
                         st.success(f"💾 {_lib_saved} clip(s) saved to your Clip Library.")
+                    elif _lib_attempts:
+                        # Completed downloads but nothing persisted — the exact
+                        # silent failure that left the library empty before.
+                        st.warning(
+                            f"⚠️ {_lib_attempts} clip(s) downloaded but none were saved "
+                            "to your Clip Library. Open **Library Health** in the sidebar "
+                            "and click *Test embedding model* to see why."
+                        )
                     if "d_library_saved_batches" not in st.session_state:
                         st.session_state.d_library_saved_batches = set()
                     st.session_state.d_library_saved_batches.add(_batch_key)

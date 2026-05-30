@@ -392,11 +392,25 @@ def ensure_clip(
 # ── Stats ────────────────────────────────────────────────────────────────────
 
 def get_library_stats() -> dict:
-    """Summary stats for the sidebar panel."""
+    """Summary + health stats for the sidebar panel.
+
+    Health fields let the UI flag a degraded library at a glance:
+      * ``with_embedding`` / ``without_embedding`` — rows missing an embedding
+        are invisible to semantic search (they were saved while the embedding
+        model was unavailable, or created by XML re-import). A high
+        ``without_embedding`` count is the signal that embeddings are broken.
+      * ``trims`` — learned preferred trims (the re-import feature).
+    """
     try:
         init_db()
         with _conn() as c:
             total = c.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
+            with_emb = c.execute(
+                "SELECT COUNT(*) FROM clips WHERE embedding IS NOT NULL"
+            ).fetchone()[0]
+            trims = c.execute(
+                "SELECT COUNT(*) FROM clip_preferred_trims"
+            ).fetchone()[0]
             by_src = {
                 r["source"]: r["cnt"]
                 for r in c.execute(
@@ -410,7 +424,15 @@ def get_library_stats() -> dict:
                        FROM clips ORDER BY usage_count DESC LIMIT 5"""
                 ).fetchall()
             ]
-        return {"total": total, "by_source": by_src, "top_clips": top}
+        return {
+            "total": total,
+            "with_embedding": with_emb,
+            "without_embedding": max(0, total - with_emb),
+            "trims": trims,
+            "by_source": by_src,
+            "top_clips": top,
+        }
     except Exception as e:
         print(f"[ClipLibrary] get_library_stats error: {e}")
-        return {"total": 0, "by_source": {}, "top_clips": []}
+        return {"total": 0, "with_embedding": 0, "without_embedding": 0,
+                "trims": 0, "by_source": {}, "top_clips": []}

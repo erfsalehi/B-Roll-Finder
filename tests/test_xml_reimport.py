@@ -170,6 +170,24 @@ def test_ingest_creates_missing_clip_and_learns_trim(temp_library):
     assert trim["in_seconds"] == pytest.approx(1.001, abs=1e-3)
 
 
+def test_library_stats_report_embedding_health(temp_library):
+    """Health counts distinguish embedded vs null-embedding rows and trims."""
+    lib = temp_library
+    embedded = _insert_clip(lib, "u-emb", "downloads/a.mp4", "has embedding")
+    with lib._conn() as c:
+        c.execute("UPDATE clips SET embedding = ? WHERE id = ?", (b"\x00" * 8, embedded))
+    # ensure_clip makes a null-embedding row (the re-import path).
+    lib.ensure_clip(local_path="downloads/b.mp4", shot_description="no embedding")
+
+    stats = lib.get_library_stats()
+    assert stats["total"] == 2
+    assert stats["with_embedding"] == 1
+    assert stats["without_embedding"] == 1
+
+    lib.record_trim(embedded, "has embedding", 1.0, 4.0)
+    assert lib.get_library_stats()["trims"] == 1
+
+
 def test_ingest_skips_non_video_clips(temp_library):
     """SFX/voiceover clipitems must never become library rows."""
     sfx_xml = SAMPLE_XML.replace("1-1-engine-oil.mp4", "sfx_boom.wav")
