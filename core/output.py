@@ -228,6 +228,33 @@ def _safe_for_fs(text: str, max_len: int = 30) -> str:
     cleaned = "-".join(cleaned.split()).lower()
     return cleaned[:max_len].strip("-") or ""
 
+def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
+                        media_dur_frames: int, fps: float) -> int:
+    """
+    Source in-point (frames) for a clip, honouring any trim learned from a
+    re-imported Premiere edit. Returns 0 when there's no learned trim, when
+    the trim wouldn't leave room for the timeline slot, or on any error — so
+    the export never breaks because of this lookup.
+    """
+    if not clip_url and not filename:
+        return 0
+    try:
+        from core import clip_library
+        row = clip_library.find_clip_by_path_or_url(clip_url=clip_url, filename=filename)
+        if not row:
+            return 0
+        trim = clip_library.get_preferred_trim(row["id"], row.get("shot_description", "") or "")
+        if not trim:
+            return 0
+        in_frame = sec_to_frames(float(trim["in_seconds"]), fps)
+        # Keep the slot length: only honour the trim if in + slot fits the media.
+        if in_frame <= 0 or in_frame + duration_frames > media_dur_frames:
+            return 0
+        return in_frame
+    except Exception:
+        return 0
+
+
 def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None,
                     sfx_list: list = None, time_offset: float = 0.0) -> str:
     """
@@ -379,9 +406,17 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             xml.append(f'                <start>{start_frame}</start>')
             xml.append(f'                <end>{end_frame}</end>')
             
-            # Cut points on the source file
-            xml.append('                <in>0</in>')
-            xml.append(f'                <out>{duration_frames}</out>')
+            # Cut points on the source file. Default: start at frame 0. If
+            # this clip has a preferred trim learned from a re-imported
+            # Premiere edit, start at that in-point instead — keeping the same
+            # timeline-slot length so placement/layout is unchanged. Fully
+            # defensive: any miss or error falls back to in=0.
+            in_frame_src = _preferred_in_frame(
+                res.get("url", ""), filename,
+                duration_frames, asset_info["media_dur_frames"], fps_exact,
+            )
+            xml.append(f'                <in>{in_frame_src}</in>')
+            xml.append(f'                <out>{in_frame_src + duration_frames}</out>')
             
             # File Definition Block
             if asset_info["id"] not in defined_files:

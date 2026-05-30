@@ -48,6 +48,19 @@ def init_db() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_url ON clips(clip_url);
             CREATE INDEX IF NOT EXISTS idx_clips_source  ON clips(source);
             CREATE INDEX IF NOT EXISTS idx_clips_project ON clips(project);
+
+            CREATE TABLE IF NOT EXISTS clip_preferred_trims (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                clip_id          INTEGER NOT NULL,
+                shot_description TEXT    NOT NULL DEFAULT '',
+                in_seconds       REAL    NOT NULL,
+                out_seconds      REAL    NOT NULL,
+                source_xml_path  TEXT    DEFAULT '',
+                confirmed_at     TEXT    DEFAULT '',
+                FOREIGN KEY(clip_id) REFERENCES clips(id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_trims_clip_shot
+                ON clip_preferred_trims(clip_id, shot_description);
         """)
 
 
@@ -194,6 +207,118 @@ def search_library(
     except Exception as e:
         print(f"[ClipLibrary] search_library error: {e}")
         return []
+
+
+# ── Preferred trims (learned from re-imported Premiere edits) ───────────────
+
+def record_trim(
+    clip_id: int,
+    shot_description: str,
+    in_seconds: float,
+    out_seconds: float,
+    source_xml_path: str = "",
+) -> bool:
+    """
+    Upsert the preferred in/out trim for a (clip, shot_description) pair.
+    Most-recent edit wins — the table is keyed on (clip_id, shot_description).
+    """
+    if out_seconds <= in_seconds:
+        return False
+    try:
+        init_db()
+        now = datetime.utcnow().isoformat()
+        with _conn() as c:
+            c.execute(
+                """INSERT INTO clip_preferred_trims
+                     (clip_id, shot_description, in_seconds, out_seconds,
+                      source_xml_path, confirmed_at)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(clip_id, shot_description) DO UPDATE SET
+                     in_seconds      = excluded.in_seconds,
+                     out_seconds     = excluded.out_seconds,
+                     source_xml_path = excluded.source_xml_path,
+                     confirmed_at    = excluded.confirmed_at""",
+                (clip_id, shot_description, float(in_seconds), float(out_seconds),
+                 source_xml_path, now),
+            )
+        return True
+    except Exception as e:
+        print(f"[ClipLibrary] record_trim error: {e}")
+        return False
+
+
+def get_preferred_trim(clip_id: int, shot_description: str) -> dict | None:
+    """
+    Returns {'in_seconds', 'out_seconds', 'confirmed_at'} for an exact
+    (clip_id, shot_description) match, or None if no learned trim exists.
+    """
+    try:
+        init_db()
+        with _conn() as c:
+            row = c.execute(
+                """SELECT in_seconds, out_seconds, confirmed_at
+                   FROM clip_preferred_trims
+                   WHERE clip_id = ? AND shot_description = ?""",
+                (clip_id, shot_description),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "in_seconds":   row["in_seconds"],
+            "out_seconds":  row["out_seconds"],
+            "confirmed_at": row["confirmed_at"],
+        }
+    except Exception as e:
+        print(f"[ClipLibrary] get_preferred_trim error: {e}")
+        return None
+
+
+def find_clip_by_path_or_url(local_path: str = "", clip_url: str = "",
+                             filename: str = "") -> dict | None:
+    """
+    Resolves a re-imported clipitem back to a library row.
+
+    Resolution order, most-to-least robust:
+      1. exact ``local_path`` match,
+      2. ``clip_url`` match,
+      3. basename match — the export writes absolute paths while the library
+         stores whatever ``output_path`` the downloader used (often relative),
+         so an exact path compare misses; the filename is unique per project,
+         so a trailing-component ``LIKE`` recovers it.
+
+    Returns ``{'id', 'clip_url', 'local_path', 'clip_title',
+    'shot_description'}`` or ``None``.
+    """
+    _cols = "id, clip_url, local_path, clip_title, shot_description"
+    try:
+        init_db()
+        with _conn() as c:
+            row = None
+            if local_path:
+                row = c.execute(
+                    f"SELECT {_cols} FROM clips WHERE local_path = ?",
+                    (local_path,),
+                ).fetchone()
+            if not row and clip_url:
+                row = c.execute(
+                    f"SELECT {_cols} FROM clips WHERE clip_url = ?",
+                    (clip_url,),
+                ).fetchone()
+            if not row:
+                base = filename or os.path.basename(local_path or "")
+                if base:
+                    # Escape LIKE wildcards in the filename, then match any
+                    # stored path ending in that basename (after a separator).
+                    safe = base.replace("\\", "/").split("/")[-1]
+                    safe = safe.replace("%", r"\%").replace("_", r"\_")
+                    row = c.execute(
+                        f"SELECT {_cols} FROM clips WHERE local_path LIKE ? ESCAPE '\\'",
+                        (f"%{safe}",),
+                    ).fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"[ClipLibrary] find_clip_by_path_or_url error: {e}")
+        return None
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────

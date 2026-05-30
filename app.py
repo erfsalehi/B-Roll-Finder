@@ -3586,3 +3586,48 @@ elif app_mode in ["Director", "Smart Mode"]:
                         mime="text/xml",
                         help=f"Drag this sequence's content to {off_str} on your master timeline to align with the voiceover.",
                     )
+
+        # ── Learn preferred trims from a re-imported Premiere edit ─────────────
+        # Closes the loop: export → trim in Premiere → re-import here. The app
+        # records where you cut each clip and starts future exports of the same
+        # clip at that in-point (see _preferred_in_frame in core/output.py).
+        st.divider()
+        with st.expander("🎯 Teach the Clip Library your trims (re-import an edited XML)"):
+            st.caption(
+                "After you fine-tune in/out points in Premiere, export the sequence "
+                "back to FCP7 XML (File ▸ Export ▸ Final Cut Pro XML) and upload it "
+                "here. B-Roll Finder learns where you trimmed each clip and will "
+                "start future exports of that clip at the same in-point. Only clips "
+                "you downloaded through B-Roll Finder (already in your Clip Library) "
+                "can be matched."
+            )
+            reimport_file = st.file_uploader(
+                "Upload edited sequence (.xml)", type=["xml"], key="d_reimport_xml"
+            )
+            if reimport_file is not None and st.button(
+                "Learn trims from this edit", key="d_reimport_btn", type="primary"
+            ):
+                try:
+                    from core.xml_reimport import ingest_reimported_xml
+                    summary = ingest_reimported_xml(reimport_file.getvalue())
+                    if summary["recorded"]:
+                        st.success(
+                            f"✅ Learned {summary['recorded']} trim(s) from "
+                            f"{summary['matched']} matched clip(s) "
+                            f"(of {summary['parsed']} clip(s) in the sequence). "
+                            "Future exports will use these in-points."
+                        )
+                    elif summary["parsed"] == 0:
+                        st.warning("No clipitems with usable trims were found in that XML.")
+                    else:
+                        st.warning(
+                            f"Parsed {summary['parsed']} clip(s) but matched none to your "
+                            "Clip Library. Trims are only learned for clips downloaded "
+                            "through B-Roll Finder."
+                        )
+                    if summary["unmatched"]:
+                        with st.expander(f"⚠️ {len(summary['unmatched'])} unmatched clip(s)"):
+                            for nm in summary["unmatched"]:
+                                st.write(f"• {nm}")
+                except Exception as e:
+                    st.error(f"Could not process that XML: {e}")
