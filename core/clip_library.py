@@ -263,6 +263,64 @@ def record_trim(
         return False
 
 
+def reembed_missing_clips(batch_size: int = 256, progress_callback=None) -> dict:
+    """
+    Backfill embeddings for clips stored without one (e.g. created by XML
+    re-import, or saved while the embedding model was unavailable). Makes them
+    appear in semantic search.
+
+    Embeds each clip's ``shot_description`` (falling back to ``clip_title``);
+    rows with no usable text are skipped. Encodes in batches for speed.
+
+    Returns ``{'updated', 'skipped', 'total'}`` where ``total`` is the number
+    of null-embedding rows found. ``progress_callback(fraction)`` is called
+    0.0→1.0 as batches complete.
+    """
+    try:
+        init_db()
+        with _conn() as c:
+            rows = c.execute(
+                """SELECT id, shot_description, clip_title
+                   FROM clips WHERE embedding IS NULL"""
+            ).fetchall()
+
+        total = len(rows)
+        if total == 0:
+            if progress_callback:
+                progress_callback(1.0)
+            return {"updated": 0, "skipped": 0, "total": 0}
+
+        # Split into (id, text) pairs we can embed vs. rows with no text.
+        to_embed = []
+        skipped = 0
+        for r in rows:
+            text = (r["shot_description"] or "").strip() or (r["clip_title"] or "").strip()
+            if text:
+                to_embed.append((r["id"], text))
+            else:
+                skipped += 1
+
+        updated = 0
+        for start in range(0, len(to_embed), batch_size):
+            batch = to_embed[start:start + batch_size]
+            vecs = [_embed(text) for _id, text in batch]
+            with _conn() as c:
+                c.executemany(
+                    "UPDATE clips SET embedding = ? WHERE id = ?",
+                    [(vec.tobytes(), cid) for (cid, _t), vec in zip(batch, vecs)],
+                )
+            updated += len(batch)
+            if progress_callback:
+                progress_callback(min(1.0, (start + len(batch)) / max(1, len(to_embed))))
+
+        if progress_callback:
+            progress_callback(1.0)
+        return {"updated": updated, "skipped": skipped, "total": total}
+    except Exception as e:
+        print(f"[ClipLibrary] reembed_missing_clips error: {e}")
+        return {"updated": 0, "skipped": 0, "total": 0, "error": str(e)}
+
+
 def get_preferred_trim(clip_id: int, shot_description: str) -> dict | None:
     """
     Returns {'in_seconds', 'out_seconds', 'confirmed_at'} for an exact

@@ -393,6 +393,24 @@ def render_library_health():
                 "semantic search (but still work for downloads and learned "
                 "trims). New downloads embed automatically now."
             )
+            if st.button(f"Re-embed {no_emb} clip(s)", key="lib_health_reembed",
+                         help="Backfills embeddings so these clips become semantically searchable. "
+                              "Loads the model once (~60s first time)."):
+                _pbar = st.progress(0.0)
+                with st.spinner("Embedding clips…"):
+                    try:
+                        from core.clip_library import reembed_missing_clips
+                        _res = reembed_missing_clips(progress_callback=lambda f: _pbar.progress(min(1.0, f)))
+                    except Exception as e:
+                        _res = {"error": str(e)}
+                if _res.get("error"):
+                    st.error(f"❌ Re-embed failed: {_res['error']}")
+                else:
+                    msg = f"✅ Re-embedded {_res['updated']} clip(s)."
+                    if _res.get("skipped"):
+                        msg += f" Skipped {_res['skipped']} with no text."
+                    st.success(msg)
+                    st.rerun()
         elif total and no_emb == 0:
             st.caption("All clips are embedded and semantically searchable.")
 

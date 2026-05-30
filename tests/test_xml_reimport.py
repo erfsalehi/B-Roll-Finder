@@ -188,6 +188,26 @@ def test_library_stats_report_embedding_health(temp_library):
     assert lib.get_library_stats()["trims"] == 1
 
 
+def test_reembed_missing_backfills_only_rows_with_text(temp_library, monkeypatch):
+    """Re-embed fills null-embedding rows that have text, skips empty ones."""
+    import numpy as np
+    lib = temp_library
+    monkeypatch.setattr(lib, "_embed", lambda t: np.ones(384, dtype=np.float32))
+
+    lib.ensure_clip(local_path="downloads/a.mp4", shot_description="mechanic workshop")
+    lib.ensure_clip(local_path="downloads/b.mp4", shot_description="")  # no text → skip
+
+    res = lib.reembed_missing_clips()
+    assert res == {"updated": 1, "skipped": 1, "total": 2}
+
+    stats = lib.get_library_stats()
+    assert stats["with_embedding"] == 1
+    assert stats["without_embedding"] == 1  # the empty-text row remains
+
+    # Idempotent: nothing left with text to embed.
+    assert lib.reembed_missing_clips()["updated"] == 0
+
+
 def test_ingest_skips_non_video_clips(temp_library):
     """SFX/voiceover clipitems must never become library rows."""
     sfx_xml = SAMPLE_XML.replace("1-1-engine-oil.mp4", "sfx_boom.wav")
