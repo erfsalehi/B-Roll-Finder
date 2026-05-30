@@ -20,7 +20,7 @@ from core.captions import (
     extract_highlights, create_text_overlay, get_available_fonts,
     render_overlay_preview,
 )
-from core.clip_library import store_clip, search_library, get_library_stats
+from core.clip_library import store_clip, search_library, get_library_stats, get_recent_trims
 from core.sfx import search_freesound, download_sfx
 from core.download_manager import DownloadManager, MAX_RETRIES, link_or_copy
 from core import download_cache
@@ -3676,7 +3676,13 @@ elif app_mode in ["Director", "Smart Mode"]:
         # records where you cut each clip and starts future exports of the same
         # clip at that in-point (see _preferred_in_frame in core/output.py).
         st.divider()
-        with st.expander("🎯 Teach the Clip Library your trims (re-import an edited XML)"):
+        _trims_learned = get_library_stats().get("trims", 0)
+        _reimport_label = (
+            f"🎯 Teach the Clip Library your trims  ·  ✅ {_trims_learned} learned"
+            if _trims_learned else
+            "🎯 Teach the Clip Library your trims (re-import an edited XML)"
+        )
+        with st.expander(_reimport_label):
             st.caption(
                 "After you fine-tune in/out points in Premiere, export the sequence "
                 "back to FCP7 XML (File ▸ Export ▸ Final Cut Pro XML) and upload it "
@@ -3685,6 +3691,37 @@ elif app_mode in ["Director", "Smart Mode"]:
                 "you downloaded through B-Roll Finder (already in your Clip Library) "
                 "can be matched."
             )
+
+            # Persistent state — trims live in the DB, so show what's already
+            # learned after a restart and let the user redo / clear it.
+            if _trims_learned:
+                _recent = get_recent_trims(limit=5)
+                st.info(
+                    f"📌 **{_trims_learned} preferred trim(s) already learned** "
+                    "(persisted from earlier imports). Re-uploading an edited XML "
+                    "**updates** matching clips; clearing starts fresh. Exports already "
+                    "use these in-points."
+                )
+                if _recent:
+                    with st.expander("Recently learned trims"):
+                        for _t in _recent:
+                            _title = (_t.get("clip_title") or "clip")[:48]
+                            _when = (_t.get("confirmed_at") or "")[:19].replace("T", " ")
+                            st.write(
+                                f"• **{_title}** — in {float(_t['in_seconds']):.2f}s → "
+                                f"out {float(_t['out_seconds']):.2f}s"
+                                + (f"  ·  _{_when}_" if _when else "")
+                            )
+                _cc1, _cc2 = st.columns([3, 1])
+                with _cc2:
+                    if st.button("🗑️ Clear all", key="d_reimport_clear",
+                                 help="Delete all learned trims so you can redo from scratch. "
+                                      "Your clips and embeddings are untouched."):
+                        from core.clip_library import clear_trims
+                        _n = clear_trims()
+                        st.success(f"Cleared {_n} learned trim(s).")
+                        st.rerun()
+
             reimport_file = st.file_uploader(
                 "Upload edited sequence (.xml)", type=["xml"], key="d_reimport_xml"
             )

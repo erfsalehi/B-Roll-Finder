@@ -321,6 +321,47 @@ def reembed_missing_clips(batch_size: int = 256, progress_callback=None) -> dict
         return {"updated": 0, "skipped": 0, "total": 0, "error": str(e)}
 
 
+def clear_trims() -> int:
+    """Delete all learned preferred trims. Returns the number removed.
+
+    Lets the user redo trim-learning from scratch — the clips themselves
+    (and their embeddings) are untouched.
+    """
+    try:
+        init_db()
+        with _conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM clip_preferred_trims").fetchone()[0]
+            c.execute("DELETE FROM clip_preferred_trims")
+        return n
+    except Exception as e:
+        print(f"[ClipLibrary] clear_trims error: {e}")
+        return 0
+
+
+def get_recent_trims(limit: int = 5) -> list:
+    """Most-recently-learned trims, for showing 'already done' state in the UI.
+
+    Returns ``[{'clip_title', 'in_seconds', 'out_seconds', 'confirmed_at',
+    'source_xml_path'}, ...]`` newest first.
+    """
+    try:
+        init_db()
+        with _conn() as c:
+            rows = c.execute(
+                """SELECT t.in_seconds, t.out_seconds, t.confirmed_at,
+                          t.source_xml_path, c.clip_title
+                   FROM clip_preferred_trims t
+                   LEFT JOIN clips c ON c.id = t.clip_id
+                   ORDER BY t.confirmed_at DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[ClipLibrary] get_recent_trims error: {e}")
+        return []
+
+
 def get_preferred_trim(clip_id: int, shot_description: str) -> dict | None:
     """
     Returns {'in_seconds', 'out_seconds', 'confirmed_at'} for an exact

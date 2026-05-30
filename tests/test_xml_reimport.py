@@ -208,6 +208,26 @@ def test_reembed_missing_backfills_only_rows_with_text(temp_library, monkeypatch
     assert lib.reembed_missing_clips()["updated"] == 0
 
 
+def test_clear_and_recent_trims(temp_library):
+    """Learned trims persist for 'already done' display and can be cleared."""
+    lib = temp_library
+    c1 = lib.ensure_clip(local_path="downloads/1-1-engine.mp4",
+                         shot_description="engine bay", clip_title="1-1-engine.mp4")
+    lib.record_trim(c1, "engine bay", 1.0, 5.0, source_xml_path="edit.xml")
+
+    recent = lib.get_recent_trims()
+    assert len(recent) == 1
+    assert recent[0]["clip_title"] == "1-1-engine.mp4"
+    assert recent[0]["in_seconds"] == pytest.approx(1.0)
+
+    assert lib.get_library_stats()["trims"] == 1
+    assert lib.clear_trims() == 1
+    assert lib.get_library_stats()["trims"] == 0
+    assert lib.get_recent_trims() == []
+    # Clip itself survives the clear.
+    assert lib.find_clip_by_path_or_url(filename="1-1-engine.mp4") is not None
+
+
 def test_ingest_skips_non_video_clips(temp_library):
     """SFX/voiceover clipitems must never become library rows."""
     sfx_xml = SAMPLE_XML.replace("1-1-engine-oil.mp4", "sfx_boom.wav")
