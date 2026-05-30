@@ -41,10 +41,28 @@ _PEXELS_RL  = _TokenBucket(rate=3.0)
 _PIXABAY_RL = _TokenBucket(rate=3.0)
 
 
-def _http_get_with_retry(url, *, headers=None, params=None, timeout=10, max_attempts=4):
-    """GET with backoff on 429/503.  Respects Retry-After header when present."""
+def _http_get_with_retry(url, *, headers=None, params=None, timeout=(5, 15), max_attempts=4):
+    """GET with backoff on 429/503 *and* on network timeouts / dropped sockets.
+
+    ``timeout`` is a ``(connect, read)`` tuple: a fast connect ceiling so a
+    dead route fails quickly, plus a longer read window so a slow-but-alive
+    response isn't killed mid-transfer. When the background fetch dispatcher
+    hammers a stock API, individual sockets occasionally hang or reset; those
+    surface as ``requests.exceptions.Timeout`` / ``ConnectionError`` (not an
+    HTTP status), so the original 429/503-only loop never retried them and a
+    single stalled query bubbled up as a hard failure. We now retry those the
+    same way, with the same exponential backoff.
+    """
+    last_exc = None
     for attempt in range(max_attempts):
-        response = requests.get(url, headers=headers, params=params, timeout=timeout)
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=timeout)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_exc = e
+            if attempt < max_attempts - 1:
+                time.sleep(2 ** attempt + random.uniform(0, 1))
+                continue
+            raise
         if response.status_code in (429, 503) and attempt < max_attempts - 1:
             retry_after = response.headers.get('Retry-After')
             wait = float(retry_after) if retry_after else (2 ** attempt + random.uniform(0, 1))
@@ -52,6 +70,7 @@ def _http_get_with_retry(url, *, headers=None, params=None, timeout=10, max_atte
             continue
         response.raise_for_status()
         return response
+    # Exhausted attempts on repeated 429/503 — raise the last HTTP status.
     response.raise_for_status()
     return response
 
@@ -85,7 +104,7 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
     results = []
     try:
         with _PEXELS_RL:
-            response = _http_get_with_retry(url, headers=headers, params=params, timeout=10)
+            response = _http_get_with_retry(url, headers=headers, params=params)
         data = response.json()
 
         for video in data.get('videos', []):
@@ -139,7 +158,7 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
     results = []
     try:
         with _PIXABAY_RL:
-            response = _http_get_with_retry(url, params=params, timeout=10)
+            response = _http_get_with_retry(url, params=params)
         data = response.json()
 
         for hit in data.get('hits', []):
