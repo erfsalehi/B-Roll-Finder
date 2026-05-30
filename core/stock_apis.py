@@ -41,26 +41,39 @@ _PEXELS_RL  = _TokenBucket(rate=3.0)
 _PIXABAY_RL = _TokenBucket(rate=3.0)
 
 
-def _http_get_with_retry(url, *, headers=None, params=None, timeout=(5, 15), max_attempts=4):
-    """GET with backoff on 429/503 *and* on network timeouts / dropped sockets.
+def _http_get_with_retry(url, *, headers=None, params=None, timeout=8,
+                         max_attempts=4, network_retries=1):
+    """GET with backoff on 429/503 and a bounded retry on transient timeouts.
 
-    ``timeout`` is a ``(connect, read)`` tuple: a fast connect ceiling so a
-    dead route fails quickly, plus a longer read window so a slow-but-alive
-    response isn't killed mid-transfer. When the background fetch dispatcher
-    hammers a stock API, individual sockets occasionally hang or reset; those
-    surface as ``requests.exceptions.Timeout`` / ``ConnectionError`` (not an
-    HTTP status), so the original 429/503-only loop never retried them and a
-    single stalled query bubbled up as a hard failure. We now retry those the
-    same way, with the same exponential backoff.
+    Three failure classes, handled differently:
+
+    * **429 / 503** — server is rate-limiting / briefly unavailable. Back off
+      (honouring ``Retry-After``) and retry up to ``max_attempts``.
+    * **Timeout / ConnectionError** — a socket stalled or dropped. Often
+      transient under the parallel background dispatcher, so retry up to
+      ``network_retries`` times (default 1) with a short pause.
+    * **SSLError** — the TLS handshake was reset mid-stream (e.g.
+      ``UNEXPECTED_EOF_WHILE_READING``). This is almost never transient: it
+      means a firewall, DPI, or VPN egress is actively killing connections to
+      this host. Retrying just multiplies a ~15s stall, so we raise it
+      immediately and let the caller surface a network-path hint.
+
+    ``timeout`` is a single value (applied to connect *and* read). A
+    ``(connect, read)`` tuple is unhelpful here: the TLS handshake — exactly
+    where a blocked host stalls — is governed by the *connect* value, so the
+    read half is misleading.
     """
-    last_exc = None
+    net_retries_left = network_retries
     for attempt in range(max_attempts):
         try:
             response = requests.get(url, headers=headers, params=params, timeout=timeout)
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            last_exc = e
-            if attempt < max_attempts - 1:
-                time.sleep(2 ** attempt + random.uniform(0, 1))
+        except requests.exceptions.SSLError:
+            # Host is being intercepted/reset — don't hammer it.
+            raise
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if net_retries_left > 0:
+                net_retries_left -= 1
+                time.sleep(0.5)
                 continue
             raise
         if response.status_code in (429, 503) and attempt < max_attempts - 1:
@@ -73,6 +86,25 @@ def _http_get_with_retry(url, *, headers=None, params=None, timeout=(5, 15), max
     # Exhausted attempts on repeated 429/503 — raise the last HTTP status.
     response.raise_for_status()
     return response
+
+
+def _network_hint(exc: Exception) -> str:
+    """Return a user-facing suffix when an error looks like a blocked host.
+
+    Distinguishes 'the host is unreachable on your network' from a genuine
+    app/API fault, so the Step 3 error list tells the user to check their
+    VPN/firewall instead of filing it as a bug.
+    """
+    s = str(exc).lower()
+    if any(k in s for k in ("unexpected_eof", "eof occurred", "sslerror", "ssl:",
+                            "wrong_version", "handshake")):
+        return ("  [network] TLS connection reset - your network/VPN is likely "
+                "blocking this host. Try a different VPN server or exit node.")
+    if any(k in s for k in ("timed out", "timeout", "connection refused",
+                            "max retries", "failed to establish")):
+        return ("  [network] host unreachable/slow - check your internet or VPN "
+                "(this host may be blocked on your current connection).")
+    return ""
 
 
 def _pexels_slug_to_text(page_url: str) -> str:
@@ -141,7 +173,7 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
             if len(results) >= num_results:
                 break
     except Exception as e:
-        msg = f"Pexels search failed for '{keyword}': {e}"
+        msg = f"Pexels search failed for '{keyword}': {e}{_network_hint(e)}"
         print(msg)
         if errors is not None:
             errors.append(msg)
@@ -196,7 +228,7 @@ def search_pixabay(keyword: str, api_key: str, num_results: int = 3, errors: lis
 
         return results
     except Exception as e:
-        msg = f"Pixabay search failed for '{keyword}': {e}"
+        msg = f"Pixabay search failed for '{keyword}': {e}{_network_hint(e)}"
         print(msg)
         if errors is not None:
             errors.append(msg)
