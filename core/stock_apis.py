@@ -124,6 +124,24 @@ _PEXELS_GATE  = _RateLimitGate("Pexels")
 _PIXABAY_GATE = _RateLimitGate("Pixabay")
 
 
+def get_rate_limit_status() -> dict:
+    """Current rate-limit state per host, for the UI.
+
+    Returns ``{'pexels': {'blocked': bool, 'seconds': float, 'reset_at': 'HH:MM'},
+    'pixabay': {...}}``. ``seconds`` is how long until the quota resets (0 when
+    not limited).
+    """
+    out = {}
+    for key, gate in (("pexels", _PEXELS_GATE), ("pixabay", _PIXABAY_GATE)):
+        secs = gate.blocked_for()
+        out[key] = {
+            "blocked": secs > 0,
+            "seconds": secs,
+            "reset_at": gate.reset_clock_str(),
+        }
+    return out
+
+
 def _http_get_with_retry(url, *, headers=None, params=None, timeout=8,
                          max_attempts=4, network_retries=1, rate_gate=None):
     """GET with backoff on 429/503 and a bounded retry on transient timeouts.

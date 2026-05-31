@@ -1834,6 +1834,41 @@ elif app_mode in ["Director", "Smart Mode"]:
                 f"📺 YouTube enabled — ~{yt_calls} search call(s), "
                 f"~{est_units:,} quota unit(s) (daily quota is 10,000)."
             )
+
+        # ── Pre-fetch quota estimate for the stock APIs ───────────────────────
+        # Each (source, query) is one request against an hourly quota
+        # (~200/hr free for Pexels). Warn up-front and offer a one-click cap so
+        # a big project doesn't trip the limiter mid-run.
+        from core.director_search import estimate_stock_requests
+        _PEXELS_HOURLY = 200
+        pexels_max_q = None
+        pixabay_max_q = None
+        if use_pexels or use_pixabay:
+            _est = estimate_stock_requests(st.session_state.director_shots)
+            _pex_est = _est["pexels"] if use_pexels else 0
+            _pix_est = _est["pixabay"] if use_pixabay else 0
+            _bits = []
+            if use_pexels:  _bits.append(f"Pexels ~{_pex_est}")
+            if use_pixabay: _bits.append(f"Pixabay ~{_pix_est}")
+            st.caption(f"📊 Estimated stock requests: {' · '.join(_bits)} "
+                       f"(across {_est['shots']} shots).")
+            if use_pexels and _pex_est > _PEXELS_HOURLY:
+                _cap = max(1, _PEXELS_HOURLY // max(1, _est["shots"]))
+                _capped_est = estimate_stock_requests(
+                    st.session_state.director_shots, pexels_max_queries=_cap
+                )["pexels"]
+                st.warning(
+                    f"⚠️ ~{_pex_est} Pexels requests exceeds the free tier's "
+                    f"~{_PEXELS_HOURLY}/hour — the run will likely hit the rate limit "
+                    "partway through."
+                )
+                if st.checkbox(
+                    f"Cap Pexels to first {_cap} quer{'y' if _cap == 1 else 'ies'}/shot "
+                    f"(~{_capped_est} requests, fits the limit)",
+                    value=True, key="d_pexels_cap",
+                ):
+                    pexels_max_q = _cap
+
         col_btn1, col_btn2, col_btn3 = st.columns([2, 2, 1])
         with col_btn1:
             fetch_clicked = st.button("Fetch", disabled=st.session_state.is_fetching, key="d_fetch", width="stretch")
@@ -1886,6 +1921,8 @@ elif app_mode in ["Director", "Smart Mode"]:
                         errors=d_fetch_errors,
                         retry_only=True,
                         min_height=min_h,
+                        pexels_max_queries=pexels_max_q,
+                        pixabay_max_queries=pixabay_max_q,
                     )
                     if use_library and lib_num > 0:
                         status2.text("📚 Searching Clip Library…")
@@ -1954,6 +1991,8 @@ elif app_mode in ["Director", "Smart Mode"]:
                         use_youtube_search=use_youtube_search,
                         retry_only=False,
                         min_height=min_h,
+                        pexels_max_queries=pexels_max_q,
+                        pixabay_max_queries=pixabay_max_q,
                     )
                     _lib_inject = None
                     if use_library and lib_num > 0:
@@ -2016,6 +2055,82 @@ elif app_mode in ["Director", "Smart Mode"]:
         and s.get("priority") != "none"
         and s.get("search_queries")
     ]
+
+    # ── Retry failed shots (same queries) — rate-limit aware ──────────────────
+    # When a stock source is throttled, the empty shots failed on the quota,
+    # not the query. Let the user re-fetch ONLY those shots once the window
+    # resets, keeping everything already found.
+    if empty_shots and not st.session_state.get("is_fetching"):
+        from core.stock_apis import get_rate_limit_status
+        _rl = get_rate_limit_status()
+        _rl_blocked = {k: v for k, v in _rl.items() if v["blocked"]}
+        st.divider()
+        with st.container():
+            st.subheader(f"🔁 Retry {len(empty_shots)} failed shot(s)")
+            if _rl_blocked:
+                _names = " · ".join(
+                    f"{k.title()} resets ~{v['reset_at']}" for k, v in _rl_blocked.items()
+                )
+                _mins = max(int(v["seconds"] // 60) + 1 for v in _rl_blocked.values())
+                st.caption(
+                    f"⏳ Stock API rate-limited ({_names}). These shots hit the hourly "
+                    "quota, not a bad query — retry the same searches once it resets. "
+                    "Everything already found is kept."
+                )
+                _retry_label = f"🔁 Retry available in ~{_mins} min"
+            else:
+                st.caption(
+                    "Re-fetch only the shots with 0 candidates, using the same queries "
+                    "and your current source settings. Existing results are preserved."
+                )
+                _retry_label = f"🔁 Retry these {len(empty_shots)} shot(s) now"
+            if st.button(_retry_label, key="d_retry_failed_same",
+                         disabled=bool(_rl_blocked)):
+                from core.director_search import (
+                    fetch_director_footage as _fdf, estimate_stock_requests as _esr,
+                )
+                _cap = None
+                if st.session_state.get("d_pexels_cap"):
+                    _e = _esr(st.session_state.director_shots)
+                    if _e["shots"]:
+                        _cap = max(1, 200 // _e["shots"])
+                _minh = {"None": 0, "720p": 720, "1080p": 1080, "2K": 1440, "4K": 2160}.get(
+                    st.session_state.get("d_min_res_sel", "None"), 0
+                )
+                _rerrs = []
+                with st.spinner(f"Retrying {len(empty_shots)} shot(s)…"):
+                    _fdf(
+                        st.session_state.director_shots,
+                        use_pexels=st.session_state.get("d_pex_cb", False),
+                        use_pixabay=st.session_state.get("d_pix_cb", False),
+                        use_youtube=st.session_state.get("d_yt_search_cb", True),
+                        pexels_num_results=int(st.session_state.get("d_pex_nr", 3)),
+                        pixabay_num_results=int(st.session_state.get("d_pix_nr", 3)),
+                        youtube_api_num_results=int(st.session_state.get("d_ytapi_nr", 3)),
+                        youtube_search_num_results=int(st.session_state.get("d_yts_nr", 3)),
+                        use_youtube_api=st.session_state.get("d_yt_api_cb", False),
+                        use_youtube_search=st.session_state.get("d_yt_search_cb", True),
+                        retry_only=True, min_height=_minh, errors=_rerrs,
+                        pexels_max_queries=_cap,
+                    )
+                _still = sum(
+                    1 for s in st.session_state.director_shots
+                    if not s.get("video_results") and s.get("priority") != "none"
+                    and s.get("search_queries")
+                )
+                save_cache()
+                _found = len(empty_shots) - _still
+                if _found > 0:
+                    st.success(f"Found candidates for {_found} shot(s). {_still} still empty.")
+                else:
+                    st.warning(f"No new candidates — {_still} shot(s) still empty.")
+                if _rerrs:
+                    _uniq = list(dict.fromkeys(_rerrs))
+                    with st.expander(f"⚠️ {len(_uniq)} message(s)"):
+                        for e in _uniq[:20]:
+                            st.write(f"• {e}")
+                st.rerun()
+
     if empty_shots and not st.session_state.get("is_fetching"):
         st.divider()
         with st.container():

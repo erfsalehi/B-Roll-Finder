@@ -159,18 +159,24 @@ def _process_shot(
     min_height: int,
     errors: list,
     inner_workers: int,
+    pexels_max_queries: int = None,
+    pixabay_max_queries: int = None,
 ) -> None:
     """Fetch all candidates for one shot in-place. Runs inside the shared executor."""
     queries = shot.get('search_queries', [])
     youtube_queries = shot.get('youtube_keywords') or queries[:1]
 
     # Build all jobs for Pexels / Pixabay / YouTube Data API.
-    # Pexels + Pixabay: every query.  YouTube Data API: first query only (quota).
+    # Pexels + Pixabay normally search every query, but each query is one API
+    # request against an hourly quota — so an optional per-source cap limits a
+    # big project to the first N queries/shot to stay under the limit.
     jobs = []
-    for q in queries:
-        if use_pexels and pexels_key and pexels_num_results > 0:
+    for qi, q in enumerate(queries):
+        if (use_pexels and pexels_key and pexels_num_results > 0
+                and (pexels_max_queries is None or qi < pexels_max_queries)):
             jobs.append((q, 'pexels', pexels_key, pexels_num_results))
-        if use_pixabay and pixabay_key and pixabay_num_results > 0:
+        if (use_pixabay and pixabay_key and pixabay_num_results > 0
+                and (pixabay_max_queries is None or qi < pixabay_max_queries)):
             jobs.append((q, 'pixabay', pixabay_key, pixabay_num_results))
     if use_youtube_api and youtube_key and queries and youtube_api_num_results > 0:
         jobs.append((queries[0], 'youtube', youtube_key, youtube_api_num_results))
@@ -238,6 +244,8 @@ def fetch_director_footage(
     use_youtube_search: bool = None,
     retry_only: bool = False,
     min_height: int = 0,
+    pexels_max_queries: int = None,
+    pixabay_max_queries: int = None,
 ) -> list:
     """
     Stage 2: Fetch video candidates for every shot in parallel.
@@ -319,6 +327,8 @@ def fetch_director_footage(
             min_height=min_height,
             errors=errors,
             inner_workers=inner_workers,
+            pexels_max_queries=pexels_max_queries,
+            pixabay_max_queries=pixabay_max_queries,
         )
         if progress_callback:
             # Hold the lock for the callback so concurrent shot completions
@@ -353,6 +363,28 @@ def fetch_director_footage(
 # ── Chunked background dispatcher ─────────────────────────────────────────────
 # Runs fetch_director_footage on N shots at a time, sequentially. Lets Step 5
 # start reviewing chunk 1 while chunks 2+ are still in flight.
+
+def estimate_stock_requests(shots: list, pexels_max_queries: int = None,
+                            pixabay_max_queries: int = None) -> dict:
+    """Estimate how many Pexels/Pixabay API requests a fetch will issue.
+
+    One request per (source, query) on work-shots, so the caller can warn when
+    a run would blow past a host's hourly quota and offer to cap queries/shot.
+    Returns ``{'pexels': int, 'pixabay': int, 'shots': int}``.
+    """
+    pex = pix = work = 0
+    for s in shots:
+        if s.get("priority") == "none":
+            continue
+        qs = s.get("search_queries") or []
+        if not qs:
+            continue
+        work += 1
+        n = len(qs)
+        pex += min(n, pexels_max_queries) if pexels_max_queries else n
+        pix += min(n, pixabay_max_queries) if pixabay_max_queries else n
+    return {"pexels": pex, "pixabay": pix, "shots": work}
+
 
 def group_shots_into_fetch_chunks(shots: list, fetch_chunk_size: int) -> list:
     """Split shots into ordered fetch chunks (only shots that have work to do).
