@@ -33,6 +33,81 @@ def _build_context_block(video_topic: str, custom_instructions: str) -> str:
     return "\n\n".join(parts)
 
 
+# Words that describe narration *intent* rather than anything visual, so they
+# make poor stock-search terms. Stripped when synthesizing fallback queries.
+import re as _re
+
+_QUERY_STOPWORDS = {
+    "the", "a", "an", "of", "to", "and", "with", "for", "on", "in", "is", "are",
+    "that", "this", "into", "as", "at", "by", "its", "it", "be", "or",
+    "introduce", "introducing", "explain", "explaining", "describe", "describing",
+    "show", "showing", "set", "setting", "tone", "preview", "previewing", "list",
+    "emphasize", "emphasizing", "importance", "transition", "transitioning",
+    "overview", "topic", "hook", "intro", "outro", "summarize", "summarizing",
+    "discuss", "discussing", "mention", "highlight", "highlighting", "first",
+    "second", "third", "next", "then", "begin", "start", "end", "point", "idea",
+}
+
+
+def _fallback_queries(shot: dict, video_topic: str = "") -> list:
+    """Synthesize plausible visual search queries when the LLM returned none.
+
+    Builds them from the shot's concrete nouns (intent, then narration) anchored
+    to the overall video topic, so an empty-query shot still gets *something*
+    searchable instead of silently yielding zero candidates.
+    """
+    topic = (video_topic or "").strip()
+
+    def _keywords(s: str) -> list:
+        return [
+            w for w in _re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", s or "")
+            if w.lower() not in _QUERY_STOPWORDS and len(w) > 2
+        ]
+
+    intent_kw = _keywords(shot.get("shot_intent", ""))
+    text_kw = _keywords(shot.get("text", ""))
+
+    out = []
+    # Primary: topic + the most salient intent nouns (most on-topic / visual).
+    primary = " ".join(([topic] if topic else []) + intent_kw[:3]).strip()
+    if primary:
+        out.append(primary)
+    # Secondary: narration nouns, or the topic alone.
+    if text_kw:
+        out.append(" ".join(([topic] if topic else []) + text_kw[:3]).strip())
+    elif topic:
+        out.append(topic)
+
+    seen, res = set(), []
+    for q in out:
+        q = " ".join(q.split())
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            res.append(q)
+    return res[:2] or ([topic] if topic else ["cinematic b-roll footage"])
+
+
+def ensure_shot_queries(shots: list, video_topic: str = "") -> list:
+    """Guarantee every non-'none' shot has at least one search query.
+
+    The LLM occasionally omits ``search_queries`` for a shot; left empty, that
+    shot fetches nothing AND (because youtube_keywords seed from queries) shows
+    no keywords either. Fill those in deterministically and flag them with
+    ``queries_fallback`` so the UI can hint that a Regenerate would improve them.
+    """
+    for s in shots:
+        if s.get("priority") == "none":
+            continue
+        qs = [str(q).strip() for q in (s.get("search_queries") or []) if str(q).strip()]
+        if qs:
+            s["search_queries"] = qs
+            s.pop("queries_fallback", None)
+        else:
+            s["search_queries"] = _fallback_queries(s, video_topic)
+            s["queries_fallback"] = True
+    return shots
+
+
 def generate_shot_list(script_text: str, wps: float, api_key: str, progress_callback=None,
                        custom_instructions: str = "", start_offset: float = 0.0,
                        video_topic: str = "") -> list:
@@ -138,7 +213,8 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
             
         if progress_callback:
             progress_callback(min(1.0, (i + 1) / total_blocks))
-            
+
+    ensure_shot_queries(all_shots, video_topic)
     return all_shots
 
 def generate_shot_list_from_transcription(segments: list, api_key: str, progress_callback=None,
@@ -236,7 +312,8 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
             
         if progress_callback:
             progress_callback((i + len(block)) / len(segments))
-            
+
+    ensure_shot_queries(all_shots, video_topic)
     return all_shots
 
 def regenerate_shot_queries(
@@ -320,6 +397,9 @@ def regenerate_shot_queries(
         if progress_callback:
             progress_callback((idx + 1) / total)
 
+    # Safety net: if regeneration still produced no queries for a target, fill
+    # deterministically so it never stays empty.
+    ensure_shot_queries(targets, video_topic)
     return shots
 
 

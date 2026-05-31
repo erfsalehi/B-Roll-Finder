@@ -1643,6 +1643,16 @@ elif app_mode in ["Director", "Smart Mode"]:
             "re-click *Fetch Candidates* in Step 3 to refresh results. Time, candidate count, "
             "and pick count are read-only."
         )
+        _fallback_shots = [
+            s for s in st.session_state.director_shots if s.get("queries_fallback")
+        ]
+        if _fallback_shots:
+            _ids = ", ".join(str(s.get("slot_id")) for s in _fallback_shots[:15])
+            st.info(
+                f"ℹ️ {len(_fallback_shots)} shot(s) had no queries from the AI and were "
+                f"auto-filled from their intent/topic (shots {_ids}). They'll still fetch, "
+                "but **Regenerate Queries** in Step 3 usually produces better visual searches."
+            )
         # Build rows from current state.
         rows = []
         for shot in st.session_state.director_shots:
