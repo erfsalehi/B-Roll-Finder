@@ -476,6 +476,7 @@ def render_classic_mode():
         "Pexels":     bool(os.getenv("PEXELS_API_KEY")),
         "Pixabay":    bool(os.getenv("PIXABAY_API_KEY")),
         "YouTube":    bool(os.getenv("YOUTUBE_API_KEY")),
+        "DeepSeek":   bool(os.getenv("DEEPSEEK_API_KEY")),
         "OpenRouter": bool(os.getenv("OPENROUTER_API_KEY")),
         "Freesound":  bool(os.getenv("FREESOUND_API_KEY")),
     }
@@ -483,9 +484,10 @@ def render_classic_mode():
     with st.expander(f"⚙️  Setup — API keys  ·  {_pill}",
                      expanded=not (_key_status["Groq 1"] or _key_status["Groq 2"])):
         st.caption(
-            "Groq is required (script analysis). Pexels/Pixabay/YouTube are search "
-            "sources — enable at least one. OpenRouter is an automatic fallback "
-            "when Groq hits its rate limit."
+            "Groq is required (transcription + script analysis). Pexels/Pixabay/YouTube "
+            "are search sources — enable at least one. **DeepSeek** is an optional paid, "
+            "higher-quality model — when set it's used first for all AI steps. OpenRouter "
+            "is an automatic free fallback when Groq hits its rate limit."
         )
         col_k1, col_k2 = st.columns(2)
         with col_k1:
@@ -508,6 +510,14 @@ def render_classic_mode():
                                              value=os.getenv("YOUTUBE_API_KEY", ""),
                                              type="password",
                                              help="Optional. 10,000 quota units/day; each search costs 100.")
+            deepseek_input   = st.text_input("DeepSeek API Key (paid — preferred)",
+                                             value=os.getenv("DEEPSEEK_API_KEY", ""),
+                                             type="password",
+                                             help="Optional. A paid, higher-quality model "
+                                                  "(deepseek-v4-pro). When set, it's used first for "
+                                                  "every AI step (shot list, ranking, keywords), "
+                                                  "with Groq/OpenRouter as automatic fallbacks. "
+                                                  "Override the model id with DEEPSEEK_MODEL in .env.")
             openrouter_input = st.text_input("OpenRouter API Key",
                                              value=os.getenv("OPENROUTER_API_KEY", ""),
                                              type="password",
@@ -538,6 +548,7 @@ def render_classic_mode():
                 set_key(ENV_FILE, "GROQ_API_KEY", groq_input)
                 if groq_input_2:      set_key(ENV_FILE, "GROQ_API_KEY_2",      groq_input_2)
                 if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
+                if deepseek_input:   set_key(ENV_FILE, "DEEPSEEK_API_KEY",   deepseek_input)
                 if pexels_input:     set_key(ENV_FILE, "PEXELS_API_KEY",     pexels_input)
                 if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
                 if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
@@ -1381,6 +1392,7 @@ elif app_mode in ["Director", "Smart Mode"]:
         "Pexels":     bool(os.getenv("PEXELS_API_KEY")),
         "Pixabay":    bool(os.getenv("PIXABAY_API_KEY")),
         "YouTube":    bool(os.getenv("YOUTUBE_API_KEY")),
+        "DeepSeek":   bool(os.getenv("DEEPSEEK_API_KEY")),
         "OpenRouter": bool(os.getenv("OPENROUTER_API_KEY")),
         "Freesound":  bool(os.getenv("FREESOUND_API_KEY")),
     }
@@ -1388,9 +1400,10 @@ elif app_mode in ["Director", "Smart Mode"]:
     with st.expander(f"⚙️  Setup —  API keys  ·  {_pill}",
                      expanded=not (_key_status["Groq 1"] or _key_status["Groq 2"])):
         st.caption(
-            "Groq is required (script analysis & ranking). Pexels/Pixabay/YouTube are "
-            "search sources —  enable at least one. OpenRouter is an automatic fallback "
-            "when Groq hits its rate limit."
+            "Groq is required (transcription, script analysis & ranking). Pexels/Pixabay/"
+            "YouTube are search sources —  enable at least one. **DeepSeek** is an optional "
+            "paid, higher-quality model — when set it's used first for all AI steps. "
+            "OpenRouter is an automatic free fallback when Groq hits its rate limit."
         )
         col_k1, col_k2 = st.columns(2)
         with col_k1:
@@ -1420,6 +1433,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                                                value=os.getenv("OPENROUTER_API_KEY_2", ""),
                                                type="password", key="d_or_2",
                                                help="Second fallback key if the first OpenRouter key is also limited.")
+            deepseek_input   = st.text_input("DeepSeek API Key (paid — preferred)",
+                                             value=os.getenv("DEEPSEEK_API_KEY", ""),
+                                             type="password", key="d_deepseek",
+                                             help="Optional. A paid, higher-quality model "
+                                                  "(deepseek-v4-pro). When set, it's used first for "
+                                                  "every AI step, with Groq/OpenRouter as automatic "
+                                                  "fallbacks. Override the model id with DEEPSEEK_MODEL in .env.")
             freesound_input  = st.text_input("Freesound API Key",
                                              value=os.getenv("FREESOUND_API_KEY", ""),
                                              type="password", key="d_free",
@@ -1449,6 +1469,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
                 if openrouter_input: set_key(ENV_FILE, "OPENROUTER_API_KEY", openrouter_input)
                 if openrouter_2_input: set_key(ENV_FILE, "OPENROUTER_API_KEY_2", openrouter_2_input)
+                if deepseek_input:   set_key(ENV_FILE, "DEEPSEEK_API_KEY",   deepseek_input)
                 if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
                 set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser_d)
                 load_dotenv(ENV_FILE, override=True)

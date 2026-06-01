@@ -107,15 +107,100 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
         raise last_error
 
 
+# ── DeepSeek (optional paid provider) ─────────────────────────────────────────
+# DeepSeek's API is OpenAI-compatible. When the user supplies a key it becomes
+# the *preferred* model (it's a paid, higher-quality tier than the Groq/
+# OpenRouter free fallbacks), so _call_llm_json / _call_llm_str try it first.
+DEEPSEEK_BASE = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-pro"
+
+
+def _deepseek_keys() -> list:
+    """Return configured DeepSeek key(s). Empty list ⇒ feature disabled."""
+    keys = [os.getenv("DEEPSEEK_API_KEY", ""), os.getenv("DEEPSEEK_API_KEY_2", "")]
+    return [k.strip() for k in keys if k and k.strip()]
+
+
+def _deepseek_request(system_prompt: str, user_content: str,
+                      temperature: float, max_tokens: int, json_mode: bool) -> str:
+    """One OpenAI-compatible call to DeepSeek with per-key 429/5xx backoff.
+
+    Returns the raw message content string. Non-retryable errors (400/401/402/
+    403 — bad request, auth, *out of balance*) raise immediately so the caller
+    can fall back to Groq/OpenRouter rather than burning the backoff schedule.
+    """
+    import time
+    keys = _deepseek_keys()
+    if not keys:
+        raise ValueError("No DeepSeek API key configured.")
+
+    model = os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL).strip() or DEEPSEEK_DEFAULT_MODEL
+    payload = {
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    last_error = None
+    backoff_delays = [2, 5, 15]
+    for i, api_key in enumerate(keys):
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        for attempt, delay in enumerate(backoff_delays):
+            try:
+                resp = requests.post(DEEPSEEK_BASE, headers=headers, json=payload, timeout=120)
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+            except Exception as e:
+                last_error = e
+                status = getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
+                if status == 429 or status >= 500:
+                    if attempt < len(backoff_delays) - 1:
+                        print(f"DeepSeek key {i+1} hit {status}. Waiting {delay}s…")
+                        time.sleep(delay)
+                        continue
+                    break  # exhausted retries for this key → try the next key
+                # 400/401/402/403 etc. — retrying won't help; surface it.
+                raise
+    if last_error:
+        raise last_error
+    raise RuntimeError("DeepSeek request failed with no error captured.")
+
+
+def _call_deepseek_json(system_prompt: str, user_content: str,
+                        temperature: float = 0.7, max_tokens: int = 2000) -> dict:
+    return json.loads(_deepseek_request(system_prompt, user_content,
+                                        temperature, max_tokens, json_mode=True))
+
+
+def _call_deepseek_str(system_prompt: str, user_content: str,
+                       temperature: float = 0.7, max_tokens: int = 500) -> str:
+    return _deepseek_request(system_prompt, user_content,
+                             temperature, max_tokens, json_mode=False).strip()
+
+
 def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 2000) -> dict:
     """
-    Try Groq first (cycling through available keys). 
-    On any Groq-related error (rate-limit, overload, etc.), fall back to OpenRouter.
+    Provider priority: DeepSeek (if a key is set) → Groq (cycling keys) →
+    OpenRouter. DeepSeek is a paid, higher-quality tier, so it leads when
+    available; any failure transparently falls back to the free providers.
     """
     import groq
     import os
-    
+
+    # Preferred: DeepSeek, when the user opted in with a key.
+    if _deepseek_keys():
+        try:
+            return _call_deepseek_json(system_prompt, user_content, temperature, max_tokens)
+        except Exception as e:
+            print(f"DeepSeek call failed ({type(e).__name__}: {e}); falling back to Groq/OpenRouter.")
+
     # Pool of Groq keys
     keys = [os.getenv("GROQ_API_KEY", ""), os.getenv("GROQ_API_KEY_2", "")]
     active_keys = [k.strip() for k in keys if k and k.strip()]
@@ -147,11 +232,19 @@ def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
 def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 500) -> str:
     """
-    Try Groq first (cycling keys) for a string response. On rate-limit, fall back to OpenRouter.
+    Provider priority: DeepSeek (if a key is set) → Groq (cycling keys) →
+    OpenRouter, mirroring _call_llm_json for plain-string responses.
     """
     import groq
     import os
-    
+
+    # Preferred: DeepSeek, when the user opted in with a key.
+    if _deepseek_keys():
+        try:
+            return _call_deepseek_str(system_prompt, user_content, temperature, max_tokens)
+        except Exception as e:
+            print(f"DeepSeek call failed ({type(e).__name__}: {e}); falling back to Groq/OpenRouter.")
+
     keys = [os.getenv("GROQ_API_KEY", ""), os.getenv("GROQ_API_KEY_2", "")]
     active_keys = [k.strip() for k in keys if k and k.strip()]
     
