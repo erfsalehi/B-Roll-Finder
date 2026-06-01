@@ -124,6 +124,35 @@ def _rank_one_shot(shot: dict, system_prompt: str, client: Groq,
         shot.setdefault('rank_reason', '')
 
 
+def auto_select_top_candidates(shots: list) -> list:
+    """Phase-3 auto-selection: bind the best ranked candidate per shot.
+
+    Decoupled post-processing for ``ENABLE_AUTO_SELECTION``. For every shot that
+    still has no manual pick, set ``selected_results`` to the top non-irrelevant
+    candidate (falling back to the first candidate when the ranker flagged them
+    all) and mark it ``auto_selected`` so the review UI can badge it.
+
+    Designed to run after :func:`rank_shot_candidates`, which has already
+    reordered ``video_results`` best→worst. It never overwrites an existing
+    selection, so it is idempotent and safe to re-run, and the editor can always
+    override an automatic pick by hand in review.
+    """
+    for shot in shots:
+        if shot.get("priority") == "none" or shot.get("skipped"):
+            continue
+        candidates = shot.get("video_results") or []
+        if not candidates:
+            continue
+        # Respect any pick the editor (or a previous run) already made.
+        if shot.get("selected_results"):
+            continue
+
+        top = next((c for c in candidates if not c.get("irrelevant")), candidates[0])
+        shot["selected_results"] = [top]
+        shot["auto_selected"] = True
+    return shots
+
+
 def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "",
                          video_topic: str = "", progress_callback=None,
                          errors: list = None, max_workers: int = 4) -> list:

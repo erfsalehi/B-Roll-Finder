@@ -37,6 +37,18 @@ CACHE_FILE = ".cache/session_state.json"
 if not os.path.exists(".cache"):
     os.makedirs(".cache")
 load_dotenv(ENV_FILE)
+
+
+def _env_flag(name: str) -> bool:
+    """Truthy reading of a boolean .env toggle (matches the idiom used below)."""
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _set_env_flag(name: str, value: bool) -> None:
+    """Persist a boolean toggle to .env and reflect it in the live process."""
+    val = "true" if value else "false"
+    set_key(ENV_FILE, name, val)
+    os.environ[name] = val
 # When the user runs a TUN-mode VPN (e.g. V2RayN, Hiddify), the OS
 # captures all traffic at the network layer, so app-level HTTP_PROXY /
 # HTTPS_PROXY env vars become stale — they point at an HTTP proxy
@@ -150,6 +162,8 @@ def toggle_pick(url, cand_dict, shot_dict):
         if "selected_results" not in shot_dict:
             shot_dict["selected_results"] = []
         shot_dict["selected_results"].append(cand_dict)
+    # A manual pick supersedes any automatic one — clear the auto badge.
+    shot_dict.pop("auto_selected", None)
     save_cache()
 
 
@@ -277,12 +291,14 @@ def perform_chunk_regeneration(chunk_idx):
     # 2. Generate new shots
     from core.director import generate_shot_list_from_transcription
     chunk = st.session_state.transcription_chunks[chunk_idx]
+    _roadmap = st.session_state.get("segment_roadmap") if _env_flag("ENABLE_CONTEXT_AWARE_KEYWORDS") else None
     new_shots = generate_shot_list_from_transcription(
         chunk.get("segments", []),
         os.getenv("GROQ_API_KEY"),
         custom_instructions=st.session_state.get("d_style", ""),
         video_topic=st.session_state.get("d_video_topic", ""),
-        chunk_id=chunk_idx
+        chunk_id=chunk_idx,
+        segment_roadmap=_roadmap or None,
     )
     
     # 3. Add preserved results to new shots
@@ -1597,6 +1613,33 @@ elif app_mode in ["Director", "Smart Mode"]:
             help="One sentence describing the topic. Used to disambiguate shot queries (so \"tool\" in a car video means \"wrench\", not \"saw\") and to filter off-topic candidates during ranking."
         )
     custom_instructions = st.text_area("Style Hints (Optional)", placeholder="e.g. cinematic, slow motion, no talking heads", key="d_style", on_change=save_cache)
+
+    # Pipeline mode toggles (persist to .env so os.getenv sees them everywhere).
+    col_ctx, col_auto = st.columns(2)
+    with col_ctx:
+        _enable_ctx = st.checkbox(
+            "🧭 Context-aware keywords",
+            value=_env_flag("ENABLE_CONTEXT_AWARE_KEYWORDS"),
+            key="d_ctx_aware",
+            help="Pre-scan the whole transcript into subject segments, then anchor each "
+                 "shot's queries to the subject in play at that moment (e.g. keep \"BMW M3\" "
+                 "in mind while the script discusses its transmission). Adds one fast LLM "
+                 "pass before the shot list is built.",
+        )
+        if _enable_ctx != _env_flag("ENABLE_CONTEXT_AWARE_KEYWORDS"):
+            _set_env_flag("ENABLE_CONTEXT_AWARE_KEYWORDS", _enable_ctx)
+    with col_auto:
+        _enable_auto = st.checkbox(
+            "🤖 Auto-select best clip",
+            value=_env_flag("ENABLE_AUTO_SELECTION"),
+            key="d_auto_select",
+            help="After ranking (Step 4), automatically bind the top-ranked candidate to "
+                 "each shot instead of leaving every pick for manual review. You can still "
+                 "override any auto-pick in Step 5.",
+        )
+        if _enable_auto != _env_flag("ENABLE_AUTO_SELECTION"):
+            _set_env_flag("ENABLE_AUTO_SELECTION", _enable_auto)
+
     if "director_shots" not in st.session_state:
         st.session_state.director_shots = []
     if st.button("Generate Shot List", type="primary"):
@@ -1610,6 +1653,25 @@ elif app_mode in ["Director", "Smart Mode"]:
                 segments = st.session_state.transcription_segments
                 pbar = st.progress(0)
                 status = st.empty()
+
+                # Phase-1 context-aware pre-pass: map the transcript into subject
+                # segments so the Director can anchor localized queries to the
+                # macro-subject. Degrades silently to the flat path on failure.
+                roadmap = {}
+                if _env_flag("ENABLE_CONTEXT_AWARE_KEYWORDS"):
+                    status.text("Mapping video structure (context-aware pre-pass)…")
+                    from core.director import segment_script_structure
+                    roadmap = segment_script_structure(
+                        segments, os.getenv("GROQ_API_KEY"), video_topic=d_video_topic
+                    )
+                    st.session_state.segment_roadmap = roadmap
+                    if roadmap.get("segments"):
+                        st.caption(
+                            f"🧭 Detected {len(roadmap['segments'])} subject segment(s)"
+                            + (f" — overall: **{roadmap.get('video_global_subject')}**"
+                               if roadmap.get("video_global_subject") else "")
+                        )
+
                 status.text("Finalizing shot list...")
                 shots = generate_shot_list_from_transcription(
                     segments,
@@ -1617,6 +1679,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                     custom_instructions=custom_instructions,
                     video_topic=d_video_topic,
                     chunk_id=0,
+                    segment_roadmap=roadmap or None,
                     progress_callback=lambda p: pbar.progress(p),
                 )
                 # Sequential slot IDs, no chunk prefix
@@ -1658,7 +1721,10 @@ elif app_mode in ["Director", "Smart Mode"]:
         for shot in st.session_state.director_shots:
             sel = shot.get("selected_results", [])
             # Highlight missing selections with a warning emoji if priority isn't 'none'
-            pick_status = f"✅ {len(sel)}" if sel else ("⏭ skip" if shot.get("skipped") else "—")
+            if sel:
+                pick_status = f"🤖 {len(sel)}" if shot.get("auto_selected") else f"✅ {len(sel)}"
+            else:
+                pick_status = "⏭ skip" if shot.get("skipped") else "—"
             if not sel and shot.get("priority") != "none" and not shot.get("skipped"):
                 pick_status = "🔖 FLAGGED" if shot.get("flagged") else "⚠️ MISSING"
             rows.append({
@@ -2240,6 +2306,17 @@ elif app_mode in ["Director", "Smart Mode"]:
                     )
                     pbar3.progress(1.0)
                     status3.text("Done.")
+
+                    # Phase-3 auto-selection: bind the top-ranked clip per shot
+                    # when enabled. Runs after ranking so it acts on the sorted
+                    # candidates; never overwrites a manual pick.
+                    auto_n = 0
+                    if _env_flag("ENABLE_AUTO_SELECTION"):
+                        from core.director_rank import auto_select_top_candidates
+                        auto_select_top_candidates(st.session_state.director_shots)
+                        auto_n = sum(1 for s in st.session_state.director_shots
+                                     if s.get("auto_selected") and s.get("selected_results"))
+
                     failed = sum(1 for s in st.session_state.director_shots if s.get("rank_error"))
                     total  = sum(1 for s in st.session_state.director_shots
                                  if s.get("video_results") and s.get("priority") != "none")
@@ -2249,6 +2326,8 @@ elif app_mode in ["Director", "Smart Mode"]:
                         st.warning(f"Ranked {total - failed}/{total} shots. {failed} shot(s) failed — see details below and check those shots in the review.")
                     else:
                         st.error("Ranking failed for all shots. Showing original order. Check API key and rate limits.")
+                    if auto_n:
+                        st.info(f"🤖 Auto-selected the top clip for {auto_n} shot(s). Review or override any pick in Step 5.")
                     if d_rank_errors:
                         unique_re = list(dict.fromkeys(d_rank_errors))
                         with st.expander(f"⚠️ {len(unique_re)} ranking error(s)"):
@@ -2715,6 +2794,7 @@ elif app_mode in ["Director", "Smart Mode"]:
             if rank_err: st.warning(f"⚠️ AI ranking failed for this shot ({rank_err}). Showing unranked candidates.")
             if skipped: st.info("⏭ This shot is marked as skipped. Selecting any clip will unskip it.")
             if shot.get("flagged") and not shot.get("selected_results"): st.info("🔖 This shot is flagged for review. Pick a clip or click Unflag to clear.")
+            if shot.get("auto_selected") and shot.get("selected_results"): st.info("🤖 Auto-selected the top-ranked clip. Pick a different clip to override.")
             # 4. Tweak & Refetch
             st.markdown("---")
             with st.expander("🔄 Tweak & Refetch THIS Shot", expanded=False):

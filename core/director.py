@@ -9,6 +9,138 @@ def load_director_prompt() -> str:
     with open(prompt_path, 'r', encoding='utf-8') as f:
         return f.read()
 
+
+def load_segmenter_prompt() -> str:
+    prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'segmenter.txt')
+    with open(prompt_path, 'r', encoding='utf-8') as f:
+        return f.read()
+
+
+def env_flag(name: str) -> bool:
+    """Read a boolean feature toggle from the environment.
+
+    Matches the truthy idiom used elsewhere in the app (app.py) so the two
+    new pipeline toggles behave consistently with the existing ones.
+    """
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def segment_script_structure(segments: list, api_key: str, video_topic: str = "") -> dict:
+    """Phase-1 pre-pass: map the whole transcript into subject segments.
+
+    Sends the entire timestamped transcript to one fast LLM pass and returns a
+    structural roadmap of the video::
+
+        {"video_global_subject": str,
+         "segments": [{"subject": str, "start_time": float, "end_time": float}]}
+
+    This anchors localized narration (e.g. "the transmission is jerky") to the
+    macro-subject in play at that moment (e.g. "BMW M3 E90"). Any failure
+    returns ``{}`` so the caller transparently degrades to flat (Mode A)
+    keyword extraction.
+    """
+    if not api_key or not segments:
+        return {}
+
+    client = Groq(api_key=api_key)
+    system_prompt = load_segmenter_prompt()
+    if video_topic and video_topic.strip():
+        system_prompt += f"\n\nThe video's overall topic (for reference): {video_topic.strip()}"
+
+    transcript = "\n".join(
+        f"[{float(s.get('start', 0.0)):.2f} - {float(s.get('end', 0.0)):.2f}]: {s.get('text', '').strip()}"
+        for s in segments
+        if s.get("text")
+    )
+
+    try:
+        data = _call_llm_json(client, system_prompt, transcript,
+                              temperature=0.2, max_tokens=2000)
+    except Exception as e:
+        print(f"Script segmentation failed: {e}")
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    # Sanitize: keep only well-formed segments with numeric, ordered times.
+    clean = []
+    for seg in data.get("segments", []):
+        if not isinstance(seg, dict):
+            continue
+        subject = str(seg.get("subject", "")).strip()
+        try:
+            start = float(seg.get("start_time"))
+            end = float(seg.get("end_time"))
+        except (TypeError, ValueError):
+            continue
+        if not subject or end < start:
+            continue
+        clean.append({"subject": subject, "start_time": start, "end_time": end})
+
+    clean.sort(key=lambda s: s["start_time"])
+    if not clean:
+        return {}
+    return {
+        "video_global_subject": str(data.get("video_global_subject", "")).strip(),
+        "segments": clean,
+    }
+
+
+def subject_for_timestamp(roadmap: dict, t: float) -> str:
+    """State-machine lookup: the macro-subject active at time ``t`` (seconds).
+
+    Returns the subject of the roadmap segment whose [start_time, end_time]
+    contains ``t``; failing that, the nearest segment by distance, then the
+    ``video_global_subject``; finally ``""``. Built defensively so a malformed
+    or empty roadmap never raises into the shot-generation loop.
+    """
+    if not isinstance(roadmap, dict):
+        return ""
+    segs = roadmap.get("segments") or []
+    global_subject = roadmap.get("video_global_subject", "") or ""
+
+    try:
+        t = float(t)
+    except (TypeError, ValueError):
+        return global_subject
+
+    best = None
+    best_dist = None
+    for seg in segs:
+        start = seg.get("start_time", 0.0)
+        end = seg.get("end_time", 0.0)
+        if start <= t <= end:
+            return seg.get("subject", "") or global_subject
+        # Track nearest segment as a fallback for times that fall in a gap.
+        dist = start - t if t < start else t - end
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best = seg
+    if best is not None:
+        return best.get("subject", "") or global_subject
+    return global_subject
+
+
+def subjects_in_span(roadmap: dict, start: float, end: float) -> list:
+    """Distinct macro-subjects overlapping the time window [start, end].
+
+    A Director batch of 20 transcription segments can straddle a subject
+    boundary, so we surface every subject the window touches (in order, no
+    duplicates) rather than just the one at the window's start.
+    """
+    if not isinstance(roadmap, dict):
+        return []
+    out = []
+    for subj in (
+        subject_for_timestamp(roadmap, start),
+        subject_for_timestamp(roadmap, (start + end) / 2.0),
+        subject_for_timestamp(roadmap, end),
+    ):
+        if subj and subj not in out:
+            out.append(subj)
+    return out
+
 def _build_context_block(video_topic: str, custom_instructions: str) -> str:
     """Compose the {custom_instructions_block} value used by director.txt.
 
@@ -31,6 +163,42 @@ def _build_context_block(video_topic: str, custom_instructions: str) -> str:
             "Apply these style preferences to shot framing, mood, and query phrasing."
         )
     return "\n\n".join(parts)
+
+
+_SEGMENT_CONTEXT_INSTRUCTION = (
+    "SEGMENT CONTEXT AWARENESS:\n"
+    "Some script chunks are prefixed with a line of the form\n"
+    "  STRUCTURAL CONTEXT (overarching subject at this moment): <subject>\n"
+    "When that line is present, keep the named subject in mind — it is the "
+    "macro-topic the narration is discussing right now, even when the local "
+    "sentence does not repeat it. Blend the subject into your search_queries "
+    "where appropriate, and use it to disambiguate generic nouns: if the subject "
+    "is \"BMW M3 E90\" and the line says \"the transmission is jerky\", search for "
+    "that car's transmission (\"BMW M3 gearbox\"), not a generic gearbox. Do NOT "
+    "force the subject into a query when the line is clearly off-subject."
+)
+
+
+def _render_director_system_prompt(template: str, video_topic: str,
+                                   custom_instructions: str,
+                                   context_aware: bool = False) -> str:
+    """Fill the director system-prompt template's optional placeholder blocks.
+
+    Handles both ``{custom_instructions_block}`` and ``{segment_context_block}``,
+    collapsing the surrounding blank lines when a block is empty so the prompt
+    never carries a dangling placeholder or extra whitespace.
+    """
+    custom_block = _build_context_block(video_topic, custom_instructions)
+    if custom_block:
+        out = template.replace("{custom_instructions_block}", custom_block)
+    else:
+        out = template.replace("\n\n{custom_instructions_block}\n\n", "\n\n")
+
+    if context_aware:
+        out = out.replace("{segment_context_block}", _SEGMENT_CONTEXT_INSTRUCTION)
+    else:
+        out = out.replace("\n\n{segment_context_block}\n\n", "\n\n")
+    return out
 
 
 # Words that describe narration *intent* rather than anything visual, so they
@@ -117,11 +285,9 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
     client = Groq(api_key=api_key)
     system_prompt_template = load_director_prompt()
 
-    custom_block = _build_context_block(video_topic, custom_instructions)
-    if custom_block:
-        system_prompt = system_prompt_template.replace("{custom_instructions_block}", custom_block)
-    else:
-        system_prompt = system_prompt_template.replace("\n\n{custom_instructions_block}\n\n", "\n\n")
+    system_prompt = _render_director_system_prompt(
+        system_prompt_template, video_topic, custom_instructions
+    )
 
     # Split text to bypass Groq 6k TPM limits. ~250 words per chunk, respecting sentences.
     from core.timing import split_script_into_smart_blocks
@@ -220,10 +386,16 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
 def generate_shot_list_from_transcription(segments: list, api_key: str, progress_callback=None,
                                           custom_instructions: str = "",
                                           video_topic: str = "",
-                                          chunk_id: int = 0) -> list:
+                                          chunk_id: int = 0,
+                                          segment_roadmap: dict = None) -> list:
     """
     Uses precise transcription segments to generate a shot list for the
     whole video in one pass (no chunking).
+
+    When ``segment_roadmap`` (from :func:`segment_script_structure`) is provided,
+    each block is annotated with the macro-subject(s) active over its time span,
+    so the Director anchors localized queries to the overarching subject
+    (Mode B/C). When ``None``, behavior is identical to the flat path (Mode A).
     """
     import json
     if not api_key:
@@ -232,11 +404,11 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
     client = Groq(api_key=api_key)
     system_prompt_template = load_director_prompt()
 
-    custom_block = _build_context_block(video_topic, custom_instructions)
-    if custom_block:
-        system_prompt = system_prompt_template.replace("{custom_instructions_block}", custom_block)
-    else:
-        system_prompt = system_prompt_template.replace("\n\n{custom_instructions_block}\n\n", "\n\n")
+    context_aware = bool(segment_roadmap)
+    system_prompt = _render_director_system_prompt(
+        system_prompt_template, video_topic, custom_instructions,
+        context_aware=context_aware,
+    )
     system_prompt += "\n\nYou will receive transcription segments as '[start - end]: text'. Group them into logical cinematic shots. " \
                      "CRITICAL: For each shot, you MUST include 'start' and 'end' keys in the JSON (floats, in seconds) corresponding to the start of the first segment and end of the last segment in that shot. " \
                      "The 'script_chunk' must contain the verbatim text from those segments."
@@ -245,11 +417,26 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
     block_size = 20
     all_shots = []
     slot_id = 1
-    
+
     for i in range(0, len(segments), block_size):
         block = segments[i : i + block_size]
         user_msg = "\n".join([f"[{s['start']:.2f} - {s['end']:.2f}]: {s['text']}" for s in block])
-        
+
+        # Prepend the macro-subject(s) covering this block's time span so the
+        # Director keeps the overarching topic in mind for each shot's queries.
+        if context_aware and block:
+            subjects = subjects_in_span(
+                segment_roadmap,
+                float(block[0].get("start", 0.0)),
+                float(block[-1].get("end", 0.0)),
+            )
+            if subjects:
+                user_msg = (
+                    "STRUCTURAL CONTEXT (overarching subject at this moment): "
+                    + " → ".join(subjects)
+                    + "\n\n" + user_msg
+                )
+
         try:
             data = _call_llm_json(client, system_prompt, user_msg, temperature=0.4, max_tokens=3000)
             shots = data.get("shots", [])
@@ -338,11 +525,9 @@ def regenerate_shot_queries(
 
     client = Groq(api_key=api_key)
     system_prompt_template = load_director_prompt()
-    custom_block = _build_context_block(video_topic, custom_instructions)
-    if custom_block:
-        system_prompt = system_prompt_template.replace("{custom_instructions_block}", custom_block)
-    else:
-        system_prompt = system_prompt_template.replace("\n\n{custom_instructions_block}\n\n", "\n\n")
+    system_prompt = _render_director_system_prompt(
+        system_prompt_template, video_topic, custom_instructions
+    )
 
     targets = [s for s in shots if s.get("slot_id") in slot_ids and s.get("priority") != "none"]
     total = max(len(targets), 1)

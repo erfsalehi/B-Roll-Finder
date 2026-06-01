@@ -4,6 +4,8 @@ You will receive the full script (or a chunk of it) plus the speaking rate (Word
 
 {custom_instructions_block}
 
+{segment_context_block}
+
 ==================================================
 CRITICAL OUTPUT RULES
 ==================================================
