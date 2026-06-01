@@ -8,6 +8,7 @@ most relevant past clips so editors can reuse footage without re-fetching.
 
 import os
 import json
+import base64
 import sqlite3
 import numpy as np
 from datetime import datetime
@@ -486,6 +487,209 @@ def ensure_clip(
     except Exception as e:
         print(f"[ClipLibrary] ensure_clip error: {e}")
         return None
+
+
+# ── Share / sync across machines (export → merge) ────────────────────────────
+# Editors run on separate machines, each with its own clip_library.db. To let
+# them benefit from each other's footage we export a portable JSON bundle and
+# merge a teammate's in. Merging is keyed on the immutable ``clip_url`` (which
+# also lets the importer re-download the actual video from source), so the giant
+# video files never need to travel — only the small metadata + embeddings.
+
+_EXPORT_FORMAT = "broll-clip-library"
+_EXPORT_VERSION = 1
+
+
+def _keywords_to_text(kw) -> str:
+    """Normalize a keywords value (list or JSON string) to a JSON string."""
+    if kw is None:
+        return "[]"
+    if isinstance(kw, str):
+        return kw or "[]"
+    try:
+        return json.dumps(kw)
+    except Exception:
+        return "[]"
+
+
+def export_library(path: str) -> dict:
+    """Write the whole library (clips + embeddings + learned trims) to a
+    portable JSON bundle a teammate can merge with :func:`import_library`.
+
+    Embeddings are base64-encoded so they survive the round-trip and the
+    imported clips are immediately searchable — no re-embedding needed. Trims
+    are nested under their clip (keyed by clip_url, not the local row id, which
+    differs per machine). Returns ``{'clips', 'trims', 'path'}``.
+    """
+    try:
+        init_db()
+        with _conn() as c:
+            clip_rows = c.execute("SELECT * FROM clips").fetchall()
+            trim_rows = c.execute(
+                """SELECT clip_id, shot_description, in_seconds, out_seconds,
+                          source_xml_path, confirmed_at
+                   FROM clip_preferred_trims"""
+            ).fetchall()
+
+        trims_by_clip: dict = {}
+        for t in trim_rows:
+            trims_by_clip.setdefault(t["clip_id"], []).append({
+                "shot_description": t["shot_description"],
+                "in_seconds":       t["in_seconds"],
+                "out_seconds":      t["out_seconds"],
+                "source_xml_path":  t["source_xml_path"],
+                "confirmed_at":     t["confirmed_at"],
+            })
+
+        clips = []
+        for r in clip_rows:
+            emb = r["embedding"]
+            clips.append({
+                "project":         r["project"],
+                "shot_description": r["shot_description"],
+                "slot_index":      r["slot_index"],
+                "keywords":        r["keywords"],
+                "search_query":    r["search_query"],
+                "source":          r["source"],
+                "clip_url":        r["clip_url"],
+                "clip_title":      r["clip_title"],
+                "duration":        r["duration"],
+                "thumbnail_url":   r["thumbnail_url"],
+                "local_path":      r["local_path"],
+                "embedding_b64":   base64.b64encode(emb).decode("ascii") if emb else None,
+                "usage_count":     r["usage_count"],
+                "last_used_at":    r["last_used_at"],
+                "created_at":      r["created_at"],
+                "trims":           trims_by_clip.get(r["id"], []),
+            })
+
+        bundle = {
+            "format":      _EXPORT_FORMAT,
+            "version":     _EXPORT_VERSION,
+            "exported_at": datetime.utcnow().isoformat(),
+            "clips":       clips,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(bundle, f)
+        return {"clips": len(clips), "trims": len(trim_rows), "path": path}
+    except Exception as e:
+        print(f"[ClipLibrary] export_library error: {e}")
+        return {"clips": 0, "trims": 0, "path": path, "error": str(e)}
+
+
+def import_library(path: str) -> dict:
+    """Merge a teammate's exported bundle into this library.
+
+    De-duplicated by ``clip_url``: an unknown clip is inserted (carrying its
+    embedding, so it's searchable immediately); a known clip is left in place
+    but has its embedding backfilled if missing and its ``usage_count`` raised
+    to the higher of the two. Trims upsert per (clip, shot_description), newest
+    ``confirmed_at`` winning, so re-importing is idempotent and never clobbers a
+    fresher local trim. Returns
+    ``{'added', 'updated', 'skipped', 'trims_merged', 'clips_in_file'}``.
+    """
+    try:
+        init_db()
+        with open(path, "r", encoding="utf-8") as f:
+            bundle = json.load(f)
+        if not isinstance(bundle, dict) or bundle.get("format") != _EXPORT_FORMAT:
+            raise ValueError("Not a B-Roll clip-library export file.")
+
+        clips = bundle.get("clips", []) or []
+        added = updated = skipped = trims_merged = 0
+
+        with _conn() as c:
+            for clip in clips:
+                url = (clip.get("clip_url") or "").strip()
+                if not url:
+                    skipped += 1
+                    continue
+
+                emb_b64 = clip.get("embedding_b64")
+                try:
+                    emb_bytes = base64.b64decode(emb_b64) if emb_b64 else None
+                except Exception:
+                    emb_bytes = None
+
+                row = c.execute(
+                    "SELECT id, embedding, usage_count FROM clips WHERE clip_url = ?",
+                    (url,),
+                ).fetchone()
+
+                if row:
+                    cid = row["id"]
+                    sets, params = [], []
+                    if emb_bytes and not row["embedding"]:
+                        sets.append("embedding = ?")
+                        params.append(emb_bytes)
+                    new_usage = max(int(row["usage_count"] or 1),
+                                    int(clip.get("usage_count") or 1))
+                    sets.append("usage_count = ?")
+                    params.append(new_usage)
+                    params.append(cid)
+                    c.execute(f"UPDATE clips SET {', '.join(sets)} WHERE id = ?", params)
+                    updated += 1
+                else:
+                    c.execute(
+                        """INSERT INTO clips
+                             (project, shot_description, slot_index, keywords, search_query,
+                              source, clip_url, clip_title, duration, thumbnail_url,
+                              local_path, embedding, usage_count, last_used_at, created_at)
+                           VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?)""",
+                        (
+                            clip.get("project", ""),
+                            clip.get("shot_description", ""),
+                            int(clip.get("slot_index") or 0),
+                            _keywords_to_text(clip.get("keywords")),
+                            clip.get("search_query", ""),
+                            clip.get("source", "unknown"),
+                            url,
+                            clip.get("clip_title", ""),
+                            float(clip.get("duration") or 0),
+                            clip.get("thumbnail_url", ""),
+                            clip.get("local_path", ""),
+                            emb_bytes,
+                            int(clip.get("usage_count") or 1),
+                            clip.get("last_used_at", ""),
+                            clip.get("created_at", ""),
+                        ),
+                    )
+                    cid = c.execute(
+                        "SELECT id FROM clips WHERE clip_url = ?", (url,)
+                    ).fetchone()["id"]
+                    added += 1
+
+                # Merge this clip's learned trims (newest confirmed_at wins).
+                for t in clip.get("trims", []) or []:
+                    try:
+                        in_s = float(t["in_seconds"])
+                        out_s = float(t["out_seconds"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if out_s <= in_s:
+                        continue
+                    c.execute(
+                        """INSERT INTO clip_preferred_trims
+                             (clip_id, shot_description, in_seconds, out_seconds,
+                              source_xml_path, confirmed_at)
+                           VALUES (?,?,?,?,?,?)
+                           ON CONFLICT(clip_id, shot_description) DO UPDATE SET
+                             in_seconds      = excluded.in_seconds,
+                             out_seconds     = excluded.out_seconds,
+                             source_xml_path = excluded.source_xml_path,
+                             confirmed_at    = excluded.confirmed_at
+                           WHERE excluded.confirmed_at > clip_preferred_trims.confirmed_at""",
+                        (cid, t.get("shot_description", ""), in_s, out_s,
+                         t.get("source_xml_path", ""), t.get("confirmed_at", "")),
+                    )
+                    trims_merged += 1
+
+        return {"added": added, "updated": updated, "skipped": skipped,
+                "trims_merged": trims_merged, "clips_in_file": len(clips)}
+    except Exception as e:
+        print(f"[ClipLibrary] import_library error: {e}")
+        return {"added": 0, "updated": 0, "skipped": 0, "trims_merged": 0,
+                "clips_in_file": 0, "error": str(e)}
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────

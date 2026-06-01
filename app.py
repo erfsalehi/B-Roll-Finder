@@ -444,6 +444,73 @@ def render_library_health():
                         f"semantic search. Detail: {e}"
                     )
 
+        # ── Share / sync across machines ─────────────────────────────────────
+        # Editors on separate machines pool footage by exporting a small bundle
+        # and merging each other's in. Only metadata + embeddings travel; the
+        # actual videos re-download from each clip's stored source URL.
+        st.divider()
+        st.markdown("**🔄 Share library across machines**")
+        st.caption(
+            "Export a small bundle to share (e.g. via a Drive folder); merge a "
+            "teammate's to pull their clips into yours. Only metadata + embeddings "
+            "are shared — videos re-download from source when reused."
+        )
+        if total:
+            try:
+                from core.clip_library import export_library
+                _exp_dir = os.path.join(".cache", "library_exports")
+                os.makedirs(_exp_dir, exist_ok=True)
+                _exp_path = os.path.join(_exp_dir, "clip_library_export.json")
+                _exp = export_library(_exp_path)
+                if not _exp.get("error"):
+                    with open(_exp_path, "rb") as _f:
+                        st.download_button(
+                            f"⬇️ Export my library ({_exp['clips']} clips, {_exp['trims']} trims)",
+                            data=_f.read(),
+                            file_name="clip_library_export.json",
+                            mime="application/json",
+                            key="lib_export_dl",
+                            help="Downloads a shareable JSON bundle of your whole library.",
+                        )
+                else:
+                    st.error(f"Export failed: {_exp['error']}")
+            except Exception as e:
+                st.error(f"Export failed: {e}")
+
+        _imp_file = st.file_uploader(
+            "Merge a teammate's export", type=["json"], key="lib_import_up",
+            help="Upload a clip_library_export.json from a teammate. Clips you already "
+                 "have are skipped (dedup by source URL); new ones become searchable "
+                 "immediately. Re-merging is safe.",
+        )
+        if _imp_file is not None:
+            if st.button("🔀 Merge into my library", key="lib_import_btn"):
+                with st.spinner("Merging…"):
+                    try:
+                        import tempfile
+                        from core.clip_library import import_library
+                        with tempfile.NamedTemporaryFile(
+                            "wb", suffix=".json", delete=False
+                        ) as _tf:
+                            _tf.write(_imp_file.getbuffer())
+                            _tmp_path = _tf.name
+                        _res = import_library(_tmp_path)
+                        try:
+                            os.remove(_tmp_path)
+                        except OSError:
+                            pass
+                    except Exception as e:
+                        _res = {"error": str(e)}
+                if _res.get("error"):
+                    st.error(f"❌ Merge failed: {_res['error']}")
+                else:
+                    st.success(
+                        f"✅ Merged: {_res['added']} new clip(s), "
+                        f"{_res['updated']} already known, {_res['trims_merged']} trim(s). "
+                        f"Skipped {_res['skipped']} with no URL."
+                    )
+                    st.rerun()
+
 
 render_library_health()
 
