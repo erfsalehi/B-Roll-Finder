@@ -40,88 +40,122 @@ def _format_candidate(i: int, c: dict) -> str:
     return " ".join(parts)
 
 
-def _rank_one_shot(shot: dict, system_prompt: str, client: Groq,
-                   errors: list, errors_lock: threading.Lock) -> None:
-    """Rank a single shot in-place. Designed to run in a worker thread."""
+def _apply_ranked_to_shot(shot: dict, ranked: list) -> None:
+    """Apply an LLM ``ranked`` array to one shot, in place.
+
+    Reorders ``shot['video_results']`` best→worst, sets ``rank_reason`` from the
+    top pick, and marks ``irrelevant`` candidates. Validates every entry — only
+    in-range, non-duplicate integer indices are honored; malformed entries are
+    dropped (with a recovery counter) and any candidate the LLM omitted is
+    appended at the end so a clip is never lost.
+    """
     candidates = shot['video_results']
-    if not candidates:
+    if not ranked:
         shot.setdefault('rank_reason', '')
         return
 
-    # Always run the judge — even for a single candidate. With one
-    # candidate the relevance check (irrelevant flag) is the whole
-    # point: an editor wastes time on a single off-topic clip too.
-    candidate_lines = [_format_candidate(i, c) for i, c in enumerate(candidates)]
+    clean_order = []
+    seen = set()
+    malformed = 0
+    for r in ranked:
+        idx = r.get('index') if isinstance(r, dict) else None
+        if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+            malformed += 1
+            continue
+        if idx in seen:
+            malformed += 1
+            continue
+        seen.add(idx)
+        clean_order.append(idx)
+        if r.get('irrelevant'):
+            candidates[idx]['irrelevant'] = True
+        else:
+            candidates[idx].pop('irrelevant', None)
 
-    user_msg = (
+    # Safety net: any candidate the LLM omitted gets appended at the end.
+    for i in range(len(candidates)):
+        if i not in seen:
+            clean_order.append(i)
+
+    shot['video_results'] = [candidates[i] for i in clean_order]
+
+    # Top pick reason — walk `ranked` in its original order so dedup reordering
+    # never mismatches the reason to a different candidate.
+    top_reason = ''
+    if clean_order:
+        top_idx = clean_order[0]
+        for r in ranked:
+            if isinstance(r, dict) and r.get('index') == top_idx:
+                top_reason = r.get('reason', '') or ''
+                break
+    shot['rank_reason'] = top_reason
+
+    if malformed:
+        print(f"Shot {shot.get('slot_id')}: dropped {malformed} malformed/duplicate index(es) from LLM output (recovered).")
+
+
+def _format_shot_block(shot: dict) -> str:
+    """Render one shot (narration + intent + indexed candidates) for a batch."""
+    candidate_lines = [_format_candidate(i, c) for i, c in enumerate(shot['video_results'])]
+    return (
+        f"=== SHOT shot_id={shot.get('slot_id')} ===\n"
         f"NARRATION: \"{shot.get('text', '')}\"\n"
-        f"SHOT INTENT: {shot.get('shot_intent', '')}\n\n"
+        f"SHOT INTENT: {shot.get('shot_intent', '')}\n"
         f"CANDIDATES:\n" + "\n".join(candidate_lines)
     )
 
+
+def _rank_one_batch(batch: list, system_prompt: str, client: Groq,
+                    errors: list, errors_lock: threading.Lock) -> None:
+    """Rank a group of shots in a single LLM call, applying results in place.
+
+    Batching collapses what used to be one request per shot into one request per
+    group, which is what keeps free-tier providers (Groq, OpenRouter) under their
+    per-minute request caps. Output is keyed by ``shot_id`` so a missing or
+    reordered shot in the response is handled robustly.
+    """
+    rankable = [s for s in batch if s.get('video_results')]
+    for s in batch:
+        if not s.get('video_results'):
+            s.setdefault('rank_reason', '')
+    if not rankable:
+        return
+
+    user_msg = (
+        "Rank the candidates for EACH shot below independently. Candidate "
+        "indices are 0-based and local to their own shot.\n\n"
+        + "\n\n".join(_format_shot_block(s) for s in rankable)
+    )
+
     try:
-        # Judging is a deterministic task; low temperature + the JSON
-        # response_format keep ranking stable across re-runs.
+        # Judging is deterministic; low temperature + JSON response_format keep
+        # ranking stable. max_tokens scales with the batch (indices + one reason
+        # per shot is compact, but give headroom for larger candidate sets).
         data = _call_llm_json(client, system_prompt, user_msg,
-                              temperature=0.1, max_tokens=2000)
-        ranked = data.get('ranked', [])
+                              temperature=0.1, max_tokens=4000)
+        ranked_by_id = {}
+        for entry in (data.get('shots') or []):
+            if isinstance(entry, dict) and entry.get('shot_id') is not None:
+                ranked_by_id[entry.get('shot_id')] = entry.get('ranked', []) or []
 
-        if ranked:
-            # Validate each entry: must be a non-negative int within
-            # range, and only the first occurrence of any given index
-            # is honored. Duplicates / out-of-range / non-int entries
-            # are dropped with a counter, so a noisy LLM cannot
-            # silently duplicate or drop candidates from the output.
-            clean_order = []
-            seen = set()
-            malformed = 0
-            for r in ranked:
-                idx = r.get('index')
-                if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
-                    malformed += 1
-                    continue
-                if idx in seen:
-                    malformed += 1
-                    continue
-                seen.add(idx)
-                clean_order.append(idx)
-                if r.get('irrelevant'):
-                    candidates[idx]['irrelevant'] = True
-                else:
-                    candidates[idx].pop('irrelevant', None)
-
-            # Safety net: any candidate the LLM omitted gets appended
-            # at the end so we never lose a clip.
-            for i in range(len(candidates)):
-                if i not in seen:
-                    clean_order.append(i)
-
-            shot['video_results'] = [candidates[i] for i in clean_order]
-
-            # The top pick is whatever index now leads clean_order.
-            # Walk `ranked` (in its original order) for the matching
-            # entry's reason — that way reordering during dedup never
-            # mismatches the reason to a different candidate.
-            top_reason = ''
-            if clean_order:
-                top_idx = clean_order[0]
-                for r in ranked:
-                    if r.get('index') == top_idx:
-                        top_reason = r.get('reason', '') or ''
-                        break
-            shot['rank_reason'] = top_reason
-
-            if malformed:
-                print(f"Shot {shot.get('slot_id')}: dropped {malformed} malformed/duplicate index(es) from LLM output (recovered).")
-        # Successful ranking — clear any error from a previous run.
-        shot.pop('rank_error', None)
+        for shot in rankable:
+            ranked = ranked_by_id.get(shot.get('slot_id'))
+            if ranked is None:
+                # Shot missing from the response — leave its candidates in their
+                # original order rather than failing it outright.
+                shot.setdefault('rank_reason', '')
+                continue
+            _apply_ranked_to_shot(shot, ranked)
+            shot.pop('rank_error', None)
     except Exception as e:
-        msg = f"Shot {shot.get('slot_id')}: {e}"
+        ids = ", ".join(str(s.get('slot_id')) for s in rankable)
+        msg = f"Shots {ids}: {e}"
         print(f"Ranking failed for {msg}")
         with errors_lock:
             errors.append(msg)
-        shot['rank_error'] = str(e)
-        shot.setdefault('rank_reason', '')
+        for shot in rankable:
+            shot['rank_error'] = str(e)
+            shot.setdefault('rank_reason', '')
 
 
 def auto_select_top_candidates(shots: list, start_slot_id=None) -> list:
@@ -159,21 +193,55 @@ def auto_select_top_candidates(shots: list, start_slot_id=None) -> list:
     return shots
 
 
+# Batch-mode schema appended to the single-shot ranking rules. The candidate
+# format and relevance rules in director_rank.txt are unchanged; only the
+# input/output framing differs so one call can judge several shots at once.
+_BATCH_SCHEMA_INSTRUCTION = (
+    "\n\n=== BATCH MODE ===\n"
+    "You will receive SEVERAL shots in one message, each delimited by a line "
+    "'=== SHOT shot_id=<id> ===' and carrying its OWN 0-based candidate list. "
+    "Rank each shot's candidates independently using the rules above — never mix "
+    "candidates across shots; an index always refers to that shot's own list.\n"
+    "Output ONLY valid JSON of this exact shape (one object per shot, keyed by "
+    "its shot_id):\n"
+    "{\n"
+    "  \"shots\": [\n"
+    "    {\"shot_id\": <id>, \"ranked\": [{\"index\": 2, \"reason\": \"...\"}, {\"index\": 0}, {\"index\": 1, \"irrelevant\": true}]},\n"
+    "    {\"shot_id\": <id>, \"ranked\": [ ... ]}\n"
+    "  ]\n"
+    "}\n"
+    "Include every shot_id you were given. Within each shot's 'ranked' array the "
+    "rules are identical to the single-shot schema: order best→worst, 'reason' "
+    "required only for that shot's top pick, 'irrelevant': true for non-matches."
+)
+
+
+def _rank_batch_size() -> int:
+    """Shots per LLM call (env-tunable). Larger = fewer requests, bigger payloads."""
+    try:
+        return max(1, int(os.getenv("RANK_BATCH_SIZE", "6")))
+    except ValueError:
+        return 6
+
+
 def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "",
                          video_topic: str = "", progress_callback=None,
-                         errors: list = None, max_workers: int = 4) -> list:
+                         errors: list = None, max_workers: int = 3) -> list:
     """
     Stage 3: Ranks and filters each shot's video_results by relevance.
     - Reorders shot['video_results'] best → worst
     - Sets shot['rank_reason'] with the top pick's one-line reason
     - Marks irrelevant candidates with candidate['irrelevant'] = True
-    - On per-shot failure, sets shot['rank_error'] and appends a string
-      to ``errors`` (when provided) so the UI can surface it.
+    - On failure, sets shot['rank_error'] and appends a string to ``errors``
+      (when provided) so the UI can surface it.
 
-    Per-shot LLM calls are dispatched in parallel (default 4 workers).
-    The Groq client and the requests-based OpenRouter fallback are both
-    thread-safe; each shot mutates only its own dict, so no per-shot
-    locking is needed beyond the shared ``errors`` list.
+    Shots are ranked in BATCHES (``RANK_BATCH_SIZE`` shots per LLM call,
+    default 6) instead of one call per shot — that ~6x cut in request count is
+    what keeps free-tier providers (Groq, OpenRouter) under their per-minute
+    request caps. Batches are dispatched in parallel (default 3 workers). The
+    Groq client and the requests-based OpenRouter fallback are both thread-safe;
+    each shot mutates only its own dict, so no per-shot locking is needed beyond
+    the shared ``errors`` list.
     """
     if not api_key:
         raise ValueError("Groq API key is missing.")
@@ -190,27 +258,32 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
     if custom_instructions and custom_instructions.strip():
         custom_block += f"USER STYLE NOTES: {custom_instructions.strip()}"
     system_prompt = system_prompt.replace("{custom_instructions_block}", custom_block)
+    system_prompt += _BATCH_SCHEMA_INSTRUCTION
 
     rankable = [s for s in shots if s.get('video_results') and s.get('priority') != 'none']
-    total = len(rankable)
-    if total == 0:
+    if not rankable:
         if progress_callback:
             progress_callback(1.0)
         return shots
 
+    # Group consecutive rankable shots into batches.
+    batch_size = _rank_batch_size()
+    batches = [rankable[i:i + batch_size] for i in range(0, len(rankable), batch_size)]
+    total = len(batches)
+
     errors_lock = threading.Lock()
     done = 0
 
-    # Cap workers at the number of shots so we don't spin up idle threads.
+    # Cap workers at the number of batches so we don't spin up idle threads.
     workers = max(1, min(max_workers, total))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futures = [
-            ex.submit(_rank_one_shot, shot, system_prompt, client, errors, errors_lock)
-            for shot in rankable
+            ex.submit(_rank_one_batch, batch, system_prompt, client, errors, errors_lock)
+            for batch in batches
         ]
         for fut in concurrent.futures.as_completed(futures):
-            # _rank_one_shot already records per-shot errors on the shot
-            # itself; surface anything truly unexpected here.
+            # _rank_one_batch already records per-shot errors on the shots
+            # themselves; surface anything truly unexpected here.
             try:
                 fut.result()
             except Exception as e:
