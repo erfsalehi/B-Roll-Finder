@@ -1655,20 +1655,12 @@ elif app_mode in ["Director", "Smart Mode"]:
             value=_env_flag("ENABLE_AUTO_SELECTION"),
             key="d_auto_select",
             help="After ranking (Step 4), automatically bind the top-ranked candidate to "
-                 "each shot instead of leaving every pick for manual review. You can still "
-                 "override any auto-pick in Step 5.",
+                 "each shot — so every shot is download-ready without a manual pass. You "
+                 "choose which shot to start from (and can still override picks) in Step 4 "
+                 "once the shot count is known.",
         )
         if _enable_auto != _env_flag("ENABLE_AUTO_SELECTION"):
             _set_env_flag("ENABLE_AUTO_SELECTION", _enable_auto)
-        if _enable_auto:
-            st.number_input(
-                "Auto-select from shot #",
-                min_value=1, step=1, value=int(st.session_state.get("d_auto_select_from", 1)),
-                key="d_auto_select_from", on_change=save_cache,
-                help="Auto-select only kicks in from this shot number onward — earlier shots "
-                     "(e.g. an intro you want to hand-pick) are left for manual review. "
-                     "Set to 1 to auto-select every shot.",
-            )
 
     if "director_shots" not in st.session_state:
         st.session_state.director_shots = []
@@ -2317,6 +2309,34 @@ elif app_mode in ["Director", "Smart Mode"]:
             st.caption(f"📌 Using video topic: **{d_video_topic}** (edit in Step 2 above to change)")
         else:
             st.warning("⚠️ No video topic set. Set one in Step 2 above for the ranker to filter off-topic clips effectively.")
+
+        # Auto-select start point — lives here (not Step 2) because only now do
+        # we know the real shot count, so we can bound the input to it.
+        _auto_enabled = _env_flag("ENABLE_AUTO_SELECTION")
+        if _auto_enabled:
+            _n_shots = len(st.session_state.get("director_shots", []))
+            # Clamp any stale stored value into range before the widget renders.
+            _stored = int(st.session_state.get("d_auto_select_from", 1) or 1)
+            if _stored < 1 or _stored > max(_n_shots, 1):
+                st.session_state["d_auto_select_from"] = 1
+            ca1, ca2 = st.columns([1, 2])
+            with ca1:
+                st.number_input(
+                    "🤖 Auto-select from shot #",
+                    min_value=1, max_value=max(_n_shots, 1), step=1,
+                    key="d_auto_select_from", on_change=save_cache,
+                    help=f"You have {_n_shots} shot(s). Ranking will auto-bind the top clip "
+                         "from this shot number onward; earlier shots are left for you to "
+                         "hand-pick. Set to 1 to auto-select every shot.",
+                )
+            with ca2:
+                st.caption(
+                    "🤖 **Auto-select is ON.** When you rank below, every shot from the chosen "
+                    "number onward is bound to its top clip and becomes download-ready — no "
+                    "shot-by-shot pass needed. Use **Re-apply** (appears after ranking) to "
+                    "change the start without re-ranking. Step 5 is then just review/override."
+                )
+
         if st.button("Rank Candidates with AI", key="d_rank"):
             if not os.getenv("GROQ_API_KEY"):
                 st.error("Groq API key required for ranking.")
@@ -2371,6 +2391,31 @@ elif app_mode in ["Director", "Smart Mode"]:
                     save_cache()
                 except Exception as e:
                     st.error(f"Ranking error: {e}")
+
+        # Re-apply auto-select with a different start, without paying for another
+        # ranking pass. Only shown once shots have been ranked.
+        _ranked = any(
+            ("rank_reason" in s) or s.get("rank_error") or s.get("auto_selected")
+            for s in st.session_state.get("director_shots", [])
+        )
+        if _auto_enabled and _ranked:
+            if st.button("🤖 Re-apply auto-select from this shot #", key="d_apply_autoselect",
+                         help="Clear previous auto-picks and re-bind the top clip from the chosen "
+                              "shot # onward — no re-ranking. Your manual picks are kept."):
+                from core.director_rank import auto_select_top_candidates, clear_auto_selections
+                _af = int(st.session_state.get("d_auto_select_from", 1))
+                clear_auto_selections(st.session_state.director_shots)
+                auto_select_top_candidates(
+                    st.session_state.director_shots,
+                    start_slot_id=_af if _af > 1 else None,
+                )
+                _n = sum(1 for s in st.session_state.director_shots
+                         if s.get("auto_selected") and s.get("selected_results"))
+                save_cache()
+                _from_note = f" from shot #{_af} onward" if _af > 1 else ""
+                st.success(f"🤖 Auto-selected {_n} shot(s){_from_note}; manual picks preserved. "
+                           "Everything is download-ready in Step 6.")
+                st.rerun()
     # Step 5 — Editor Review (paginated)
     review_shots = [s for s in st.session_state.get("director_shots", [])
                     if s.get("video_results") and s.get("priority") != "none"]

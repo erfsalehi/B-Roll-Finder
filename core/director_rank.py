@@ -250,6 +250,20 @@ def _rank_batch_size() -> int:
         return 6
 
 
+def clear_auto_selections(shots: list) -> list:
+    """Undo previous *automatic* picks, leaving manual ones intact.
+
+    Lets the Step 4 control be re-applied with a different start shot without
+    re-ranking: only selections flagged ``auto_selected`` are cleared (a manual
+    pick drops that flag via the UI, so it survives).
+    """
+    for shot in shots:
+        if shot.get("auto_selected"):
+            shot["selected_results"] = []
+            shot.pop("auto_selected", None)
+    return shots
+
+
 def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "",
                          video_topic: str = "", progress_callback=None,
                          errors: list = None, max_workers: int = 3) -> list:

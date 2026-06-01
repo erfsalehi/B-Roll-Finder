@@ -12,7 +12,7 @@ from core.director import (
     load_director_prompt,
     _render_director_system_prompt,
 )
-from core.director_rank import auto_select_top_candidates
+from core.director_rank import auto_select_top_candidates, clear_auto_selections
 
 
 ROADMAP = {
@@ -163,3 +163,25 @@ def test_auto_select_start_slot_id_none_covers_all():
     ]
     auto_select_top_candidates(shots, start_slot_id=None)
     assert all(s["selected_results"] for s in shots)
+
+
+def test_clear_auto_selections_only_clears_auto_picks():
+    auto = _shot(slot_id=1, selected_results=[{"url": "a"}], auto_selected=True)
+    manual = _shot(slot_id=2, selected_results=[{"url": "b"}])  # no auto flag
+    clear_auto_selections([auto, manual])
+    assert auto["selected_results"] == [] and "auto_selected" not in auto
+    assert manual["selected_results"] == [{"url": "b"}]  # untouched
+
+
+def test_reapply_with_new_start_preserves_manual_picks():
+    # #1 manual, #2 + #3 previously auto. Re-apply from #3 only.
+    shots = [
+        _shot(slot_id=1, video_results=[{"url": "a1"}], selected_results=[{"url": "manual1"}]),
+        _shot(slot_id=2, video_results=[{"url": "a2"}], selected_results=[{"url": "a2"}], auto_selected=True),
+        _shot(slot_id=3, video_results=[{"url": "a3"}], selected_results=[{"url": "a3"}], auto_selected=True),
+    ]
+    clear_auto_selections(shots)
+    auto_select_top_candidates(shots, start_slot_id=3)
+    assert shots[0]["selected_results"] == [{"url": "manual1"}]  # manual kept
+    assert shots[1]["selected_results"] == []                    # auto cleared, below start
+    assert shots[2]["selected_results"][0]["url"] == "a3"        # re-selected at start
