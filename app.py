@@ -2419,6 +2419,38 @@ elif app_mode in ["Director", "Smart Mode"]:
                     st.session_state.d_review_idx += 1
                     st.rerun()
             st.progress((idx + 1) / len(review_shots))
+            # ── Skip to here ──────────────────────────────────────────────────
+            # Jump-and-skip: mark every earlier un-picked shot as skipped so the
+            # editor can start selecting from this one. Shots already selected
+            # are left untouched so no work is lost.
+            _earlier_pending = [
+                s for s in review_shots[:idx]
+                if not s.get("selected_results") and not s.get("skipped")
+            ]
+            if _earlier_pending:
+                sk1, sk2 = st.columns([1.5, 3])
+                with sk1:
+                    if st.button(
+                        f"⏭ Skip to here (Shot {idx + 1})",
+                        key=f"skip_till_{slot_id}",
+                        width="stretch",
+                        help=(
+                            f"Mark the {len(_earlier_pending)} earlier un-picked shot(s) "
+                            f"as skipped so you can start selecting from Shot {idx + 1}. "
+                            "Shots you've already picked are kept."
+                        ),
+                    ):
+                        for _s in _earlier_pending:
+                            _s["skipped"] = True
+                            _s["selected_results"] = []
+                            _s["flagged"] = False
+                        save_cache()
+                        st.rerun()
+                with sk2:
+                    st.caption(
+                        f"Skips the {len(_earlier_pending)} un-picked shot(s) before this "
+                        "one (already-picked shots are kept)."
+                    )
             # ── Bulk Actions & Quality Filter ─────────────────────────────────
             ba1, ba2, ba3 = st.columns([1, 1, 2])
             with ba1:
