@@ -139,3 +139,27 @@ def test_auto_select_is_idempotent():
     first = list(shot["selected_results"])
     auto_select_top_candidates([shot])  # re-run must not change the pick
     assert shot["selected_results"] == first
+
+
+def test_auto_select_start_slot_id_skips_earlier_shots():
+    shots = [
+        _shot(slot_id=1, video_results=[{"url": "a1"}]),
+        _shot(slot_id=2, video_results=[{"url": "a2"}]),
+        _shot(slot_id=3, video_results=[{"url": "a3"}]),
+    ]
+    auto_select_top_candidates(shots, start_slot_id=2)
+    # Shots before #2 are left for manual review …
+    assert shots[0]["selected_results"] == []
+    assert "auto_selected" not in shots[0]
+    # … shots at/after #2 are auto-selected.
+    assert shots[1]["selected_results"][0]["url"] == "a2"
+    assert shots[2]["selected_results"][0]["url"] == "a3"
+
+
+def test_auto_select_start_slot_id_none_covers_all():
+    shots = [
+        _shot(slot_id=1, video_results=[{"url": "a1"}]),
+        _shot(slot_id=2, video_results=[{"url": "a2"}]),
+    ]
+    auto_select_top_candidates(shots, start_slot_id=None)
+    assert all(s["selected_results"] for s in shots)

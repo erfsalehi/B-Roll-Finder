@@ -1639,6 +1639,15 @@ elif app_mode in ["Director", "Smart Mode"]:
         )
         if _enable_auto != _env_flag("ENABLE_AUTO_SELECTION"):
             _set_env_flag("ENABLE_AUTO_SELECTION", _enable_auto)
+        if _enable_auto:
+            st.number_input(
+                "Auto-select from shot #",
+                min_value=1, step=1, value=int(st.session_state.get("d_auto_select_from", 1)),
+                key="d_auto_select_from", on_change=save_cache,
+                help="Auto-select only kicks in from this shot number onward — earlier shots "
+                     "(e.g. an intro you want to hand-pick) are left for manual review. "
+                     "Set to 1 to auto-select every shot.",
+            )
 
     if "director_shots" not in st.session_state:
         st.session_state.director_shots = []
@@ -2313,7 +2322,11 @@ elif app_mode in ["Director", "Smart Mode"]:
                     auto_n = 0
                     if _env_flag("ENABLE_AUTO_SELECTION"):
                         from core.director_rank import auto_select_top_candidates
-                        auto_select_top_candidates(st.session_state.director_shots)
+                        _auto_from = int(st.session_state.get("d_auto_select_from", 1))
+                        auto_select_top_candidates(
+                            st.session_state.director_shots,
+                            start_slot_id=_auto_from if _auto_from > 1 else None,
+                        )
                         auto_n = sum(1 for s in st.session_state.director_shots
                                      if s.get("auto_selected") and s.get("selected_results"))
 
@@ -2327,7 +2340,8 @@ elif app_mode in ["Director", "Smart Mode"]:
                     else:
                         st.error("Ranking failed for all shots. Showing original order. Check API key and rate limits.")
                     if auto_n:
-                        st.info(f"🤖 Auto-selected the top clip for {auto_n} shot(s). Review or override any pick in Step 5.")
+                        _from_note = f" from shot #{_auto_from} onward" if _auto_from > 1 else ""
+                        st.info(f"🤖 Auto-selected the top clip for {auto_n} shot(s){_from_note}. Review or override any pick in Step 5.")
                     if d_rank_errors:
                         unique_re = list(dict.fromkeys(d_rank_errors))
                         with st.expander(f"⚠️ {len(unique_re)} ranking error(s)"):

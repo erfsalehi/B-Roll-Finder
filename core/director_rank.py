@@ -124,7 +124,7 @@ def _rank_one_shot(shot: dict, system_prompt: str, client: Groq,
         shot.setdefault('rank_reason', '')
 
 
-def auto_select_top_candidates(shots: list) -> list:
+def auto_select_top_candidates(shots: list, start_slot_id=None) -> list:
     """Phase-3 auto-selection: bind the best ranked candidate per shot.
 
     Decoupled post-processing for ``ENABLE_AUTO_SELECTION``. For every shot that
@@ -136,9 +136,15 @@ def auto_select_top_candidates(shots: list) -> list:
     reordered ``video_results`` best→worst. It never overwrites an existing
     selection, so it is idempotent and safe to re-run, and the editor can always
     override an automatic pick by hand in review.
+
+    ``start_slot_id`` restricts auto-selection to shots whose ``slot_id`` is at
+    or after that number; earlier shots are left untouched for manual review.
+    ``None`` (the default) auto-selects every eligible shot.
     """
     for shot in shots:
         if shot.get("priority") == "none" or shot.get("skipped"):
+            continue
+        if start_slot_id is not None and shot.get("slot_id", 0) < start_slot_id:
             continue
         candidates = shot.get("video_results") or []
         if not candidates:
