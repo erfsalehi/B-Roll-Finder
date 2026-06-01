@@ -5,8 +5,15 @@ call mocked, so these run offline).
 """
 
 import threading
+import pytest
 import core.director_rank as dr
 from core.director_rank import _apply_ranked_to_shot, _rank_one_batch, rank_shot_candidates
+
+
+@pytest.fixture(autouse=True)
+def _no_jitter(monkeypatch):
+    """Keep the suite fast — the real jitter sleep is exercised separately."""
+    monkeypatch.setenv("RANK_JITTER_MAX", "0")
 
 
 def _shot(slot_id, urls):
@@ -110,3 +117,41 @@ def test_rank_groups_into_batches(monkeypatch):
     # 5 shots / batch_size 2 → 3 LLM calls instead of 5.
     assert len(calls) == 3
     assert all(s["rank_reason"] == "ok" for s in shots)
+
+
+# ── jitter + worker knobs ─────────────────────────────────────────────────────
+
+def test_jitter_disabled_does_not_sleep(monkeypatch):
+    monkeypatch.setenv("RANK_JITTER_MAX", "0")
+    slept = []
+    monkeypatch.setattr(dr.time, "sleep", lambda s: slept.append(s))
+    dr._rank_jitter()
+    assert slept == []
+
+
+def test_jitter_enabled_sleeps_within_bounds(monkeypatch):
+    monkeypatch.setenv("RANK_JITTER_MIN", "0.5")
+    monkeypatch.setenv("RANK_JITTER_MAX", "1.5")
+    slept = []
+    monkeypatch.setattr(dr.time, "sleep", lambda s: slept.append(s))
+    dr._rank_jitter()
+    assert len(slept) == 1 and 0.5 <= slept[0] <= 1.5
+
+
+def test_rank_max_workers_env_override(monkeypatch):
+    monkeypatch.setenv("RANK_BATCH_SIZE", "1")
+    monkeypatch.setenv("RANK_MAX_WORKERS", "2")
+    captured = {}
+    real_pool = dr.concurrent.futures.ThreadPoolExecutor
+
+    def _spy_pool(max_workers=None, **k):
+        captured["workers"] = max_workers
+        return real_pool(max_workers=max_workers, **k)
+
+    monkeypatch.setattr(dr.concurrent.futures, "ThreadPoolExecutor", _spy_pool)
+    monkeypatch.setattr(dr, "_call_llm_json",
+                        lambda *a, **k: {"shots": [{"shot_id": 1, "ranked": [{"index": 0, "reason": "ok"}]}]})
+    # 5 shots, batch size 1 → 5 batches; env caps workers at 2.
+    shots = [_shot(i, ["a"]) for i in range(1, 6)]
+    rank_shot_candidates(shots, api_key="k", max_workers=4)
+    assert captured["workers"] == 2

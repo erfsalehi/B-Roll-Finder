@@ -1,8 +1,32 @@
 import os
+import time
+import random
 import concurrent.futures
 import threading
 from groq import Groq
 from core.keywords import _call_llm_json
+
+
+def _rank_jitter() -> None:
+    """Sleep a small random interval before an LLM call.
+
+    A bounded thread pool caps how many ranking calls run *at once*, but not
+    how many fire *per minute* — concurrent workers finishing together can
+    still burst past a provider's per-minute cap and provoke 429s or abrupt
+    TCP resets. A little jitter desynchronizes the workers and spreads the
+    traffic out. Tunable via ``RANK_JITTER_MIN`` / ``RANK_JITTER_MAX`` seconds;
+    set ``RANK_JITTER_MAX=0`` to disable entirely.
+    """
+    try:
+        lo = float(os.getenv("RANK_JITTER_MIN", "0.5"))
+        hi = float(os.getenv("RANK_JITTER_MAX", "1.5"))
+    except ValueError:
+        lo, hi = 0.5, 1.5
+    if hi <= 0:
+        return
+    if lo > hi:
+        lo = hi
+    time.sleep(random.uniform(max(0.0, lo), hi))
 
 
 def _load_rank_prompt() -> str:
@@ -128,6 +152,8 @@ def _rank_one_batch(batch: list, system_prompt: str, client: Groq,
     )
 
     try:
+        # Space this call out from sibling workers to avoid bursty traffic.
+        _rank_jitter()
         # Judging is deterministic; low temperature + JSON response_format keep
         # ranking stable. max_tokens scales with the batch (indices + one reason
         # per shot is compact, but give headroom for larger candidate sets).
@@ -273,6 +299,16 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
 
     errors_lock = threading.Lock()
     done = 0
+
+    # RANK_MAX_WORKERS is the "semaphore size": how many batch calls run at
+    # once. Lower it if a provider is still rate-limiting; raise it for speed
+    # when you have the quota. Falls back to the caller's value.
+    env_workers = os.getenv("RANK_MAX_WORKERS")
+    if env_workers:
+        try:
+            max_workers = max(1, int(env_workers))
+        except ValueError:
+            pass
 
     # Cap workers at the number of batches so we don't spin up idle threads.
     workers = max(1, min(max_workers, total))
