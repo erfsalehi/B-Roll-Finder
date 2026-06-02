@@ -58,7 +58,7 @@ Commands (from your phone):
 
 Jobs run in a background thread, so the bot stays responsive to `/status` and `/cancel` while a job is running, and a second audio file is deferred rather than run concurrently.
 
-**Keep it running on the laptop:** double-click `bot/run_bot.bat` — it activates the venv, launches the bot, and auto-restarts it if it ever crashes. To start it automatically on boot, create a Task Scheduler task ("At log on" → Start a program → `bot/run_bot.bat`), or drop a shortcut to it in the Startup folder (`shell:startup`).
+**Keep it running (Windows):** just **double-click `start_bot.bat`** in the project root — it activates the venv, launches the bot in a titled window, and auto-restarts it if it ever crashes. Keep the window open while you want the bot running; close it to stop. To start it automatically on boot, drop a shortcut to `start_bot.bat` in the Startup folder (press <kbd>Win+R</kbd> → `shell:startup` → paste the shortcut), or create a Task Scheduler task ("At log on" → Start a program → `start_bot.bat`).
 
 ---
 
