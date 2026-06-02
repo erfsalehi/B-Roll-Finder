@@ -149,7 +149,7 @@ Enter keys in the in-app Setup expander or copy `.env.example` → `.env`.
 | `PEXELS_API_KEY` | optional | Pexels stock footage |
 | `PIXABAY_API_KEY` | optional | Pixabay stock footage |
 | `YOUTUBE_API_KEY` | optional | YouTube Data API v3 (100 quota units/search) |
-| `DEEPSEEK_API_KEY` | optional | **Paid, higher-quality model — preferred for all AI steps when set** |
+| `DEEPSEEK_API_KEY` | optional | **An OpenRouter key — routes the paid `deepseek-v4-pro` model; preferred for all AI steps when set** |
 | `OPENROUTER_API_KEY` | optional | Automatic free fallback when Groq hits rate limits |
 | `FREESOUND_API_KEY` | optional | SFX download for text overlays |
 
@@ -163,7 +163,7 @@ All text-LLM steps (shot list, ranking, keywords, topic, the context segmenter) 
 DeepSeek (if DEEPSEEK_API_KEY set)  →  Groq (cycles GROQ_API_KEY / _2)  →  OpenRouter
 ```
 
-DeepSeek is a paid tier (`deepseek-v4-pro` by default) that leads when available; on any error it transparently falls back to the free providers. Override the model with `DEEPSEEK_MODEL` (e.g. `deepseek-v4-flash`).
+The DeepSeek tier (`deepseek/deepseek-v4-pro` by default) is reached **through OpenRouter** — put an OpenRouter key in `DEEPSEEK_API_KEY`. It leads when available and transparently falls back to the free providers on any error. Override the model slug with `DEEPSEEK_MODEL` (e.g. `deepseek/deepseek-v4-flash`).
 
 ### Advanced configuration (`.env`)
 
@@ -173,8 +173,9 @@ Optional toggles and tuning knobs, all off/default unless set:
 |----------|---------|--------|
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` | `false` | Run the subject-segmentation pre-pass (Step 2 `🧭`) |
 | `ENABLE_AUTO_SELECTION` | `false` | Auto-bind the top-ranked clip per shot (Step 4 `🤖`) |
-| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | DeepSeek model id (e.g. `deepseek-v4-flash`, or `deepseek-chat` for a non-thinking model) |
-| `DEEPSEEK_MAX_TOKENS` | `8000` | Min token budget per DeepSeek call — `v4-pro` "thinks" by default and reasoning counts against `max_tokens`, so too small a cap returns empty content |
+| `DEEPSEEK_MODEL` | `deepseek/deepseek-v4-pro` | OpenRouter model slug for the preferred tier (e.g. `deepseek/deepseek-v4-flash`, which is faster) |
+| `DEEPSEEK_REASONING` | `off` | Chain-of-thought is **disabled by default** — for JSON extraction it just burns tokens, returns empty content, and is slow. Set `on` to re-enable |
+| `DEEPSEEK_MAX_TOKENS` | `8000` | Min token budget per DeepSeek call (matters mainly when reasoning is on) |
 | `RANK_BATCH_SIZE` | `6` | Shots judged per ranking LLM call |
 | `RANK_MAX_WORKERS` | `3` | Concurrent ranking calls (lower under rate pressure) |
 | `RANK_JITTER_MIN` / `RANK_JITTER_MAX` | `0.5` / `1.5` | Random delay (s) before each ranking call; set `MAX=0` to disable |

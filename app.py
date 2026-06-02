@@ -577,14 +577,14 @@ def render_classic_mode():
                                              value=os.getenv("YOUTUBE_API_KEY", ""),
                                              type="password",
                                              help="Optional. 10,000 quota units/day; each search costs 100.")
-            deepseek_input   = st.text_input("DeepSeek API Key (paid — preferred)",
+            deepseek_input   = st.text_input("DeepSeek API Key (paid — preferred, via OpenRouter)",
                                              value=os.getenv("DEEPSEEK_API_KEY", ""),
                                              type="password",
-                                             help="Optional. A paid, higher-quality model "
-                                                  "(deepseek-v4-pro). When set, it's used first for "
-                                                  "every AI step (shot list, ranking, keywords), "
-                                                  "with Groq/OpenRouter as automatic fallbacks. "
-                                                  "Override the model id with DEEPSEEK_MODEL in .env.")
+                                             help="Optional. Paste an **OpenRouter** API key here — it routes "
+                                                  "deepseek-v4-pro through OpenRouter and is used first for every "
+                                                  "AI step (shot list, ranking, keywords), with Groq/OpenRouter "
+                                                  "free models as automatic fallbacks. Override the model slug "
+                                                  "with DEEPSEEK_MODEL in .env.")
             openrouter_input = st.text_input("OpenRouter API Key",
                                              value=os.getenv("OPENROUTER_API_KEY", ""),
                                              type="password",
@@ -1500,13 +1500,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                                                value=os.getenv("OPENROUTER_API_KEY_2", ""),
                                                type="password", key="d_or_2",
                                                help="Second fallback key if the first OpenRouter key is also limited.")
-            deepseek_input   = st.text_input("DeepSeek API Key (paid — preferred)",
+            deepseek_input   = st.text_input("DeepSeek API Key (paid — preferred, via OpenRouter)",
                                              value=os.getenv("DEEPSEEK_API_KEY", ""),
                                              type="password", key="d_deepseek",
-                                             help="Optional. A paid, higher-quality model "
-                                                  "(deepseek-v4-pro). When set, it's used first for "
-                                                  "every AI step, with Groq/OpenRouter as automatic "
-                                                  "fallbacks. Override the model id with DEEPSEEK_MODEL in .env.")
+                                             help="Optional. Paste an **OpenRouter** API key here — it routes "
+                                                  "deepseek-v4-pro through OpenRouter and is used first for every "
+                                                  "AI step, with Groq/OpenRouter free models as automatic "
+                                                  "fallbacks. Override the model slug with DEEPSEEK_MODEL in .env.")
             freesound_input  = st.text_input("Freesound API Key",
                                              value=os.getenv("FREESOUND_API_KEY", ""),
                                              type="password", key="d_free",

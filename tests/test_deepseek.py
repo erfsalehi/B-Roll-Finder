@@ -41,10 +41,31 @@ def test_deepseek_request_uses_endpoint_model_and_json_mode(monkeypatch):
     monkeypatch.setattr(kw.requests, "post", _fake_post)
     out = kw._call_deepseek_json("sys", "user")
     assert out == {"shots": []}
-    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    # Routed through OpenRouter's OpenAI-compatible endpoint.
+    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer sk-abc"
-    assert captured["payload"]["model"] == "deepseek-v4-pro"  # default
+    assert captured["payload"]["model"] == "deepseek/deepseek-v4-pro"  # default slug
     assert captured["payload"]["response_format"] == {"type": "json_object"}
+
+
+def test_deepseek_disables_reasoning_by_default(monkeypatch):
+    # CoT is off by default — it's what starves the JSON answer (empty content).
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user")
+    assert captured["payload"]["reasoning"] == {"enabled": False}
+
+
+def test_deepseek_reasoning_can_be_re_enabled(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    monkeypatch.setenv("DEEPSEEK_REASONING", "on")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user")
+    assert "reasoning" not in captured["payload"]
 
 
 def test_deepseek_raises_max_tokens_floor(monkeypatch):

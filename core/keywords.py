@@ -107,16 +107,18 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
         raise last_error
 
 
-# ── DeepSeek (optional paid provider) ─────────────────────────────────────────
-# DeepSeek's API is OpenAI-compatible. When the user supplies a key it becomes
-# the *preferred* model (it's a paid, higher-quality tier than the Groq/
-# OpenRouter free fallbacks), so _call_llm_json / _call_llm_str try it first.
-DEEPSEEK_BASE = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-pro"
+# ── DeepSeek (optional paid provider, routed via OpenRouter) ──────────────────
+# The preferred paid tier is deepseek-v4-pro, reached through OpenRouter's
+# OpenAI-compatible endpoint (more reliable than the direct DeepSeek endpoint,
+# e.g. behind a TUN VPN). The key lives in the DEEPSEEK_API_KEY slot but is an
+# *OpenRouter* key. When set, _call_llm_json / _call_llm_str try it first.
+DEEPSEEK_BASE = "https://openrouter.ai/api/v1/chat/completions"
+DEEPSEEK_DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
 
 
 def _deepseek_keys() -> list:
-    """Return configured DeepSeek key(s). Empty list ⇒ feature disabled."""
+    """Return the configured key(s) for the preferred DeepSeek-via-OpenRouter
+    tier (read from the DEEPSEEK_API_KEY slot). Empty list ⇒ feature disabled."""
     keys = [os.getenv("DEEPSEEK_API_KEY", ""), os.getenv("DEEPSEEK_API_KEY_2", "")]
     return [k.strip() for k in keys if k and k.strip()]
 
@@ -159,6 +161,13 @@ def _deepseek_request(system_prompt: str, user_content: str,
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+
+    # deepseek-v4 "thinks" (chain-of-thought) by default. For our deterministic
+    # JSON extraction that only burns the token budget — leaving an EMPTY answer —
+    # and adds latency to every one of the (many) per-block calls. Disable it via
+    # OpenRouter's reasoning control. Set DEEPSEEK_REASONING=on to keep CoT.
+    if os.getenv("DEEPSEEK_REASONING", "").strip().lower() not in ("1", "true", "yes", "on"):
+        payload["reasoning"] = {"enabled": False}
 
     last_error = None
     backoff_delays = [2, 5, 15]
