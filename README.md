@@ -44,6 +44,12 @@ Upload script + audio
 
 ---
 
+## Fully Automatic Mode
+
+Upload your voiceover, click **🚀 Run everything automatically**, and the app drives the entire pipeline with default settings — transcribe → topic → shot list → fetch → drop SD YouTube → rank → auto-select → **Step 5.5 QA review** — then stops so you can review and download. A live status panel shows each stage. Tick **"Also download automatically"** to have it kick off the download too once the review is done. Everything below still works step-by-step if you'd rather drive it manually.
+
+---
+
 ## What each step does
 
 **Step 1 — Transcribe & chunk**  

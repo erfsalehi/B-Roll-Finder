@@ -49,6 +49,115 @@ def _set_env_flag(name: str, value: bool) -> None:
     val = "true" if value else "false"
     set_key(ENV_FILE, name, val)
     os.environ[name] = val
+
+
+def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
+    """Drive the whole Director pipeline end-to-end with default settings.
+
+    Runs every stage sequentially through the Step 5.5 QA review — transcribe →
+    topic → (optional context pre-pass) → shot list → fetch → HD filter → rank →
+    auto-select → review — updating a live status panel. Stops there so the user
+    can review; if ``also_download`` is set, flags the download to kick off on the
+    next rerun. Each stage is guarded so one failure ends the run cleanly instead
+    of leaving a half-built state.
+    """
+    from core.transcription import transcribe_audio
+    from core.director import generate_shot_list_from_transcription, segment_script_structure
+    from core.keywords import generate_video_topic
+    from core.director_search import fetch_director_footage, filter_youtube_sd_candidates, auto_fetch_plan
+    from core.director_rank import rank_shot_candidates, auto_select_top_candidates, review_timeline
+
+    key = os.getenv("GROQ_API_KEY")
+    with st.status("⚡ Fully automatic run…", expanded=True) as status:
+        # 1 — Transcribe
+        st.write("🎙️ Transcribing voiceover…")
+        segments = transcribe_audio(audio_path, key)
+        if not segments:
+            status.update(label="❌ Transcription produced no segments.", state="error")
+            return
+        st.session_state.transcription_segments = segments
+        st.session_state.script_text = " ".join(s["text"].strip() for s in segments).strip()
+        st.session_state.transcription_chunks = [{
+            "start":    segments[0]["start"] if segments else 0.0,
+            "end":      segments[-1]["end"]  if segments else 0.0,
+            "text":     st.session_state.script_text,
+            "segments": segments,
+        }]
+        st.session_state.active_chunk_indices = [0]
+
+        # 2 — Topic (smart tier helps both query generation and ranking)
+        st.write("🧭 Analyzing the video's topic…")
+        try:
+            topic = generate_video_topic(st.session_state.script_text, key)
+            if topic:
+                st.session_state.d_video_topic = topic
+        except Exception as e:
+            print(f"[auto] topic generation skipped: {e}")
+        topic = st.session_state.get("d_video_topic", "")
+
+        # 3 — Optional context-aware structural pre-pass
+        roadmap = {}
+        if _env_flag("ENABLE_CONTEXT_AWARE_KEYWORDS"):
+            st.write("🗺️ Mapping the video structure…")
+            roadmap = segment_script_structure(segments, key, video_topic=topic)
+            st.session_state.segment_roadmap = roadmap
+
+        # 4 — Shot list
+        st.write("🎬 Generating the shot list…")
+        shots = generate_shot_list_from_transcription(
+            segments, key, video_topic=topic, segment_roadmap=roadmap or None,
+        )
+        for idx, shot in enumerate(shots):
+            shot["slot_id"] = idx + 1
+            shot.pop("chunk_id", None)
+        st.session_state.director_shots = shots
+        if not shots:
+            status.update(label="❌ No shots were generated.", state="error")
+            return
+
+        # 5 — Fetch candidates (defaults from available keys, HD-preferred)
+        st.write(f"🔎 Fetching candidates for {len(shots)} shot(s)…")
+        from core.director_youtube import seed_youtube_keywords
+        try:
+            seed_youtube_keywords(shots)
+        except Exception:
+            pass
+        fetch_director_footage(shots, errors=[], **auto_fetch_plan())
+
+        # 6 — Drop SD YouTube clips (HD only) when a YouTube key is available
+        if os.getenv("YOUTUBE_API_KEY"):
+            st.write("🎥 Dropping SD YouTube clips…")
+            try:
+                filter_youtube_sd_candidates(shots, api_key=os.getenv("YOUTUBE_API_KEY"))
+            except Exception as e:
+                print(f"[auto] HD filter skipped: {e}")
+
+        # 7 — Rank
+        st.write("⚖️ Ranking candidates…")
+        try:
+            rank_shot_candidates(shots, api_key=key, video_topic=topic)
+        except Exception as e:
+            print(f"[auto] ranking issue: {e}")
+
+        # 8 — Auto-select (duration-scaled, variety-aware)
+        st.write("🤖 Auto-selecting the best clips…")
+        auto_select_top_candidates(shots)
+
+        # 9 — Final QA review (smart tier)
+        st.write("🎬 Final QA review…")
+        st.session_state.d_qa_result = review_timeline(shots, api_key=key, video_topic=topic)
+
+        save_cache()
+        n_sel = sum(1 for s in shots if s.get("selected_results"))
+        status.update(
+            label=f"✅ Done — {len(shots)} shots, {n_sel} with clips. Review below"
+                  + (" (downloading next)…" if also_download else ", then download."),
+            state="complete",
+        )
+
+    if also_download:
+        st.session_state.auto_download_after = True
+    st.rerun()
 # When the user runs a TUN-mode VPN (e.g. V2RayN, Hiddify), the OS
 # captures all traffic at the network layer, so app-level HTTP_PROXY /
 # HTTPS_PROXY env vars become stale — they point at an HTTP proxy
@@ -1648,6 +1757,28 @@ elif app_mode in ["Director", "Smart Mode"]:
                         st.session_state.script_text            = ""
                         save_cache()
                         st.rerun()
+
+            # ── ⚡ Fully Automatic Mode ──────────────────────────────────────
+            with st.container(border=True):
+                st.markdown("### ⚡ Fully Automatic Mode")
+                st.caption(
+                    "Runs every step with default settings — transcribe → topic → shot list → "
+                    "fetch → HD filter → rank → auto-select → QA review — then stops so you can "
+                    "review and download. No manual clicks in between."
+                )
+                _fa_dl = st.checkbox(
+                    "Also download automatically once the QA review finishes",
+                    key="d_auto_dl_after",
+                    help="Leave off to review first and download manually in Step 6.",
+                )
+                if st.button("🚀 Run everything automatically", key="d_run_auto", type="primary"):
+                    if not os.getenv("GROQ_API_KEY"):
+                        st.error("Set a Groq API key in Setup above first.")
+                    else:
+                        try:
+                            _run_fully_auto(audio_path, also_download=_fa_dl)
+                        except Exception as e:
+                            st.error(f"Fully-automatic run failed: {e}")
         else:
             st.caption("Upload your voiceover to begin.")
     # Show a brief stats line when transcription is ready (no chunk picker needed)
@@ -3103,8 +3234,11 @@ elif app_mode in ["Director", "Smart Mode"]:
         total_selected_files = sum(len(s.get("selected_results", [])) for s in selected_shots)
         col_dl1, col_dl2 = st.columns([2, 1])
         with col_dl1:
+            # Fully-auto mode sets `auto_download_after` so the download begins on
+            # this rerun without a manual click (popped so it fires only once).
+            _auto_dl = st.session_state.pop("auto_download_after", False)
             start_dl = st.button(f"📥 Download {total_selected_files} selected videos",
-                                key="d_dl_start", type="primary", width="stretch")
+                                key="d_dl_start", type="primary", width="stretch") or _auto_dl
         with col_dl2:
             if st.button("📄 Export Manifest", key="d_manifest", width="stretch", help="Generate a text file listing all shots, grouped by chunk."):
                 # _safe_for_fs is imported from core.output at the top of this file.

@@ -1,7 +1,24 @@
 """Throttled YouTube HD/SD filtering of fetched candidates."""
 
 import core.stock_apis as stock_apis
-from core.director_search import filter_youtube_sd_candidates
+from core.director_search import filter_youtube_sd_candidates, auto_fetch_plan
+
+
+def test_auto_fetch_plan_prefers_stock_when_keys_present(monkeypatch):
+    monkeypatch.setenv("PEXELS_API_KEY", "x")
+    monkeypatch.delenv("PIXABAY_API_KEY", raising=False)
+    p = auto_fetch_plan()
+    assert p["use_pexels"] is True
+    assert p["use_youtube_search"] is False   # stock available → skip slow yt-dlp
+    assert p["min_height"] == 720             # HD-preferred
+
+
+def test_auto_fetch_plan_falls_back_to_youtube_without_stock(monkeypatch):
+    monkeypatch.delenv("PEXELS_API_KEY", raising=False)
+    monkeypatch.delenv("PIXABAY_API_KEY", raising=False)
+    p = auto_fetch_plan()
+    assert p["use_pexels"] is False and p["use_pixabay"] is False
+    assert p["use_youtube_search"] is True
 
 
 def _yt(url, definition=None):

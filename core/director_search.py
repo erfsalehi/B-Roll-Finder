@@ -111,6 +111,26 @@ def _classic_youtube_candidate(item: dict, query: str) -> dict:
     }
 
 
+def auto_fetch_plan() -> dict:
+    """Default fetch settings for fully-automatic mode, derived from the API keys
+    present. Prefers stock sources (fast & reliable) and only falls back to
+    YouTube classic search when no stock key exists; prefers HD. Returns kwargs
+    ready to splat into :func:`fetch_director_footage`.
+    """
+    pex = bool(os.getenv("PEXELS_API_KEY"))
+    pix = bool(os.getenv("PIXABAY_API_KEY"))
+    return {
+        "use_pexels": pex,
+        "use_pixabay": pix,
+        "use_youtube_search": not (pex or pix),
+        "use_youtube_api": False,
+        "pexels_num_results": 3,
+        "pixabay_num_results": 3,
+        "youtube_search_num_results": 4,
+        "min_height": 720,
+    }
+
+
 def filter_youtube_sd_candidates(shots: list, api_key: str, max_checks: int = 200,
                                  drop_sd: bool = True, errors: list = None) -> dict:
     """Check YouTube candidates' HD/SD via the Data API and drop the SD ones.
