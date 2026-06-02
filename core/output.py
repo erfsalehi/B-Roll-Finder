@@ -255,6 +255,27 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
         return 0
 
 
+def clip_base_dir(project_name: str) -> str:
+    """Absolute folder where a project's downloaded clips live — and where the
+    FCPXML expects to find them. Shared by the exporter and the headless
+    downloader so their paths always agree."""
+    return os.path.abspath(os.path.join("downloads", _safe_for_fs(project_name, 50), "director"))
+
+
+def clip_filename(slot_id, footage_num: int, matched_query: str, seen_filenames: set) -> str:
+    """Deterministic, deduplicated clip filename — the single source of truth so
+    the downloader writes to exactly the path generate_fcpxml references."""
+    keyword = _safe_for_fs(matched_query or "", 30) or "clip"
+    base = f"{slot_id}-{footage_num}-{keyword}"
+    filename = f"{base}.mp4"
+    n = 1
+    while filename in seen_filenames:
+        n += 1
+        filename = f"{base}-{n}.mp4"
+    seen_filenames.add(filename)
+    return filename
+
+
 def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None,
                     sfx_list: list = None, time_offset: float = 0.0) -> str:
     """
@@ -268,7 +289,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     """
     proj_folder = _safe_for_fs(project_name, 50)
     # We use absolute paths for the 'pathurl' attribute so Premiere can find them instantly.
-    base_dir = os.path.abspath(os.path.join("downloads", proj_folder, "director"))
+    base_dir = clip_base_dir(project_name)
     
     fps_exact = 23.976
     timebase = 24  # Standard timebase for 23.98 in FCP7 XML
@@ -359,21 +380,12 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             end_frame       = sec_to_frames(clip_end_sec,   fps_exact)
             duration_frames = max(1, end_frame - start_frame)
 
-            # File pathing logic - follow app.py naming exactly
+            # Shared filename logic so the headless downloader and this exporter
+            # always agree on the path.
             slot_id = shot.get("slot_id", "X")
-            keyword = _safe_for_fs(res.get("matched_query", ""), 30) or "clip"
             footage_num = res_idx + 1
-            filename = f"{slot_id}-{footage_num}-{keyword}.mp4"
-            
-            # Deduplicate filename if necessary
-            n = 1
-            temp_filename = filename
-            while temp_filename in seen_filenames:
-                n += 1
-                temp_filename = f"{slot_id}-{footage_num}-{keyword}-{n}.mp4"
-            filename = temp_filename
-            seen_filenames.add(filename)
-            
+            filename = clip_filename(slot_id, footage_num, res.get("matched_query", ""), seen_filenames)
+
             filepath = os.path.join(base_dir, filename)
             file_uri = _get_premiere_safe_pathurl(filepath)
             
