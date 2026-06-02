@@ -22,6 +22,7 @@ only the small FCPXML is sent back over Telegram.
 import os
 import time
 import shutil
+import threading
 
 import requests
 
@@ -29,9 +30,10 @@ _API = "https://api.telegram.org/bot{token}/{method}"
 _FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
 _AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac")
 
-# Whether a pipeline job is currently running (so /status can report it and a
-# second audio file can be politely deferred instead of overloading the host).
-_BUSY = {"active": False, "project": None}
+# Tracks the single in-flight job. The pipeline runs in a background thread so
+# the polling loop stays responsive (can answer /status and /cancel mid-job).
+# ``cancel`` is a threading.Event the running pipeline checks at each stage.
+_BUSY = {"active": False, "project": None, "cancel": None}
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -172,15 +174,19 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
     def _progress(step, total, label):
         edit_message(chat_id, msg_id, f"⚙️ [{step}/{total}] {label}…  ·  {proj}")
 
-    _BUSY.update(active=True, project=proj)
+    from core.pipeline import PipelineCancelled
+    cancel = _BUSY.get("cancel")
+    should_cancel = cancel.is_set if cancel is not None else None
+
     try:
         result = run_pipeline_headless(audio_path, project_name=proj, download=True,
-                                       progress_callback=_progress)
+                                       progress_callback=_progress, should_cancel=should_cancel)
+    except PipelineCancelled:
+        send_message(chat_id, f"⏹ Cancelled '{proj}'.")
+        return {}
     except Exception as e:
         send_message(chat_id, f"❌ Pipeline failed for '{proj}': {e}")
         return {}
-    finally:
-        _BUSY.update(active=False, project=None)
 
     send_message(chat_id, format_summary(proj, result))
     xml_path = result.get("xml_path")
@@ -259,11 +265,29 @@ def format_health(checks: list, busy: dict = None) -> str:
     return "\n".join(lines)
 
 
-def is_status_command(text: str) -> bool:
+def _command(text: str) -> str:
+    """Lowercased leading command token (`/status@Bot` → `/status`), or ''."""
     if not text:
-        return False
-    cmd = text.strip().split()[0].split("@")[0].lower()
-    return cmd in ("/status", "/health", "/ping")
+        return ""
+    return text.strip().split()[0].split("@")[0].lower()
+
+
+def is_status_command(text: str) -> bool:
+    return _command(text) in ("/status", "/health", "/ping")
+
+
+def is_cancel_command(text: str) -> bool:
+    return _command(text) in ("/cancel", "/stop", "/abort")
+
+
+def _run_job(chat_id, file_id, name) -> None:
+    """Background-thread wrapper: runs one job and always clears the busy flag."""
+    try:
+        handle_audio(chat_id, file_id, name)
+    except Exception as e:
+        send_message(chat_id, f"❌ Unexpected error: {e}")
+    finally:
+        _BUSY.update(active=False, project=None, cancel=None)
 
 
 # ── polling loop ────────────────────────────────────────────────────────────────
@@ -302,24 +326,38 @@ def main() -> None:
             if not is_allowed(user_id, allowed):
                 continue
             text = msg.get("text") or ""
+
             if is_status_command(text):
                 send_message(chat_id, "🔎 Checking…")
                 send_message(chat_id, format_health(check_health(), _BUSY))
                 continue
+
+            if is_cancel_command(text):
+                cancel = _BUSY.get("cancel")
+                if _BUSY.get("active") and cancel is not None:
+                    cancel.set()
+                    send_message(chat_id, f"⏹ Cancelling '{_BUSY.get('project')}' "
+                                          "after the current stage…")
+                else:
+                    send_message(chat_id, "Nothing is running right now.")
+                continue
+
             file_id, name = extract_audio(msg)
             if file_id:
                 if _BUSY.get("active"):
                     send_message(chat_id, f"⏳ Still processing '{_BUSY.get('project')}'. "
-                                          "I'll be free once it finishes — send it again then.")
+                                          "Send /cancel to stop it, or wait and resend.")
                     continue
-                try:
-                    handle_audio(chat_id, file_id, name)
-                except Exception as e:
-                    _BUSY.update(active=False, project=None)
-                    send_message(chat_id, f"❌ Unexpected error: {e}")
+                # Claim the slot in THIS thread (avoids a race with a second file),
+                # then run the job in the background so the loop keeps polling and
+                # can answer /status and /cancel mid-job.
+                _BUSY.update(active=True,
+                             project=project_name_from(name, time.strftime("video_%Y%m%d_%H%M%S")),
+                             cancel=threading.Event())
+                threading.Thread(target=_run_job, args=(chat_id, file_id, name), daemon=True).start()
             elif text:
                 send_message(chat_id, "Send me a voice message or an audio file and I'll build "
-                                      "the B-roll project. Send /status to check I'm online and ready.")
+                                      "the B-roll project. /status checks I'm online · /cancel stops a job.")
 
 
 if __name__ == "__main__":

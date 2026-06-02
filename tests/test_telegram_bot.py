@@ -89,6 +89,14 @@ def test_is_status_command_matches_variants():
     assert not tb.is_status_command("")
 
 
+def test_is_cancel_command_matches_variants():
+    assert tb.is_cancel_command("/cancel")
+    assert tb.is_cancel_command("/stop")
+    assert tb.is_cancel_command("/abort@MyBot")
+    assert not tb.is_cancel_command("/status")
+    assert not tb.is_cancel_command("hello")
+
+
 def test_check_health_reports_keys_and_pipeline(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "g")
     monkeypatch.setenv("PEXELS_API_KEY", "p")

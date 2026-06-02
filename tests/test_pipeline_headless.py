@@ -75,6 +75,23 @@ def test_pipeline_runs_all_stages_and_writes_xml(_mock_stages):
     assert seen[0][0] == 1 and "Transcrib" in seen[0][1]   # progress fired
 
 
+def test_pipeline_cancels_before_work(monkeypatch, tmp_path):
+    from core.pipeline import PipelineCancelled
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(PipelineCancelled):
+        pipeline.run_pipeline_headless("v.mp3", should_cancel=lambda: True)
+
+
+def test_download_cancels(monkeypatch, tmp_path):
+    from core.pipeline import PipelineCancelled
+    monkeypatch.chdir(tmp_path)
+    shots = [{"slot_id": 1, "priority": "medium",
+              "selected_results": [{"url": "http://x/a.mp4", "source": "pexels"}]}]
+    with pytest.raises(PipelineCancelled):
+        pipeline.download_selected_clips(shots, "p", should_cancel=lambda: True)
+
+
 def test_pipeline_raises_without_key(monkeypatch, tmp_path):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)

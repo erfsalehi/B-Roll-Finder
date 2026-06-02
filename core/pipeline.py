@@ -14,12 +14,21 @@ import os
 from core.output import clip_base_dir, clip_filename, generate_fcpxml, _safe_for_fs
 
 
+class PipelineCancelled(Exception):
+    """Raised when a caller's ``should_cancel()`` asks the run to stop."""
+
+
 def _flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _check_cancel(should_cancel) -> None:
+    if should_cancel and should_cancel():
+        raise PipelineCancelled("Cancelled by user.")
+
+
 def download_selected_clips(shots: list, project_name: str, quality: str = "1080",
-                            progress=None) -> dict:
+                            progress=None, should_cancel=None) -> dict:
     """Download every selected clip into the project's clip folder, using the
     exact filenames :func:`generate_fcpxml` will reference.
 
@@ -50,6 +59,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
     errors = []
     total = len(jobs)
     for i, (shot, res, fn) in enumerate(jobs, start=1):
+        _check_cancel(should_cancel)
         out_path = os.path.join(base_dir, fn)
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             skipped += 1
@@ -80,7 +90,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
 
 def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: str = "auto",
                           download: bool = True, context_aware: bool = None,
-                          progress_callback=None) -> dict:
+                          progress_callback=None, should_cancel=None) -> dict:
     """Drive transcribe → topic → (context pre-pass) → shot list → fetch → HD
     filter → rank → auto-select → QA review → [download] → FCPXML, headless.
 
@@ -107,6 +117,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     errors = []
 
     def _p(step, label):
+        _check_cancel(should_cancel)   # cooperative cancel at every stage boundary
         if progress_callback:
             try:
                 progress_callback(step, total, label)
@@ -195,7 +206,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # 10 — Download (optional)
     if download:
         _p(10, "Downloading clips")
-        result["download"] = download_selected_clips(shots, project_name)
+        result["download"] = download_selected_clips(shots, project_name, should_cancel=should_cancel)
 
     # Final — FCPXML
     _p(total, "Writing Premiere XML")
