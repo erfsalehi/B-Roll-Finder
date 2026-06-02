@@ -68,8 +68,17 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
     from core.director_rank import rank_shot_candidates, auto_select_top_candidates, review_timeline
 
     key = os.getenv("GROQ_API_KEY")
+    bar = st.progress(0.0, text="⚡ Starting fully automatic run…")
+    _TOTAL_STAGES = 9
+    _stage = {"n": 0}
+
+    def _tick(label: str) -> None:
+        _stage["n"] += 1
+        bar.progress(min(1.0, _stage["n"] / _TOTAL_STAGES), text=label)
+
     with st.status("⚡ Fully automatic run…", expanded=True) as status:
         # 1 — Transcribe
+        _tick("🎙️ Transcribing voiceover…")
         st.write("🎙️ Transcribing voiceover…")
         segments = transcribe_audio(audio_path, key)
         if not segments:
@@ -86,6 +95,7 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
         st.session_state.active_chunk_indices = [0]
 
         # 2 — Topic (smart tier helps both query generation and ranking)
+        _tick("🧭 Analyzing the video's topic…")
         st.write("🧭 Analyzing the video's topic…")
         try:
             topic = generate_video_topic(st.session_state.script_text, key)
@@ -98,11 +108,13 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
         # 3 — Optional context-aware structural pre-pass
         roadmap = {}
         if _env_flag("ENABLE_CONTEXT_AWARE_KEYWORDS"):
+            _tick("🗺️ Mapping the video structure…")
             st.write("🗺️ Mapping the video structure…")
             roadmap = segment_script_structure(segments, key, video_topic=topic)
             st.session_state.segment_roadmap = roadmap
 
         # 4 — Shot list
+        _tick("🎬 Generating the shot list…")
         st.write("🎬 Generating the shot list…")
         shots = generate_shot_list_from_transcription(
             segments, key, video_topic=topic, segment_roadmap=roadmap or None,
@@ -116,6 +128,7 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
             return
 
         # 5 — Fetch candidates (defaults from available keys, HD-preferred)
+        _tick(f"🔎 Fetching candidates for {len(shots)} shot(s)…")
         st.write(f"🔎 Fetching candidates for {len(shots)} shot(s)…")
         from core.director_youtube import seed_youtube_keywords
         try:
@@ -126,6 +139,7 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
 
         # 6 — Drop SD YouTube clips (HD only) when a YouTube key is available
         if os.getenv("YOUTUBE_API_KEY"):
+            _tick("🎥 Dropping SD YouTube clips…")
             st.write("🎥 Dropping SD YouTube clips…")
             try:
                 filter_youtube_sd_candidates(shots, api_key=os.getenv("YOUTUBE_API_KEY"))
@@ -133,6 +147,7 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
                 print(f"[auto] HD filter skipped: {e}")
 
         # 7 — Rank
+        _tick("⚖️ Ranking candidates…")
         st.write("⚖️ Ranking candidates…")
         try:
             rank_shot_candidates(shots, api_key=key, video_topic=topic)
@@ -140,10 +155,12 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
             print(f"[auto] ranking issue: {e}")
 
         # 8 — Auto-select (duration-scaled, variety-aware)
+        _tick("🤖 Auto-selecting the best clips…")
         st.write("🤖 Auto-selecting the best clips…")
         auto_select_top_candidates(shots)
 
         # 9 — Final QA review (smart tier)
+        _tick("🎬 Final QA review…")
         st.write("🎬 Final QA review…")
         st.session_state.d_qa_result = review_timeline(shots, api_key=key, video_topic=topic)
 
@@ -154,6 +171,7 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
                   + (" (downloading next)…" if also_download else ", then download."),
             state="complete",
         )
+        bar.progress(1.0, text="✅ Complete.")
 
     if also_download:
         st.session_state.auto_download_after = True
