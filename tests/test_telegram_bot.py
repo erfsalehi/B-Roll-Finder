@@ -119,7 +119,7 @@ def test_check_health_flags_missing_groq(monkeypatch):
 
 def test_probe_internet_ok_when_any_host_responds(monkeypatch):
     calls = {"n": 0}
-    def _head(url, timeout=8, allow_redirects=True):
+    def _head(url, timeout=8, allow_redirects=True, proxies=None):
         calls["n"] += 1
         if "google" in url:
             return object()          # responded

@@ -42,6 +42,14 @@ def _token() -> str:
     return os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
 
+def _proxies():
+    """Explicit proxy for all bot HTTP calls, from BOT_PROXY (e.g. when Telegram
+    is only reachable via a local VPN proxy like http://127.0.0.1:10809). When
+    unset, requests falls back to the HTTP(S)_PROXY env / direct connection."""
+    p = os.getenv("BOT_PROXY", "").strip()
+    return {"http": p, "https": p} if p else None
+
+
 def allowed_user_ids() -> set:
     raw = os.getenv("TELEGRAM_ALLOWED_USERS", "")
     out = set()
@@ -87,7 +95,8 @@ def project_name_from(suggested_name: str, fallback: str = "") -> str:
 # ── Telegram API (thin wrappers over requests) ─────────────────────────────────
 
 def _call(method: str, _timeout: int = 60, **params) -> dict:
-    resp = requests.post(_API.format(token=_token(), method=method), data=params, timeout=_timeout)
+    resp = requests.post(_API.format(token=_token(), method=method), data=params,
+                         timeout=_timeout, proxies=_proxies())
     resp.raise_for_status()
     return resp.json()
 
@@ -112,7 +121,7 @@ def edit_message(chat_id, message_id, text: str) -> None:
 def download_telegram_file(file_id: str, dest_path: str) -> str:
     path = _call("getFile", file_id=file_id)["result"]["file_path"]
     url = _FILE_API.format(token=_token(), path=path)
-    with requests.get(url, stream=True, timeout=180) as r:
+    with requests.get(url, stream=True, timeout=180, proxies=_proxies()) as r:
         r.raise_for_status()
         os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
         with open(dest_path, "wb") as f:
@@ -127,7 +136,7 @@ def send_document(chat_id, path: str, caption: str = "") -> None:
             resp = requests.post(
                 _API.format(token=_token(), method="sendDocument"),
                 data={"chat_id": chat_id, "caption": caption[:1024]},
-                files={"document": f}, timeout=180,
+                files={"document": f}, timeout=180, proxies=_proxies(),
             )
         resp.raise_for_status()
     except Exception as e:
@@ -213,7 +222,7 @@ def _probe_internet(timeout: int = 8):
     reachable, failed = [], []
     for name, url in _PROBE_URLS:
         try:
-            requests.head(url, timeout=timeout, allow_redirects=True)
+            requests.head(url, timeout=timeout, allow_redirects=True, proxies=_proxies())
             reachable.append(name)
         except Exception:
             failed.append(name)
@@ -302,6 +311,13 @@ def main() -> None:
     except Exception:
         pass
 
+    # Only strip proxy env vars when explicitly asked (TUN-mode users with stale
+    # proxies). By default we keep them — for many users Telegram is reachable
+    # only through their VPN's proxy, and clearing it would break the bot.
+    if os.getenv("BROLL_BYPASS_HTTP_PROXY", "").strip().lower() in ("1", "true", "yes"):
+        for _v in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+            os.environ.pop(_v, None)
+
     if not _token():
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get one from @BotFather).")
     allowed = allowed_user_ids()
@@ -311,12 +327,19 @@ def main() -> None:
     print(f"B-Roll bot polling… (authorized users: {sorted(allowed) or 'none'})")
 
     offset = None
+    fails = 0
     while True:
         try:
             resp = _call("getUpdates", _timeout=60, offset=offset, timeout=50)
+            fails = 0
         except Exception as e:
+            fails += 1
             print(f"[bot] poll error: {e}")
-            time.sleep(5)
+            if fails == 3:
+                print("[bot] Repeated connection failures reaching api.telegram.org. "
+                      "If Telegram needs your VPN proxy, set BOT_PROXY in .env "
+                      "(e.g. BOT_PROXY=http://127.0.0.1:10809). Make sure the VPN is up.")
+            time.sleep(min(5 + fails, 30))
             continue
 
         for upd in resp.get("result", []):

@@ -12,11 +12,10 @@ if not exist venv\Scripts\activate.bat (
 
 call venv\Scripts\activate.bat
 
-:: TUN-VPN users: clear stale proxy vars so requests use the OS network layer.
-set HTTP_PROXY=
-set HTTPS_PROXY=
-set http_proxy=
-set https_proxy=
+:: NOTE: we intentionally do NOT clear HTTP_PROXY/HTTPS_PROXY here — if Telegram
+:: is reachable only through your VPN's local proxy, clearing it breaks the bot.
+:: TUN-mode users who hit stale-proxy errors should set BROLL_BYPASS_HTTP_PROXY=1
+:: in .env instead (the bot honors it). To force a proxy, set BOT_PROXY in .env.
 
 echo ============================================================
 echo   B-Roll Telegram Bot
