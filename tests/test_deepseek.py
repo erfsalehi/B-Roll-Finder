@@ -47,6 +47,37 @@ def test_deepseek_request_uses_endpoint_model_and_json_mode(monkeypatch):
     assert captured["payload"]["response_format"] == {"type": "json_object"}
 
 
+def test_deepseek_raises_max_tokens_floor(monkeypatch):
+    # Thinking mode counts CoT against max_tokens, so a small caller cap is
+    # floored up to leave room for both reasoning and the answer.
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user", max_tokens=3000)
+    assert captured["payload"]["max_tokens"] >= 8000
+
+
+def test_deepseek_max_tokens_floor_env_override(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "16000")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user", max_tokens=3000)
+    assert captured["payload"]["max_tokens"] == 16000
+
+
+def test_deepseek_keeps_larger_caller_max_tokens(monkeypatch):
+    # A caller asking for more than the floor is respected as-is.
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user", max_tokens=12000)
+    assert captured["payload"]["max_tokens"] == 12000
+
+
 def test_deepseek_model_override(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
     monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
@@ -65,6 +96,78 @@ def test_str_request_omits_json_mode(monkeypatch):
     out = kw._call_deepseek_str("sys", "user")
     assert out == "hello"
     assert "response_format" not in captured["payload"]
+
+
+def test_deepseek_retries_transient_chunked_error(monkeypatch):
+    import time as _t
+    from requests.exceptions import ChunkedEncodingError
+    monkeypatch.setattr(_t, "sleep", lambda s: None)   # don't actually wait
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+
+    calls = {"n": 0}
+
+    def _flaky_post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ChunkedEncodingError("Response ended prematurely")
+        return _FakeResp('{"ok": 1}')
+
+    monkeypatch.setattr(kw.requests, "post", _flaky_post)
+    out = kw._call_deepseek_json("sys", "user")
+    assert out == {"ok": 1}
+    assert calls["n"] == 2   # retried the premature-end, then succeeded
+
+
+def test_deepseek_retries_empty_content_then_succeeds(monkeypatch):
+    # DeepSeek's "200 with empty content" quirk → json.loads("") would be the
+    # "Expecting value: line 1 column 1" error. We retry instead.
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+
+    calls = {"n": 0}
+
+    def _post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        return _FakeResp("" if calls["n"] == 1 else '{"ok": 1}')
+
+    monkeypatch.setattr(kw.requests, "post", _post)
+    out = kw._call_deepseek_json("sys", "user")
+    assert out == {"ok": 1}
+    assert calls["n"] == 2   # empty first response was retried
+
+
+def test_deepseek_persistent_empty_content_raises(monkeypatch):
+    # If every attempt is empty, give up (so the caller falls back) — and never
+    # hand "" to json.loads.
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda *a, **k: _FakeResp(""))
+    with pytest.raises(Exception):
+        kw._call_deepseek_json("sys", "user")
+
+
+def test_deepseek_does_not_retry_auth_error(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    calls = {"n": 0}
+
+    class _Resp401:
+        status_code = 401
+        def raise_for_status(self):
+            err = kw.HTTPError("401 Unauthorized")
+            err.response = self
+            raise err
+
+    def _post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        return _Resp401()
+
+    monkeypatch.setattr(kw.requests, "post", _post)
+    with pytest.raises(kw.HTTPError):
+        kw._call_deepseek_json("sys", "user")
+    assert calls["n"] == 1   # auth errors are not retried
 
 
 def test_llm_json_prefers_deepseek_when_key_set(monkeypatch):

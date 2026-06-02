@@ -2,7 +2,7 @@ import os
 import re
 import json
 import requests
-from requests.exceptions import HTTPError, ConnectionError, Timeout
+from requests.exceptions import HTTPError, ConnectionError, Timeout, ChunkedEncodingError
 from groq import Groq, RateLimitError as GroqRateLimitError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type, retry_if_exception
 
@@ -135,10 +135,23 @@ def _deepseek_request(system_prompt: str, user_content: str,
         raise ValueError("No DeepSeek API key configured.")
 
     model = os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL).strip() or DEEPSEEK_DEFAULT_MODEL
+
+    # deepseek-v4-pro runs in "thinking" (chain-of-thought) mode by default, and
+    # DeepSeek's max_tokens budget INCLUDES the reasoning tokens. The caller's
+    # cap (2000–4000, tuned for the fast non-thinking Groq tier) can be entirely
+    # consumed by reasoning, leaving an EMPTY answer — the persistent
+    # "returned empty content" failure. Enforce a floor so the chain-of-thought
+    # and the JSON answer both fit. Tunable via DEEPSEEK_MAX_TOKENS.
+    try:
+        floor = int(os.getenv("DEEPSEEK_MAX_TOKENS", "8000"))
+    except ValueError:
+        floor = 8000
+    effective_max_tokens = max(int(max_tokens or 0), floor)
+
     payload = {
         "model": model,
         "temperature": temperature,
-        "max_tokens": max_tokens,
+        "max_tokens": effective_max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -152,18 +165,49 @@ def _deepseek_request(system_prompt: str, user_content: str,
     for i, api_key in enumerate(keys):
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         for attempt, delay in enumerate(backoff_delays):
+            is_last = attempt >= len(backoff_delays) - 1
             try:
-                resp = requests.post(DEEPSEEK_BASE, headers=headers, json=payload, timeout=120)
+                # (connect, read) tuple: fail fast if the connection can't even
+                # be established (e.g. a TUN VPN that hasn't routed yet) so we
+                # retry instead of hanging, but keep a generous read window —
+                # large shot-list / ranking generations legitimately take a while.
+                resp = requests.post(DEEPSEEK_BASE, headers=headers, json=payload, timeout=(10, 120))
                 resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"]
+                content = resp.json()["choices"][0]["message"]["content"]
+                if content and content.strip():
+                    return content
+                # DeepSeek occasionally returns a 200 with EMPTY content (a
+                # documented quirk, more likely when a flaky link truncates the
+                # stream). Returning "" would make the caller's json.loads raise
+                # "Expecting value: line 1 column 1 (char 0)" and fall straight to
+                # the free tier — so treat empty content as transient and retry.
+                last_error = ValueError("DeepSeek returned empty content")
+                if not is_last:
+                    print(f"DeepSeek key {i+1} returned empty content. Waiting {delay}s…")
+                    time.sleep(delay)
+                    continue
+                break  # exhausted retries for this key → try the next key
             except Exception as e:
                 last_error = e
                 status = getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
-                if status == 429 or status >= 500:
-                    if attempt < len(backoff_delays) - 1:
-                        print(f"DeepSeek key {i+1} hit {status}. Waiting {delay}s…")
-                        time.sleep(delay)
-                        continue
+                # Retry transient conditions: HTTP 429/5xx, a connection-level
+                # cut (ChunkedEncodingError / ConnectionError / Timeout), or an
+                # empty/truncated body that won't parse (JSONDecodeError) — all
+                # common behind a VPN/proxy or when the provider drops a stream.
+                # These are not real rejections, so one shot then falling back to
+                # the free tier wastes the paid model.
+                transient = (
+                    status == 429
+                    or status >= 500
+                    or isinstance(e, (ChunkedEncodingError, ConnectionError, Timeout,
+                                      json.JSONDecodeError))
+                )
+                if transient and not is_last:
+                    reason = status or type(e).__name__
+                    print(f"DeepSeek key {i+1} transient error ({reason}). Waiting {delay}s…")
+                    time.sleep(delay)
+                    continue
+                if transient:
                     break  # exhausted retries for this key → try the next key
                 # 400/401/402/403 etc. — retrying won't help; surface it.
                 raise

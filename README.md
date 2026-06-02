@@ -173,7 +173,8 @@ Optional toggles and tuning knobs, all off/default unless set:
 |----------|---------|--------|
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` | `false` | Run the subject-segmentation pre-pass (Step 2 `🧭`) |
 | `ENABLE_AUTO_SELECTION` | `false` | Auto-bind the top-ranked clip per shot (Step 4 `🤖`) |
-| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | DeepSeek model id |
+| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | DeepSeek model id (e.g. `deepseek-v4-flash`, or `deepseek-chat` for a non-thinking model) |
+| `DEEPSEEK_MAX_TOKENS` | `8000` | Min token budget per DeepSeek call — `v4-pro` "thinks" by default and reasoning counts against `max_tokens`, so too small a cap returns empty content |
 | `RANK_BATCH_SIZE` | `6` | Shots judged per ranking LLM call |
 | `RANK_MAX_WORKERS` | `3` | Concurrent ranking calls (lower under rate pressure) |
 | `RANK_JITTER_MIN` / `RANK_JITTER_MAX` | `0.5` / `1.5` | Random delay (s) before each ranking call; set `MAX=0` to disable |
