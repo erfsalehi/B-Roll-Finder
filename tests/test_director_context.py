@@ -190,6 +190,54 @@ def test_director_block_size_env_controls_call_count(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_auto_select_avoids_back_to_back_duplicate():
+    shots = [
+        _shot(slot_id=1, video_results=[{"url": "same"}, {"url": "alt1"}]),
+        _shot(slot_id=2, video_results=[{"url": "same"}, {"url": "alt2"}]),
+    ]
+    auto_select_top_candidates(shots)
+    assert shots[0]["selected_results"][0]["url"] == "same"
+    assert shots[1]["selected_results"][0]["url"] == "alt2"  # avoided the repeat
+
+
+def test_auto_select_allows_duplicate_when_no_alternative():
+    # Graceful degradation: a slot is never left empty just to avoid a repeat.
+    shots = [
+        _shot(slot_id=1, video_results=[{"url": "same"}]),
+        _shot(slot_id=2, video_results=[{"url": "same"}]),
+    ]
+    auto_select_top_candidates(shots)
+    assert shots[1]["selected_results"][0]["url"] == "same"
+
+
+def test_auto_select_variety_window_spans_multiple_shots():
+    shots = [
+        _shot(slot_id=1, video_results=[{"url": "A"}, {"url": "x1"}]),
+        _shot(slot_id=2, video_results=[{"url": "B"}, {"url": "x2"}]),
+        _shot(slot_id=3, video_results=[{"url": "A"}, {"url": "C"}]),  # A still in window
+    ]
+    auto_select_top_candidates(shots, lookback=3)
+    assert shots[2]["selected_results"][0]["url"] == "C"
+
+
+def test_auto_select_variety_avoids_repeating_manual_neighbor():
+    shots = [
+        _shot(slot_id=1, selected_results=[{"url": "manual"}], video_results=[{"url": "x"}]),
+        _shot(slot_id=2, video_results=[{"url": "manual"}, {"url": "fresh"}]),
+    ]
+    auto_select_top_candidates(shots)
+    assert shots[1]["selected_results"][0]["url"] == "fresh"  # avoided the manual neighbor
+
+
+def test_auto_select_lookback_zero_disables_variety():
+    shots = [
+        _shot(slot_id=1, video_results=[{"url": "same"}, {"url": "alt"}]),
+        _shot(slot_id=2, video_results=[{"url": "same"}, {"url": "alt2"}]),
+    ]
+    auto_select_top_candidates(shots, lookback=0)
+    assert shots[1]["selected_results"][0]["url"] == "same"  # no variety penalty
+
+
 def test_clear_auto_selections_only_clears_auto_picks():
     auto = _shot(slot_id=1, selected_results=[{"url": "a"}], auto_selected=True)
     manual = _shot(slot_id=2, selected_results=[{"url": "b"}])  # no auto flag

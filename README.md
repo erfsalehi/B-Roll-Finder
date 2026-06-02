@@ -185,6 +185,7 @@ Optional toggles and tuning knobs, all off/default unless set:
 |----------|---------|--------|
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` | `false` | Run the subject-segmentation pre-pass (Step 2 `🧭`) |
 | `ENABLE_AUTO_SELECTION` | `false` | Auto-bind the top-ranked clip per shot (Step 4 `🤖`) |
+| `AUTO_SELECT_LOOKBACK` | `3` | Auto-select variety guard: don't reuse the same clip within this many recent shots (picks the next alternative instead). `0` disables |
 | `DIRECTOR_BLOCK_SIZE` | `20` | Transcription segments per shot-list LLM call. Raise it (e.g. `40`) on long transcripts to cut the number of calls and ease rate limits |
 | `DEEPSEEK_MODEL_FAST` | `deepseek/deepseek-v4-flash` | Model for the fast tier (loop calls) |
 | `DEEPSEEK_MODEL_SMART` | `deepseek/deepseek-v4-pro` | Model for the smart tier (global passes, reasoning on) |

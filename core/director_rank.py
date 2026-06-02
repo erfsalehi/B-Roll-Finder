@@ -298,38 +298,78 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
     }
 
 
-def auto_select_top_candidates(shots: list, start_slot_id=None) -> list:
-    """Phase-3 auto-selection: bind the best ranked candidate per shot.
+def _asset_ident(c: dict):
+    """Stable-ish identifier for a candidate clip, used for variety dedup."""
+    return c.get("url") or c.get("clip_url") or c.get("page_url") or c.get("title") or id(c)
+
+
+def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None) -> list:
+    """Phase-3 auto-selection: bind the best ranked candidate per shot, with a
+    deterministic look-back variety guard.
 
     Decoupled post-processing for ``ENABLE_AUTO_SELECTION``. For every shot that
-    still has no manual pick, set ``selected_results`` to the top non-irrelevant
-    candidate (falling back to the first candidate when the ranker flagged them
-    all) and mark it ``auto_selected`` so the review UI can badge it.
+    still has no manual pick, set ``selected_results`` to the best candidate and
+    mark it ``auto_selected`` so the review UI can badge it. "Best" means the
+    top non-irrelevant candidate (the ranker already sorted them best→worst) —
+    *unless* that exact clip was used within the last ``lookback`` bound shots,
+    in which case we walk down to the next alternative to avoid the same visual
+    appearing back-to-back. If no fresh alternative exists the duplicate is
+    allowed (graceful degradation — a slot is never left empty).
 
-    Designed to run after :func:`rank_shot_candidates`, which has already
-    reordered ``video_results`` best→worst. It never overwrites an existing
-    selection, so it is idempotent and safe to re-run, and the editor can always
-    override an automatic pick by hand in review.
+    The window includes manual picks and earlier auto-picks alike, so an
+    automatic pick won't repeat a clip the editor placed next to it. Identity is
+    by ``url`` (falling back to title). ``lookback`` defaults to
+    ``AUTO_SELECT_LOOKBACK`` (env, default 3); 0 disables the guard.
 
-    ``start_slot_id`` restricts auto-selection to shots whose ``slot_id`` is at
-    or after that number; earlier shots are left untouched for manual review.
-    ``None`` (the default) auto-selects every eligible shot.
+    Never overwrites an existing selection, so it is idempotent and safe to
+    re-run. ``start_slot_id`` restricts NEW auto-picks to shots at/after that
+    number; earlier shots are left for manual review (but their existing picks
+    still feed the variety window).
     """
+    from collections import deque
+
+    if lookback is None:
+        try:
+            lookback = int(os.getenv("AUTO_SELECT_LOOKBACK", "3"))
+        except ValueError:
+            lookback = 3
+    lookback = max(0, lookback)
+    window = deque(maxlen=lookback) if lookback else None
+
+    def _remember(c):
+        if window is not None and c is not None:
+            window.append(_asset_ident(c))
+
     for shot in shots:
         if shot.get("priority") == "none" or shot.get("skipped"):
+            continue
+        # Respect any pick the editor (or a previous run) already made — but feed
+        # it into the look-back window so later auto-picks avoid repeating it.
+        existing = shot.get("selected_results")
+        if existing:
+            _remember(existing[0])
             continue
         if start_slot_id is not None and shot.get("slot_id", 0) < start_slot_id:
             continue
         candidates = shot.get("video_results") or []
         if not candidates:
             continue
-        # Respect any pick the editor (or a previous run) already made.
-        if shot.get("selected_results"):
-            continue
 
-        top = next((c for c in candidates if not c.get("irrelevant")), candidates[0])
-        shot["selected_results"] = [top]
+        # Prefer the best non-irrelevant candidate whose identifier isn't in the
+        # recent window; fall back to the top non-irrelevant, then the first
+        # candidate. (An empty window — first pick or lookback=0 — just takes the
+        # top, preserving the original behaviour.)
+        non_irrelevant = [c for c in candidates if not c.get("irrelevant")]
+        pool = non_irrelevant or candidates
+        if window:
+            recent = set(window)
+            chosen = next((c for c in pool if _asset_ident(c) not in recent), pool[0])
+        else:
+            chosen = pool[0]
+
+        shot["selected_results"] = [chosen]
         shot["auto_selected"] = True
+        _remember(chosen)
     return shots
 
 
