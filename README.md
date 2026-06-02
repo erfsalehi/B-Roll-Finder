@@ -46,7 +46,11 @@ Upload script + audio
 
 ## Fully Automatic Mode
 
-Upload your voiceover, click **🚀 Run everything automatically**, and the app drives the entire pipeline with default settings — transcribe → topic → shot list → fetch → drop SD YouTube → rank → auto-select → **Step 5.5 QA review** — then stops so you can review and download. A live status panel shows each stage. Tick **"Also download automatically"** to have it kick off the download too once the review is done. Everything below still works step-by-step if you'd rather drive it manually.
+Upload your voiceover, click **🚀 Run everything automatically**, and the app drives the entire pipeline with default settings — transcribe → topic → shot list → fetch → drop SD YouTube → rank → auto-select → **Step 5.5 QA review** — then stops so you can review and download. A progress bar + live status panel show each stage. Tick **"Also download automatically"** to have it kick off the download too once the review is done. Everything below still works step-by-step if you'd rather drive it manually.
+
+### Telegram bot (run jobs from your phone)
+
+The same pipeline runs **headless** (`core/pipeline.py`), so you can trigger it remotely. Run `python -m bot.telegram_bot` on an always-on machine (e.g. the office laptop), then **send the bot a voice message or audio file**: it runs the full pipeline — including downloading the clips and writing the Premiere XML into the project folder — and replies with a summary + the FCPXML attached, posting per-stage progress as it goes. By the time you reach the office, the project is downloaded and ready to edit. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USERS` (fail-closed allowlist) in `.env`.
 
 ---
 
