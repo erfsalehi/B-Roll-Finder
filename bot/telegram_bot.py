@@ -21,12 +21,17 @@ only the small FCPXML is sent back over Telegram.
 
 import os
 import time
+import shutil
 
 import requests
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
 _AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac")
+
+# Whether a pipeline job is currently running (so /status can report it and a
+# second audio file can be politely deferred instead of overloading the host).
+_BUSY = {"active": False, "project": None}
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -167,18 +172,98 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
     def _progress(step, total, label):
         edit_message(chat_id, msg_id, f"⚙️ [{step}/{total}] {label}…  ·  {proj}")
 
+    _BUSY.update(active=True, project=proj)
     try:
         result = run_pipeline_headless(audio_path, project_name=proj, download=True,
                                        progress_callback=_progress)
     except Exception as e:
         send_message(chat_id, f"❌ Pipeline failed for '{proj}': {e}")
         return {}
+    finally:
+        _BUSY.update(active=False, project=None)
 
     send_message(chat_id, format_summary(proj, result))
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
         send_document(chat_id, xml_path, caption=f"{proj} — Premiere XML")
     return result
+
+
+# ── health / status check ──────────────────────────────────────────────────────
+
+# Lightweight reachability probes — a general-connectivity endpoint plus the API
+# hosts the pipeline actually needs (useful behind a TUN VPN, where the tunnel
+# may be up for some hosts and not others).
+_PROBE_URLS = [
+    ("internet", "https://www.google.com/generate_204"),
+    ("Groq", "https://api.groq.com"),
+    ("OpenRouter", "https://openrouter.ai"),
+]
+
+
+def _probe_internet(timeout: int = 8):
+    """Return ``(ok, detail)``. ``ok`` is True if any host responds at all (any
+    HTTP status counts — only connection/timeout errors are failures)."""
+    reachable, failed = [], []
+    for name, url in _PROBE_URLS:
+        try:
+            requests.head(url, timeout=timeout, allow_redirects=True)
+            reachable.append(name)
+        except Exception:
+            failed.append(name)
+    detail = "reachable: " + (", ".join(reachable) or "none")
+    if failed:
+        detail += "  ·  unreachable: " + ", ".join(failed)
+    return bool(reachable), detail
+
+
+def check_health(timeout: int = 8) -> list:
+    """Return a list of ``(name, ok, detail)`` health checks for the host:
+    required keys, search sources, internet/API reachability, ffmpeg, and that
+    the pipeline imports cleanly."""
+    checks = []
+
+    has_groq = bool(os.getenv("GROQ_API_KEY"))
+    checks.append(("Groq key", has_groq, "set" if has_groq else "MISSING — required"))
+
+    srcs = [n for n, k in (("Pexels", "PEXELS_API_KEY"), ("Pixabay", "PIXABAY_API_KEY"),
+                           ("YouTube", "YOUTUBE_API_KEY")) if os.getenv(k)]
+    checks.append(("Search sources", bool(srcs), ", ".join(srcs) or "NONE enabled"))
+
+    ds = bool(os.getenv("DEEPSEEK_API_KEY"))
+    checks.append(("DeepSeek (OpenRouter)", ds, "set" if ds else "not set (free tier)"))
+
+    net_ok, net_detail = _probe_internet(timeout)
+    checks.append(("Internet", net_ok, net_detail))
+
+    ff = shutil.which("ffmpeg") is not None
+    checks.append(("ffmpeg", ff, "found" if ff else "MISSING — needed for downloads"))
+
+    try:
+        import core.pipeline  # noqa: F401
+        checks.append(("Pipeline", True, "ready"))
+    except Exception as e:
+        checks.append(("Pipeline", False, f"import error: {e}"))
+
+    return checks
+
+
+def format_health(checks: list, busy: dict = None) -> str:
+    lines = ["🟢 Bot online — laptop is up and polling."]
+    for name, ok, detail in checks:
+        lines.append(f"{'✅' if ok else '❌'} {name}: {detail}")
+    if busy and busy.get("active"):
+        lines.append(f"⏳ Busy — processing '{busy.get('project', 'a job')}'. Try again when it's done.")
+    else:
+        lines.append("💤 Idle — ready for a voice file.")
+    return "\n".join(lines)
+
+
+def is_status_command(text: str) -> bool:
+    if not text:
+        return False
+    cmd = text.strip().split()[0].split("@")[0].lower()
+    return cmd in ("/status", "/health", "/ping")
 
 
 # ── polling loop ────────────────────────────────────────────────────────────────
@@ -216,15 +301,25 @@ def main() -> None:
             chat_id = (msg.get("chat") or {}).get("id")
             if not is_allowed(user_id, allowed):
                 continue
+            text = msg.get("text") or ""
+            if is_status_command(text):
+                send_message(chat_id, "🔎 Checking…")
+                send_message(chat_id, format_health(check_health(), _BUSY))
+                continue
             file_id, name = extract_audio(msg)
             if file_id:
+                if _BUSY.get("active"):
+                    send_message(chat_id, f"⏳ Still processing '{_BUSY.get('project')}'. "
+                                          "I'll be free once it finishes — send it again then.")
+                    continue
                 try:
                     handle_audio(chat_id, file_id, name)
                 except Exception as e:
+                    _BUSY.update(active=False, project=None)
                     send_message(chat_id, f"❌ Unexpected error: {e}")
-            elif msg.get("text"):
-                send_message(chat_id, "Send me a voice message or an audio file and "
-                                      "I'll build the B-roll project for it.")
+            elif text:
+                send_message(chat_id, "Send me a voice message or an audio file and I'll build "
+                                      "the B-roll project. Send /status to check I'm online and ready.")
 
 
 if __name__ == "__main__":

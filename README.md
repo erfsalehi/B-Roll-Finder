@@ -52,6 +52,8 @@ Upload your voiceover, click **🚀 Run everything automatically**, and the app 
 
 The same pipeline runs **headless** (`core/pipeline.py`), so you can trigger it remotely. Run `python -m bot.telegram_bot` on an always-on machine (e.g. the office laptop), then **send the bot a voice message or audio file**: it runs the full pipeline — including downloading the clips and writing the Premiere XML into the project folder — and replies with a summary + the FCPXML attached, posting per-stage progress as it goes. By the time you reach the office, the project is downloaded and ready to edit. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USERS` (fail-closed allowlist) in `.env`.
 
+Send **`/status`** anytime to confirm the laptop is up and ready before starting — it reports internet/API reachability, ffmpeg, the configured keys, pipeline health, and whether a job is already running.
+
 ---
 
 ## What each step does

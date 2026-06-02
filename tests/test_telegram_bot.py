@@ -76,3 +76,61 @@ def test_format_summary_without_download_section():
     out = tb.format_summary("p", {"n_shots": 5, "n_selected": 5, "n_clips": 9,
                                   "download": None, "qa": {"overall": "ok", "issues": []}})
     assert "Downloaded:" not in out and "Shots: 5" in out
+
+
+# ── health / status command ────────────────────────────────────────────────────
+
+def test_is_status_command_matches_variants():
+    assert tb.is_status_command("/status")
+    assert tb.is_status_command("/health")
+    assert tb.is_status_command("/ping")
+    assert tb.is_status_command("/status@MyBot")   # group-mention form
+    assert not tb.is_status_command("hello")
+    assert not tb.is_status_command("")
+
+
+def test_check_health_reports_keys_and_pipeline(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "g")
+    monkeypatch.setenv("PEXELS_API_KEY", "p")
+    monkeypatch.delenv("PIXABAY_API_KEY", raising=False)
+    monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+    monkeypatch.setattr(tb, "_probe_internet", lambda timeout=8: (True, "reachable: internet"))
+    checks = dict((name, (ok, detail)) for name, ok, detail in tb.check_health())
+    assert checks["Groq key"][0] is True
+    assert checks["Search sources"][0] is True and "Pexels" in checks["Search sources"][1]
+    assert checks["Internet"][0] is True
+    assert checks["Pipeline"][0] is True   # core.pipeline imports cleanly
+
+
+def test_check_health_flags_missing_groq(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr(tb, "_probe_internet", lambda timeout=8: (True, "ok"))
+    checks = dict((name, ok) for name, ok, _ in tb.check_health())
+    assert checks["Groq key"] is False
+
+
+def test_probe_internet_ok_when_any_host_responds(monkeypatch):
+    calls = {"n": 0}
+    def _head(url, timeout=8, allow_redirects=True):
+        calls["n"] += 1
+        if "google" in url:
+            return object()          # responded
+        raise OSError("no route")    # others unreachable
+    monkeypatch.setattr(tb.requests, "head", _head)
+    ok, detail = tb._probe_internet()
+    assert ok is True and "internet" in detail and "unreachable" in detail
+
+
+def test_probe_internet_fails_when_all_down(monkeypatch):
+    monkeypatch.setattr(tb.requests, "head",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+    ok, _ = tb._probe_internet()
+    assert ok is False
+
+
+def test_format_health_shows_busy_state():
+    checks = [("Groq key", True, "set")]
+    out = tb.format_health(checks, busy={"active": True, "project": "myvid"})
+    assert "Busy" in out and "myvid" in out
+    idle = tb.format_health(checks, busy={"active": False})
+    assert "Idle" in idle
