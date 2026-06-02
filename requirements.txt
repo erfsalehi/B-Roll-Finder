@@ -7,6 +7,9 @@ streamlit==1.57.0
 python-dotenv==1.2.2
 tenacity==9.1.4
 requests==2.33.1
+# SOCKS proxy support for requests — lets the Telegram bot route through a VPN's
+# local SOCKS proxy (BOT_PROXY=socks5://127.0.0.1:PORT) where Telegram is blocked.
+PySocks==1.7.1
 pytest==8.4.2
 faiss-cpu
 sentence-transformers
