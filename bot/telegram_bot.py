@@ -295,7 +295,10 @@ def _run_job(chat_id, file_id, name) -> None:
 def main() -> None:
     try:
         from dotenv import load_dotenv
-        load_dotenv(".env")
+        # Load .env from the project root (parent of this bot/ folder) so it works
+        # regardless of the current working directory the bot is launched from.
+        _root_env = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+        load_dotenv(_root_env if os.path.exists(_root_env) else ".env")
     except Exception:
         pass
 

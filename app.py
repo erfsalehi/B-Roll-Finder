@@ -720,6 +720,15 @@ def render_classic_mode():
                                              value=os.getenv("FREESOUND_API_KEY", ""),
                                              type="password",
                                              help="Required for automatic sound effects downloads.")
+            tg_token_input   = st.text_input("Telegram Bot Token",
+                                             value=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+                                             type="password",
+                                             help="Optional. From @BotFather. Saving here writes it to .env so "
+                                                  "`python -m bot.telegram_bot` picks it up (restart the bot after saving).")
+            tg_users_input   = st.text_input("Telegram Allowed User IDs",
+                                             value=os.getenv("TELEGRAM_ALLOWED_USERS", ""),
+                                             help="Comma-separated numeric Telegram user id(s) (from @userinfobot) "
+                                                  "allowed to use the bot. Empty = bot denies everyone.")
             st.markdown("&nbsp;")
         _browser_options = ["None", "chrome", "firefox", "edge", "brave", "safari", "opera", "chromium"]
         _current_browser = os.getenv("YT_COOKIE_BROWSER", "None")
@@ -747,6 +756,8 @@ def render_classic_mode():
                 if pixabay_input:    set_key(ENV_FILE, "PIXABAY_API_KEY",    pixabay_input)
                 if youtube_input:    set_key(ENV_FILE, "YOUTUBE_API_KEY",    youtube_input)
                 if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
+                if tg_token_input:   set_key(ENV_FILE, "TELEGRAM_BOT_TOKEN",     tg_token_input)
+                set_key(ENV_FILE, "TELEGRAM_ALLOWED_USERS", tg_users_input or "")
                 set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
@@ -1638,6 +1649,16 @@ elif app_mode in ["Director", "Smart Mode"]:
                                              value=os.getenv("FREESOUND_API_KEY", ""),
                                              type="password", key="d_free",
                                              help="Required for automatic sound effects downloads.")
+            tg_token_input   = st.text_input("Telegram Bot Token",
+                                             value=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+                                             type="password", key="d_tg_token",
+                                             help="Optional. From @BotFather. Saving here writes it to .env so "
+                                                  "`python -m bot.telegram_bot` picks it up (restart the bot after saving).")
+            tg_users_input   = st.text_input("Telegram Allowed User IDs",
+                                             value=os.getenv("TELEGRAM_ALLOWED_USERS", ""),
+                                             key="d_tg_users",
+                                             help="Comma-separated numeric Telegram user id(s) (from @userinfobot) "
+                                                  "allowed to use the bot. Empty = bot denies everyone.")
             st.markdown("&nbsp;")  # vertical spacer to align rows
         _browser_options_d = ["None", "chrome", "firefox", "edge", "brave", "safari", "opera", "chromium"]
         _current_browser_d = os.getenv("YT_COOKIE_BROWSER", "None")
@@ -1665,6 +1686,8 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if openrouter_2_input: set_key(ENV_FILE, "OPENROUTER_API_KEY_2", openrouter_2_input)
                 if deepseek_input:   set_key(ENV_FILE, "DEEPSEEK_API_KEY",   deepseek_input)
                 if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
+                if tg_token_input:   set_key(ENV_FILE, "TELEGRAM_BOT_TOKEN",     tg_token_input)
+                set_key(ENV_FILE, "TELEGRAM_ALLOWED_USERS", tg_users_input or "")
                 set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser_d)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
