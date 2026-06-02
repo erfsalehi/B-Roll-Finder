@@ -729,6 +729,11 @@ def render_classic_mode():
                                              value=os.getenv("TELEGRAM_ALLOWED_USERS", ""),
                                              help="Comma-separated numeric Telegram user id(s) (from @userinfobot) "
                                                   "allowed to use the bot. Empty = bot denies everyone.")
+            bot_proxy_input  = st.text_input("Bot Proxy (where Telegram is blocked)",
+                                             value=os.getenv("BOT_PROXY", ""),
+                                             help="Optional. Route the bot through your VPN's local proxy, e.g. "
+                                                  "http://127.0.0.1:10809 or socks5://127.0.0.1:10808 (V2RayN/Hiddify). "
+                                                  "Leave blank if Telegram is reachable directly (e.g. on a server).")
             st.markdown("&nbsp;")
         _browser_options = ["None", "chrome", "firefox", "edge", "brave", "safari", "opera", "chromium"]
         _current_browser = os.getenv("YT_COOKIE_BROWSER", "None")
@@ -758,6 +763,7 @@ def render_classic_mode():
                 if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
                 if tg_token_input:   set_key(ENV_FILE, "TELEGRAM_BOT_TOKEN",     tg_token_input)
                 set_key(ENV_FILE, "TELEGRAM_ALLOWED_USERS", tg_users_input or "")
+                set_key(ENV_FILE, "BOT_PROXY", bot_proxy_input or "")
                 set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
@@ -1659,6 +1665,12 @@ elif app_mode in ["Director", "Smart Mode"]:
                                              key="d_tg_users",
                                              help="Comma-separated numeric Telegram user id(s) (from @userinfobot) "
                                                   "allowed to use the bot. Empty = bot denies everyone.")
+            bot_proxy_input  = st.text_input("Bot Proxy (where Telegram is blocked)",
+                                             value=os.getenv("BOT_PROXY", ""),
+                                             key="d_bot_proxy",
+                                             help="Optional. Route the bot through your VPN's local proxy, e.g. "
+                                                  "http://127.0.0.1:10809 or socks5://127.0.0.1:10808 (V2RayN/Hiddify). "
+                                                  "Leave blank if Telegram is reachable directly (e.g. on a server).")
             st.markdown("&nbsp;")  # vertical spacer to align rows
         _browser_options_d = ["None", "chrome", "firefox", "edge", "brave", "safari", "opera", "chromium"]
         _current_browser_d = os.getenv("YT_COOKIE_BROWSER", "None")
@@ -1688,6 +1700,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if freesound_input:  set_key(ENV_FILE, "FREESOUND_API_KEY",  freesound_input)
                 if tg_token_input:   set_key(ENV_FILE, "TELEGRAM_BOT_TOKEN",     tg_token_input)
                 set_key(ENV_FILE, "TELEGRAM_ALLOWED_USERS", tg_users_input or "")
+                set_key(ENV_FILE, "BOT_PROXY", bot_proxy_input or "")
                 set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser_d)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
