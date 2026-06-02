@@ -413,8 +413,15 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
                      "CRITICAL: For each shot, you MUST include 'start' and 'end' keys in the JSON (floats, in seconds) corresponding to the start of the first segment and end of the last segment in that shot. " \
                      "The 'script_chunk' must contain the verbatim text from those segments."
 
-    # Block segments
-    block_size = 20
+    # Block segments. Each block is ONE LLM call, processed sequentially — so on
+    # a long transcript the call count (and the rate-limit pressure / wall time)
+    # scales with the number of blocks. Raising DIRECTOR_BLOCK_SIZE packs more
+    # segments per call, cutting the number of calls (e.g. 40 → 20 at size 40) at
+    # the cost of larger per-call responses. Default 20.
+    try:
+        block_size = max(1, int(os.getenv("DIRECTOR_BLOCK_SIZE", "20")))
+    except ValueError:
+        block_size = 20
     all_shots = []
     slot_id = 1
 

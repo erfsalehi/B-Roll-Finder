@@ -165,6 +165,31 @@ def test_auto_select_start_slot_id_none_covers_all():
     assert all(s["selected_results"] for s in shots)
 
 
+def test_director_block_size_env_controls_call_count(monkeypatch):
+    # Each block is one LLM call; DIRECTOR_BLOCK_SIZE sets segments-per-call.
+    import core.director as d
+
+    calls = {"n": 0}
+
+    def _fake_llm(client, system_prompt, user_msg, temperature=0.4, max_tokens=3000):
+        calls["n"] += 1
+        return {"shots": [{"script_chunk": "x", "start": 0.0, "end": 1.0,
+                           "search_queries": ["a"]}]}
+
+    monkeypatch.setattr(d, "_call_llm_json", _fake_llm)
+    segments = [{"start": float(i), "end": float(i) + 1, "text": f"seg {i}"} for i in range(40)]
+
+    # Default block size 20 → 40 segments = 2 calls.
+    d.generate_shot_list_from_transcription(segments, api_key="k")
+    assert calls["n"] == 2
+
+    # Doubling the block size halves the calls.
+    calls["n"] = 0
+    monkeypatch.setenv("DIRECTOR_BLOCK_SIZE", "40")
+    d.generate_shot_list_from_transcription(segments, api_key="k")
+    assert calls["n"] == 1
+
+
 def test_clear_auto_selections_only_clears_auto_picks():
     auto = _shot(slot_id=1, selected_results=[{"url": "a"}], auto_selected=True)
     manual = _shot(slot_id=2, selected_results=[{"url": "b"}])  # no auto flag

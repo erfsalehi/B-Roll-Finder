@@ -173,6 +173,7 @@ Optional toggles and tuning knobs, all off/default unless set:
 |----------|---------|--------|
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` | `false` | Run the subject-segmentation pre-pass (Step 2 `🧭`) |
 | `ENABLE_AUTO_SELECTION` | `false` | Auto-bind the top-ranked clip per shot (Step 4 `🤖`) |
+| `DIRECTOR_BLOCK_SIZE` | `20` | Transcription segments per shot-list LLM call. Raise it (e.g. `40`) on long transcripts to cut the number of calls and ease rate limits |
 | `DEEPSEEK_MODEL` | `deepseek/deepseek-v4-pro` | OpenRouter model slug for the preferred tier (e.g. `deepseek/deepseek-v4-flash`, which is faster) |
 | `DEEPSEEK_REASONING` | `off` | Chain-of-thought is **disabled by default** — for JSON extraction it just burns tokens, returns empty content, and is slow. Set `on` to re-enable |
 | `DEEPSEEK_MAX_TOKENS` | `8000` | Min token budget per DeepSeek call (matters mainly when reasoning is on) |
