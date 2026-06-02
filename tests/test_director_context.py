@@ -87,14 +87,15 @@ def _shot(**kw):
     return base
 
 
-def test_auto_select_binds_top_non_irrelevant():
+def test_auto_select_binds_top_non_irrelevant_first():
+    # Default min_clips=2 → top two non-irrelevant, best first, irrelevant skipped.
     shot = _shot(video_results=[
         {"url": "a", "irrelevant": True},
         {"url": "b"},
         {"url": "c"},
     ])
     auto_select_top_candidates([shot])
-    assert [r["url"] for r in shot["selected_results"]] == ["b"]
+    assert [r["url"] for r in shot["selected_results"]] == ["b", "c"]
     assert shot["auto_selected"] is True
 
 
@@ -104,8 +105,36 @@ def test_auto_select_all_irrelevant_falls_back_to_first():
         {"url": "b", "irrelevant": True},
     ])
     auto_select_top_candidates([shot])
-    assert [r["url"] for r in shot["selected_results"]] == ["a"]
+    assert shot["selected_results"][0]["url"] == "a"  # best (least-bad) first
     assert shot["auto_selected"] is True
+
+
+def test_auto_select_scales_clip_count_with_duration():
+    shot = _shot(slot_id=1, duration_needed_sec=30.0,
+                 video_results=[{"url": f"u{i}"} for i in range(10)])
+    auto_select_top_candidates([shot])
+    assert len(shot["selected_results"]) == 6   # ceil(30 / 5)
+
+
+def test_auto_select_short_shot_still_gets_min_two():
+    shot = _shot(slot_id=1, duration_needed_sec=4.0,
+                 video_results=[{"url": "a"}, {"url": "b"}, {"url": "c"}])
+    auto_select_top_candidates([shot])
+    assert len(shot["selected_results"]) == 2   # max(2, ceil(4/5)=1)
+
+
+def test_auto_select_caps_at_available_distinct_candidates():
+    shot = _shot(slot_id=1, duration_needed_sec=60.0,
+                 video_results=[{"url": "a"}, {"url": "b"}])
+    auto_select_top_candidates([shot])
+    assert len(shot["selected_results"]) == 2   # only 2 distinct available
+
+
+def test_auto_select_respects_max_clips():
+    shot = _shot(slot_id=1, duration_needed_sec=100.0,
+                 video_results=[{"url": f"u{i}"} for i in range(20)])
+    auto_select_top_candidates([shot], max_clips=8)
+    assert len(shot["selected_results"]) == 8
 
 
 def test_auto_select_never_overwrites_manual_pick():

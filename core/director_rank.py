@@ -1,4 +1,5 @@
 import os
+import math
 import time
 import random
 import concurrent.futures
@@ -303,51 +304,82 @@ def _asset_ident(c: dict):
     return c.get("url") or c.get("clip_url") or c.get("page_url") or c.get("title") or id(c)
 
 
-def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None) -> list:
-    """Phase-3 auto-selection: bind the best ranked candidate per shot, with a
-    deterministic look-back variety guard.
+def _auto_pick_count(shot: dict, seconds_per_clip: float, min_clips: int, max_clips: int) -> int:
+    """How many clips to auto-bind for a shot, scaled by its duration.
 
-    Decoupled post-processing for ``ENABLE_AUTO_SELECTION``. For every shot that
-    still has no manual pick, set ``selected_results`` to the best candidate and
-    mark it ``auto_selected`` so the review UI can badge it. "Best" means the
-    top non-irrelevant candidate (the ranker already sorted them best→worst) —
-    *unless* that exact clip was used within the last ``lookback`` bound shots,
-    in which case we walk down to the next alternative to avoid the same visual
-    appearing back-to-back. If no fresh alternative exists the duplicate is
-    allowed (graceful degradation — a slot is never left empty).
+    Faceless videos want a fresh visual every few seconds, so a long shot needs
+    several clips (laid out sequentially by output.py), while even a short shot
+    gets ``min_clips`` so the editor has an alternative to pick from. Clamped to
+    ``[min_clips, max_clips]``.
+    """
+    try:
+        dur = float(shot.get("duration_needed_sec") or 0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    n = math.ceil(dur / seconds_per_clip) if seconds_per_clip > 0 else min_clips
+    return max(min_clips, min(n, max_clips))
 
-    The window includes manual picks and earlier auto-picks alike, so an
-    automatic pick won't repeat a clip the editor placed next to it. Identity is
-    by ``url`` (falling back to title). ``lookback`` defaults to
-    ``AUTO_SELECT_LOOKBACK`` (env, default 3); 0 disables the guard.
 
-    Never overwrites an existing selection, so it is idempotent and safe to
-    re-run. ``start_slot_id`` restricts NEW auto-picks to shots at/after that
-    number; earlier shots are left for manual review (but their existing picks
-    still feed the variety window).
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
+                               seconds_per_clip=None, min_clips=None,
+                               max_clips=None) -> list:
+    """Phase-3 auto-selection: bind the best ranked clips per shot, scaled by
+    duration, with a deterministic look-back variety guard.
+
+    Decoupled post-processing for ``ENABLE_AUTO_SELECTION``. For every shot with
+    no manual pick, set ``selected_results`` to its best candidates (the ranker
+    already sorted them best→worst) and mark it ``auto_selected``. Two rules:
+
+    * **Count scales with duration** — ``ceil(duration / seconds_per_clip)``,
+      clamped to ``[min_clips, max_clips]`` and to the number of distinct
+      candidates available. output.py then spreads them across the shot, so a 30s
+      shot gets ~6 clips (one every 5s) while a short shot still gets ``min_clips``
+      (≥2) as alternatives. Picks within a shot are always distinct.
+    * **Cross-shot variety** — a clip used within the last ``lookback`` bound
+      shots (manual picks included) is skipped in favour of the next alternative,
+      so the same visual never appears back-to-back. If no fresh alternative
+      exists the duplicate is allowed (a slot is never left empty).
+
+    Defaults come from AUTO_SELECT_SECONDS_PER_CLIP (5), AUTO_SELECT_MIN_CLIPS
+    (2), AUTO_SELECT_MAX_CLIPS (8), AUTO_SELECT_LOOKBACK (3). Never overwrites an
+    existing selection (idempotent, safe to re-run). ``start_slot_id`` restricts
+    NEW auto-picks to shots at/after that number.
     """
     from collections import deque
 
-    if lookback is None:
-        try:
-            lookback = int(os.getenv("AUTO_SELECT_LOOKBACK", "3"))
-        except ValueError:
-            lookback = 3
+    if lookback is None:        lookback = _env_int("AUTO_SELECT_LOOKBACK", 3)
+    if seconds_per_clip is None: seconds_per_clip = _env_int("AUTO_SELECT_SECONDS_PER_CLIP", 5)
+    if min_clips is None:        min_clips = _env_int("AUTO_SELECT_MIN_CLIPS", 2)
+    if max_clips is None:        max_clips = _env_int("AUTO_SELECT_MAX_CLIPS", 8)
     lookback = max(0, lookback)
-    window = deque(maxlen=lookback) if lookback else None
+    min_clips = max(1, min_clips)
+    max_clips = max(min_clips, max_clips)
 
-    def _remember(c):
-        if window is not None and c is not None:
-            window.append(_asset_ident(c))
+    # Each window entry is the set of clip identifiers picked for one shot, so the
+    # look-back spans whole shots (not individual clips) even when shots bind many.
+    recent_shots = deque(maxlen=lookback)
+
+    def _recent_ids() -> set:
+        out = set()
+        for idset in recent_shots:
+            out |= idset
+        return out
 
     for shot in shots:
         if shot.get("priority") == "none" or shot.get("skipped"):
             continue
-        # Respect any pick the editor (or a previous run) already made — but feed
-        # it into the look-back window so later auto-picks avoid repeating it.
+        # Respect any pick the editor (or a previous run) made — but feed it into
+        # the variety window so later auto-picks avoid repeating it.
         existing = shot.get("selected_results")
         if existing:
-            _remember(existing[0])
+            recent_shots.append({_asset_ident(c) for c in existing})
             continue
         if start_slot_id is not None and shot.get("slot_id", 0) < start_slot_id:
             continue
@@ -355,21 +387,26 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None) -
         if not candidates:
             continue
 
-        # Prefer the best non-irrelevant candidate whose identifier isn't in the
-        # recent window; fall back to the top non-irrelevant, then the first
-        # candidate. (An empty window — first pick or lookback=0 — just takes the
-        # top, preserving the original behaviour.)
         non_irrelevant = [c for c in candidates if not c.get("irrelevant")]
         pool = non_irrelevant or candidates
-        if window:
-            recent = set(window)
-            chosen = next((c for c in pool if _asset_ident(c) not in recent), pool[0])
-        else:
-            chosen = pool[0]
 
-        shot["selected_results"] = [chosen]
+        want = _auto_pick_count(shot, seconds_per_clip, min_clips, max_clips)
+        recent = _recent_ids()
+        chosen, chosen_ids = [], set()
+        for _ in range(want):
+            avoid = recent | chosen_ids
+            cand = next((c for c in pool if _asset_ident(c) not in avoid), None)
+            if cand is None:
+                break  # no more distinct/fresh candidates for this shot
+            chosen.append(cand)
+            chosen_ids.add(_asset_ident(cand))
+        if not chosen:  # graceful: never leave the slot empty
+            chosen = [pool[0]]
+            chosen_ids = {_asset_ident(pool[0])}
+
+        shot["selected_results"] = chosen
         shot["auto_selected"] = True
-        _remember(chosen)
+        recent_shots.append(chosen_ids)
     return shots
 
 

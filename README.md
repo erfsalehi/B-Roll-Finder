@@ -60,7 +60,9 @@ All queries fan out in parallel across your chosen sources. The **Clip Library**
 **Step 4 — Rank**  
 An LLM-as-Judge reads each candidate's title, description, dimensions, and the query that found it, then ranks by relevance to the shot's narration and intent. Off-topic clips are hidden from the review grid automatically. Candidates are judged in **batches** (multiple shots per LLM call) with **jittered pacing** between calls, so large projects stay under provider rate limits instead of triggering 429 storms.
 
-*Optional — Auto-selection (`🤖`):* when enabled, ranking also **binds the top-ranked clip to each shot automatically**, so every shot becomes download-ready with no manual pass. You choose the **starting shot number** here (bounded to your actual shot count) — e.g. hand-pick an intro yourself and auto-select everything from shot 4 onward. A **Re-apply** button lets you change the start without paying for another ranking pass; your manual picks are always preserved.
+*Optional — Drop SD YouTube (`🎥`):* a one-click filter checks each YouTube candidate's HD/SD via the Data API — batched (≈1 quota unit per 50 clips) and capped — and removes confirmed-SD clips so only HD footage reaches ranking and selection. Stock clips (already HD) are skipped.
+
+*Optional — Auto-selection (`🤖`):* when enabled, ranking also **binds the best clips to each shot automatically**, so every shot becomes download-ready with no manual pass. It picks **multiple clips scaled to the shot's length** (≈ one per 5s, min 2) — so a 30s shot gets ~6 clips spread across it, and even a short shot gets a couple of alternatives — while a deterministic variety guard avoids repeating the same clip back-to-back. You choose the **starting shot number** here (bounded to your shot count) — e.g. hand-pick an intro yourself and auto-select from shot 4 onward. A **Re-apply** button changes the start without re-ranking; manual picks are always preserved.
 
 **Step 5 — Review & select**  
 A paginated gallery per shot. Clip Library results appear with a purple border and a similarity % + usage count. Select clips, skip shots, or refetch individual shots with new queries. With auto-selection on, this step becomes **optional review/override** — auto-picks are flagged with a `🤖` badge, and picking a different clip clears the badge.
@@ -186,6 +188,9 @@ Optional toggles and tuning knobs, all off/default unless set:
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` | `false` | Run the subject-segmentation pre-pass (Step 2 `🧭`) |
 | `ENABLE_AUTO_SELECTION` | `false` | Auto-bind the top-ranked clip per shot (Step 4 `🤖`) |
 | `AUTO_SELECT_LOOKBACK` | `3` | Auto-select variety guard: don't reuse the same clip within this many recent shots (picks the next alternative instead). `0` disables |
+| `AUTO_SELECT_SECONDS_PER_CLIP` | `5` | Auto-select binds ~1 clip per this many seconds of shot duration (a 30s shot → ~6 clips, spread across it) |
+| `AUTO_SELECT_MIN_CLIPS` | `2` | Minimum clips auto-bound per shot — even a short shot gets alternatives for the editor |
+| `AUTO_SELECT_MAX_CLIPS` | `8` | Cap on clips auto-bound per shot |
 | `DIRECTOR_BLOCK_SIZE` | `20` | Transcription segments per shot-list LLM call. Raise it (e.g. `40`) on long transcripts to cut the number of calls and ease rate limits |
 | `DEEPSEEK_MODEL_FAST` | `deepseek/deepseek-v4-flash` | Model for the fast tier (loop calls) |
 | `DEEPSEEK_MODEL_SMART` | `deepseek/deepseek-v4-pro` | Model for the smart tier (global passes, reasoning on) |

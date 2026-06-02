@@ -2368,6 +2368,44 @@ elif app_mode in ["Director", "Smart Mode"]:
     if has_candidates:
         st.header("Step 4: Rank & Filter Candidates")
         st.caption("AI ranks candidates by visual relevance, flags off-topic clips, and prefers horizontal videos.")
+
+        # Optional: drop SD YouTube candidates via the Data API before ranking.
+        # Batched (50 IDs / call = 1 quota unit) and capped, so it won't blow the
+        # quota. Stock clips are already HD, so only YouTube results are checked.
+        _yt_unchecked = sum(
+            1 for s in st.session_state.get("director_shots", [])
+            for c in (s.get("video_results") or [])
+            if (c.get("source") or "").lower() == "youtube" and not c.get("definition_checked")
+        )
+        if _yt_unchecked:
+            _hc1, _hc2 = st.columns([1, 2])
+            with _hc1:
+                _do_hd = st.button(f"🎥 Drop SD YouTube ({_yt_unchecked})", key="d_hd_filter")
+            with _hc2:
+                st.caption(
+                    "Checks each YouTube clip's HD/SD via the Data API (batched, ~1 quota "
+                    "unit per 50) and removes confirmed-SD ones. Stock clips are skipped."
+                )
+            if _do_hd:
+                if not os.getenv("YOUTUBE_API_KEY"):
+                    st.error("Set a YouTube Data API key in Setup to check HD/SD.")
+                else:
+                    with st.spinner("Checking YouTube HD/SD…"):
+                        from core.director_search import filter_youtube_sd_candidates
+                        _hd_res = filter_youtube_sd_candidates(
+                            st.session_state.director_shots,
+                            api_key=os.getenv("YOUTUBE_API_KEY"),
+                        )
+                    if _hd_res.get("error"):
+                        st.error(_hd_res["error"])
+                    else:
+                        st.success(
+                            f"Checked {_hd_res['checked']} YouTube clip(s): "
+                            f"{_hd_res['hd']} HD, {_hd_res['sd']} SD removed, "
+                            f"{_hd_res['unknown']} unknown (kept)."
+                        )
+                        save_cache()
+                        st.rerun()
         # Read-only display of the topic set at Step 2 (the input lives there
         # to also benefit query generation; we cannot have a second text_input
         # with the same key).

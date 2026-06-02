@@ -111,6 +111,80 @@ def _classic_youtube_candidate(item: dict, query: str) -> dict:
     }
 
 
+def filter_youtube_sd_candidates(shots: list, api_key: str, max_checks: int = 200,
+                                 drop_sd: bool = True, errors: list = None) -> dict:
+    """Check YouTube candidates' HD/SD via the Data API and drop the SD ones.
+
+    Stock clips (Pexels/Pixabay) are virtually always HD, but YouTube results
+    are mixed — and the search step can't always tell. This resolves each unseen
+    YouTube candidate's ``contentDetails.definition`` and, when ``drop_sd`` is
+    set, removes confirmed-SD clips from every shot's ``video_results`` (and from
+    ``selected_results`` if one was already picked).
+
+    To stay friendly to the YouTube quota it uses
+    :func:`fetch_youtube_definitions_batch` (up to 50 IDs per call = 1 quota
+    unit), checks only clips not already ``definition_checked``, and caps the
+    total at ``max_checks`` per run. Returns
+    ``{checked, hd, sd, unknown, removed}``.
+    """
+    from core.stock_apis import fetch_youtube_definitions_batch
+
+    if not api_key:
+        return {"checked": 0, "hd": 0, "sd": 0, "unknown": 0, "removed": 0,
+                "error": "YouTube API key required."}
+
+    # Collect distinct, unchecked YouTube candidates (cap at max_checks).
+    targets, seen = [], set()
+    for s in shots:
+        if s.get("priority") == "none":
+            continue
+        for c in s.get("video_results") or []:
+            if (c.get("source") or "").lower() != "youtube" or c.get("definition_checked"):
+                continue
+            url = c.get("url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            targets.append(c)
+            if len(targets) >= max_checks:
+                break
+        if len(targets) >= max_checks:
+            break
+
+    if not targets:
+        return {"checked": 0, "hd": 0, "sd": 0, "unknown": 0, "removed": 0}
+
+    defs = fetch_youtube_definitions_batch([c.get("url") for c in targets], api_key, errors=errors)
+
+    hd = sd = unknown = 0
+    for c in targets:
+        d = (defs.get(c.get("url")) or "unknown").lower()
+        c["definition"] = d
+        c["definition_checked"] = True
+        if d == "hd":
+            hd += 1
+        elif d == "sd":
+            sd += 1
+        else:
+            unknown += 1
+
+    def _is_sd(c: dict) -> bool:
+        return (c.get("source") or "").lower() == "youtube" and (c.get("definition") or "").lower() == "sd"
+
+    removed = 0
+    if drop_sd:
+        for s in shots:
+            vr = s.get("video_results") or []
+            kept = [c for c in vr if not _is_sd(c)]
+            removed += len(vr) - len(kept)
+            s["video_results"] = kept
+            sel = s.get("selected_results")
+            if sel:
+                s["selected_results"] = [c for c in sel if not _is_sd(c)]
+
+    return {"checked": len(targets), "hd": hd, "sd": sd, "unknown": unknown, "removed": removed}
+
+
 def fetch_more_like_this(shot: dict, query: str, source: str, num_results: int = 6) -> list:
     """Fetch a second page of results for a single (query, source) pair.
 
