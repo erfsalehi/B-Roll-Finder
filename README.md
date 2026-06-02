@@ -65,6 +65,9 @@ An LLM-as-Judge reads each candidate's title, description, dimensions, and the q
 **Step 5 — Review & select**  
 A paginated gallery per shot. Clip Library results appear with a purple border and a similarity % + usage count. Select clips, skip shots, or refetch individual shots with new queries. With auto-selection on, this step becomes **optional review/override** — auto-picks are flagged with a `🤖` badge, and picking a different clip clears the badge.
 
+**Step 5.5 — Final QA review (optional)**  
+An AI "executive producer" reads your whole *selected* timeline in one pass (the smart/reasoning tier) and flags thematic breaks, repeated visuals, pacing problems, or clips that don't match the narration — each pinned to a shot number with a concrete fix. Returns an empty list when the timeline reads as coherent. Run it after selecting, before downloading; jump back to Step 5 to swap any flagged shot.
+
 **Step 6 — AI text overlays**  
 Extract highlights from your script automatically (money amounts, statistics, headings, key concepts). Generate transparent 1920×1080 PNGs with:
 - Per-category colors · font family selector · font size · text opacity

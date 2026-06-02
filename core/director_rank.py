@@ -184,6 +184,120 @@ def _rank_one_batch(batch: list, system_prompt: str, client: Groq,
             shot.setdefault('rank_reason', '')
 
 
+def _load_review_prompt() -> str:
+    prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'timeline_review.txt')
+    with open(prompt_path, 'r', encoding='utf-8') as f:
+        return f.read()
+
+
+def _selected_clip_label(shot: dict) -> str:
+    """Best one-line description of the visual chosen for a shot."""
+    sel = shot.get("selected_results") or []
+    if not sel:
+        return "(no clip selected)"
+    c = sel[0]
+    title = (c.get("title") or c.get("clip_title") or "untitled").strip()
+    src = (c.get("source") or c.get("original_source") or "?")
+    q = c.get("matched_query") or ""
+    extra = f', via "{q}"' if q else ""
+    return f'"{title}" [{src}{extra}]'
+
+
+def build_timeline_summary(shots: list) -> str:
+    """Render the chronological, selected timeline as text for the reviewer.
+
+    One line per shot that actually has a clip bound (priority != 'none',
+    not skipped), showing its time, narration intent, and the chosen visual —
+    enough for an LLM to judge thematic flow, repetition, and pacing.
+    """
+    lines = []
+    for s in shots:
+        if s.get("priority") == "none" or s.get("skipped"):
+            continue
+        if not s.get("selected_results"):
+            continue
+        dur = s.get("duration_needed_sec")
+        dur_str = f"{float(dur):.1f}s" if dur is not None else "?s"
+        intent = (s.get("shot_intent") or s.get("text") or "").strip()[:120]
+        lines.append(
+            f"Shot {s.get('slot_id')} "
+            f"[{s.get('timestamp_start_str', '?')}–{s.get('timestamp_end_str', '?')}, {dur_str}] "
+            f"intent: {intent} | visual: {_selected_clip_label(s)}"
+        )
+    return "\n".join(lines)
+
+
+def review_timeline(shots: list, api_key: str, video_topic: str = "",
+                    custom_instructions: str = "") -> dict:
+    """Stage 5 — a single holistic 'executive producer' pass over the assembled
+    timeline (smart/reasoning tier).
+
+    Reads the chronological list of selected clips and flags thematic breaks,
+    repetition, continuity/pacing problems, and intent mismatches, each pinned to
+    a slot_id with a concrete fix. Returns::
+
+        {"overall": str, "issues": [{"slot_id", "severity", "problem", "suggestion"}],
+         "reviewed": <int shots reviewed>}
+
+    Degrades gracefully: fewer than 2 selected shots, a missing key, or an LLM
+    failure returns an empty issue list with an explanatory ``overall``.
+    """
+    selected = [s for s in shots
+                if s.get("selected_results") and s.get("priority") != "none" and not s.get("skipped")]
+    if len(selected) < 2:
+        return {"overall": "Not enough selected shots to review yet.", "issues": [], "reviewed": len(selected)}
+    if not api_key:
+        return {"overall": "Groq API key required for the review.", "issues": [], "reviewed": 0}
+
+    valid_ids = {s.get("slot_id") for s in selected}
+
+    system_prompt = _load_review_prompt()
+    context = []
+    if video_topic and video_topic.strip():
+        context.append(f"OVERALL VIDEO TOPIC: {video_topic.strip()}")
+    if custom_instructions and custom_instructions.strip():
+        context.append(f"USER STYLE NOTES: {custom_instructions.strip()}")
+    system_prompt = system_prompt.replace("{context_block}", "\n".join(context))
+
+    user_msg = "TIMELINE (chronological):\n" + build_timeline_summary(shots)
+
+    client = Groq(api_key=api_key)
+    try:
+        data = _call_llm_json(client, system_prompt, user_msg,
+                              temperature=0.3, max_tokens=2000, tier="smart")
+    except Exception as e:
+        print(f"Timeline review failed: {e}")
+        return {"overall": f"Review unavailable ({type(e).__name__}).", "issues": [], "reviewed": len(selected)}
+
+    issues = []
+    for it in (data.get("issues") or []):
+        if not isinstance(it, dict):
+            continue
+        sid = it.get("slot_id")
+        if sid not in valid_ids:          # ignore hallucinated / out-of-range slots
+            continue
+        sev = str(it.get("severity", "medium")).lower()
+        if sev not in ("high", "medium", "low"):
+            sev = "medium"
+        problem = str(it.get("problem", "")).strip()
+        if not problem:
+            continue
+        issues.append({
+            "slot_id": sid,
+            "severity": sev,
+            "problem": problem,
+            "suggestion": str(it.get("suggestion", "")).strip(),
+        })
+
+    _order = {"high": 0, "medium": 1, "low": 2}
+    issues.sort(key=lambda x: _order.get(x["severity"], 1))
+    return {
+        "overall": str(data.get("overall", "")).strip() or "Review complete.",
+        "issues": issues,
+        "reviewed": len(selected),
+    }
+
+
 def auto_select_top_candidates(shots: list, start_slot_id=None) -> list:
     """Phase-3 auto-selection: bind the best ranked candidate per shot.
 

@@ -2965,6 +2965,50 @@ elif app_mode in ["Director", "Smart Mode"]:
                             save_cache()
                             st.success("Refetched!")
                             st.rerun()
+    # --- Step 5.5 --- Final QA review (Executive Producer) ---
+    # A single holistic pass over the assembled timeline (smart/reasoning tier),
+    # run before downloading, to catch thematic breaks / repetition / pacing.
+    _qa_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_results")]
+    if len(_qa_shots) >= 2:
+        st.divider()
+        st.subheader("Step 5.5: Final QA Review")
+        st.caption(
+            "An AI 'executive producer' reads your whole selected timeline at once and "
+            "flags jarring visuals, repeats, or pacing issues — pinned to the shot, with a fix."
+        )
+        if st.button("🎬 Review timeline", key="d_qa_review"):
+            if not os.getenv("GROQ_API_KEY"):
+                st.error("Groq API key required.")
+            else:
+                with st.spinner("Reviewing the timeline…"):
+                    try:
+                        from core.director_rank import review_timeline
+                        st.session_state.d_qa_result = review_timeline(
+                            st.session_state.director_shots,
+                            api_key=os.getenv("GROQ_API_KEY"),
+                            video_topic=st.session_state.get("d_video_topic", ""),
+                            custom_instructions=st.session_state.get("d_style", ""),
+                        )
+                    except Exception as e:
+                        st.session_state.d_qa_result = {"overall": f"Review error: {e}", "issues": []}
+                save_cache()
+        _qa = st.session_state.get("d_qa_result")
+        if _qa:
+            if _qa.get("overall"):
+                st.markdown(f"**Verdict:** {_qa['overall']}")
+            _issues = _qa.get("issues") or []
+            if not _issues:
+                st.success("✅ No issues flagged — the timeline reads as coherent.")
+            else:
+                _sev_icon = {"high": "🔴", "medium": "🟠", "low": "🟡"}
+                for _it in _issues:
+                    st.warning(
+                        f"{_sev_icon.get(_it['severity'], '🟠')} **Shot {_it['slot_id']}** "
+                        f"({_it['severity']}): {_it['problem']}"
+                        + (f"\n\n→ _{_it['suggestion']}_" if _it.get('suggestion') else "")
+                    )
+                st.caption("Jump to a flagged shot in Step 5 above to swap its clip, then re-review.")
+
     # --- Step 6 --- Download ---
     selected_shots = [s for s in st.session_state.get("director_shots", []) if s.get("selected_results")]
     if selected_shots:
