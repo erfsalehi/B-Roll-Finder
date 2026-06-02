@@ -54,8 +54,9 @@ def segment_script_structure(segments: list, api_key: str, video_topic: str = ""
     )
 
     try:
+        # Structural pre-pass is a once-per-video global synthesis → smart tier.
         data = _call_llm_json(client, system_prompt, transcript,
-                              temperature=0.2, max_tokens=2000)
+                              temperature=0.2, max_tokens=2000, tier="smart")
     except Exception as e:
         print(f"Script segmentation failed: {e}")
         return {}

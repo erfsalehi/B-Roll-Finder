@@ -9,7 +9,8 @@ import core.keywords as kw
 def _clean_env(monkeypatch):
     # Start every test from a known, key-free environment.
     for var in ("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY_2", "DEEPSEEK_MODEL",
-                "GROQ_API_KEY", "GROQ_API_KEY_2"):
+                "DEEPSEEK_MODEL_FAST", "DEEPSEEK_MODEL_SMART", "DEEPSEEK_REASONING",
+                "DEEPSEEK_MAX_TOKENS", "GROQ_API_KEY", "GROQ_API_KEY_2"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -44,28 +45,54 @@ def test_deepseek_request_uses_endpoint_model_and_json_mode(monkeypatch):
     # Routed through OpenRouter's OpenAI-compatible endpoint.
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer sk-abc"
-    assert captured["payload"]["model"] == "deepseek/deepseek-v4-pro"  # default slug
+    # Default tier is "fast" → flash, reasoning off.
+    assert captured["payload"]["model"] == "deepseek/deepseek-v4-flash"
+    assert captured["payload"]["reasoning"] == {"enabled": False}
     assert captured["payload"]["response_format"] == {"type": "json_object"}
 
 
-def test_deepseek_disables_reasoning_by_default(monkeypatch):
-    # CoT is off by default — it's what starves the JSON answer (empty content).
+def test_deepseek_fast_tier_is_flash_no_reasoning(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
     captured = {}
     monkeypatch.setattr(kw.requests, "post",
                         lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
-    kw._call_deepseek_json("sys", "user")
+    kw._call_deepseek_json("sys", "user", tier="fast")
+    assert captured["payload"]["model"] == "deepseek/deepseek-v4-flash"
     assert captured["payload"]["reasoning"] == {"enabled": False}
 
 
-def test_deepseek_reasoning_can_be_re_enabled(monkeypatch):
+def test_deepseek_smart_tier_is_pro_with_reasoning(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
-    monkeypatch.setenv("DEEPSEEK_REASONING", "on")
     captured = {}
     monkeypatch.setattr(kw.requests, "post",
                         lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
-    kw._call_deepseek_json("sys", "user")
-    assert "reasoning" not in captured["payload"]
+    kw._call_deepseek_json("sys", "user", tier="smart")
+    assert captured["payload"]["model"] == "deepseek/deepseek-v4-pro"
+    assert captured["payload"]["reasoning"] == {"enabled": True}
+
+
+def test_deepseek_tier_model_overrides(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    monkeypatch.setenv("DEEPSEEK_MODEL_FAST", "deepseek/custom-flash")
+    monkeypatch.setenv("DEEPSEEK_MODEL_SMART", "deepseek/custom-pro")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user", tier="fast")
+    assert captured["payload"]["model"] == "deepseek/custom-flash"
+    kw._call_deepseek_json("sys", "user", tier="smart")
+    assert captured["payload"]["model"] == "deepseek/custom-pro"
+
+
+def test_deepseek_reasoning_override_forces_off_on_smart(monkeypatch):
+    # DEEPSEEK_REASONING=off overrides the smart tier's reasoning default.
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    monkeypatch.setenv("DEEPSEEK_REASONING", "off")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user", tier="smart")
+    assert captured["payload"]["reasoning"] == {"enabled": False}
 
 
 def test_deepseek_raises_max_tokens_floor(monkeypatch):

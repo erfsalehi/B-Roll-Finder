@@ -108,12 +108,19 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
 
 
 # ── DeepSeek (optional paid provider, routed via OpenRouter) ──────────────────
-# The preferred paid tier is deepseek-v4-pro, reached through OpenRouter's
-# OpenAI-compatible endpoint (more reliable than the direct DeepSeek endpoint,
-# e.g. behind a TUN VPN). The key lives in the DEEPSEEK_API_KEY slot but is an
-# *OpenRouter* key. When set, _call_llm_json / _call_llm_str try it first.
+# Reached through OpenRouter's OpenAI-compatible endpoint (more reliable than the
+# direct DeepSeek endpoint, e.g. behind a TUN VPN). The key lives in the
+# DEEPSEEK_API_KEY slot but is an *OpenRouter* key. When set, _call_llm_json /
+# _call_llm_str try it first.
+#
+# Two tiers, switched per call with the SAME key:
+#   • "fast"  → deepseek-v4-flash, reasoning OFF — for the high-volume loop calls
+#               (shot slicing, ranking, keywords). Fast, cheap, no CoT starvation.
+#   • "smart" → deepseek-v4-pro,  reasoning ON  — for the once-per-video global
+#               passes (topic, themes, structural pre-pass) that need synthesis.
 DEEPSEEK_BASE = "https://openrouter.ai/api/v1/chat/completions"
-DEEPSEEK_DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
+DEEPSEEK_FAST_DEFAULT = "deepseek/deepseek-v4-flash"
+DEEPSEEK_SMART_DEFAULT = "deepseek/deepseek-v4-pro"
 
 
 def _deepseek_keys() -> list:
@@ -123,27 +130,49 @@ def _deepseek_keys() -> list:
     return [k.strip() for k in keys if k and k.strip()]
 
 
-def _deepseek_request(system_prompt: str, user_content: str,
-                      temperature: float, max_tokens: int, json_mode: bool) -> str:
-    """One OpenAI-compatible call to DeepSeek with per-key 429/5xx backoff.
+def _deepseek_tier(tier: str) -> tuple:
+    """Resolve (model_slug, reasoning_enabled) for a tier.
 
-    Returns the raw message content string. Non-retryable errors (400/401/402/
-    403 — bad request, auth, *out of balance*) raise immediately so the caller
-    can fall back to Groq/OpenRouter rather than burning the backoff schedule.
+    ``"smart"`` → the reasoning model (pro, CoT on); anything else → the fast
+    model (flash, CoT off). Models are overridable via DEEPSEEK_MODEL_FAST /
+    DEEPSEEK_MODEL_SMART (legacy DEEPSEEK_MODEL still seeds the fast model).
+    DEEPSEEK_REASONING, if set, force-overrides the per-tier reasoning default.
+    """
+    if tier == "smart":
+        model = (os.getenv("DEEPSEEK_MODEL_SMART", "").strip() or DEEPSEEK_SMART_DEFAULT)
+        reasoning = True
+    else:
+        model = (os.getenv("DEEPSEEK_MODEL_FAST", "").strip()
+                 or os.getenv("DEEPSEEK_MODEL", "").strip()   # legacy alias
+                 or DEEPSEEK_FAST_DEFAULT)
+        reasoning = False
+    override = os.getenv("DEEPSEEK_REASONING", "").strip().lower()
+    if override in ("1", "true", "yes", "on"):
+        reasoning = True
+    elif override in ("0", "false", "no", "off"):
+        reasoning = False
+    return model, reasoning
+
+
+def _deepseek_request(system_prompt: str, user_content: str,
+                      temperature: float, max_tokens: int, json_mode: bool,
+                      model: str, reasoning: bool) -> str:
+    """One OpenAI-compatible call to DeepSeek-via-OpenRouter with per-key backoff.
+
+    ``model`` / ``reasoning`` are resolved by the caller from the tier. Returns
+    the raw message content string. Non-retryable errors (400/401/402/403 — bad
+    request, auth, *out of balance*) raise immediately so the caller can fall
+    back to Groq/OpenRouter rather than burning the backoff schedule.
     """
     import time
     keys = _deepseek_keys()
     if not keys:
         raise ValueError("No DeepSeek API key configured.")
 
-    model = os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL).strip() or DEEPSEEK_DEFAULT_MODEL
-
-    # deepseek-v4-pro runs in "thinking" (chain-of-thought) mode by default, and
-    # DeepSeek's max_tokens budget INCLUDES the reasoning tokens. The caller's
-    # cap (2000–4000, tuned for the fast non-thinking Groq tier) can be entirely
-    # consumed by reasoning, leaving an EMPTY answer — the persistent
-    # "returned empty content" failure. Enforce a floor so the chain-of-thought
-    # and the JSON answer both fit. Tunable via DEEPSEEK_MAX_TOKENS.
+    # When reasoning is ON, DeepSeek's max_tokens budget INCLUDES the chain-of-
+    # thought, so the caller's cap (2000–4000, tuned for the fast tier) can be
+    # entirely consumed by reasoning and leave an EMPTY answer. Enforce a floor
+    # so CoT + the JSON answer both fit. Tunable via DEEPSEEK_MAX_TOKENS.
     try:
         floor = int(os.getenv("DEEPSEEK_MAX_TOKENS", "8000"))
     except ValueError:
@@ -158,16 +187,13 @@ def _deepseek_request(system_prompt: str, user_content: str,
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
+        # Explicitly toggle CoT via OpenRouter's reasoning control: ON for the
+        # smart tier (synthesis), OFF for the fast tier (deterministic JSON, where
+        # CoT only burns tokens → empty content → latency).
+        "reasoning": {"enabled": bool(reasoning)},
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-
-    # deepseek-v4 "thinks" (chain-of-thought) by default. For our deterministic
-    # JSON extraction that only burns the token budget — leaving an EMPTY answer —
-    # and adds latency to every one of the (many) per-block calls. Disable it via
-    # OpenRouter's reasoning control. Set DEEPSEEK_REASONING=on to keep CoT.
-    if os.getenv("DEEPSEEK_REASONING", "").strip().lower() not in ("1", "true", "yes", "on"):
-        payload["reasoning"] = {"enabled": False}
 
     last_error = None
     backoff_delays = [2, 5, 15]
@@ -226,23 +252,32 @@ def _deepseek_request(system_prompt: str, user_content: str,
 
 
 def _call_deepseek_json(system_prompt: str, user_content: str,
-                        temperature: float = 0.7, max_tokens: int = 2000) -> dict:
+                        temperature: float = 0.7, max_tokens: int = 2000,
+                        tier: str = "fast") -> dict:
+    model, reasoning = _deepseek_tier(tier)
     return json.loads(_deepseek_request(system_prompt, user_content,
-                                        temperature, max_tokens, json_mode=True))
+                                        temperature, max_tokens, True, model, reasoning))
 
 
 def _call_deepseek_str(system_prompt: str, user_content: str,
-                       temperature: float = 0.7, max_tokens: int = 500) -> str:
+                       temperature: float = 0.7, max_tokens: int = 500,
+                       tier: str = "fast") -> str:
+    model, reasoning = _deepseek_tier(tier)
     return _deepseek_request(system_prompt, user_content,
-                             temperature, max_tokens, json_mode=False).strip()
+                             temperature, max_tokens, False, model, reasoning).strip()
 
 
 def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
-                   temperature: float = 0.7, max_tokens: int = 2000) -> dict:
+                   temperature: float = 0.7, max_tokens: int = 2000,
+                   tier: str = "fast") -> dict:
     """
     Provider priority: DeepSeek (if a key is set) → Groq (cycling keys) →
     OpenRouter. DeepSeek is a paid, higher-quality tier, so it leads when
     available; any failure transparently falls back to the free providers.
+
+    ``tier`` selects the DeepSeek model: "fast" (flash, default — loops) or
+    "smart" (pro + reasoning — once-per-video global passes). It's ignored by
+    the Groq/OpenRouter fallbacks, which have their own model config.
     """
     import groq
     import os
@@ -250,7 +285,7 @@ def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
     # Preferred: DeepSeek, when the user opted in with a key.
     if _deepseek_keys():
         try:
-            return _call_deepseek_json(system_prompt, user_content, temperature, max_tokens)
+            return _call_deepseek_json(system_prompt, user_content, temperature, max_tokens, tier=tier)
         except Exception as e:
             print(f"DeepSeek call failed ({type(e).__name__}: {e}); falling back to Groq/OpenRouter.")
 
@@ -283,10 +318,12 @@ def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
     return _call_openrouter_json(system_prompt, user_content, temperature, max_tokens)
 
 def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
-                   temperature: float = 0.7, max_tokens: int = 500) -> str:
+                   temperature: float = 0.7, max_tokens: int = 500,
+                   tier: str = "fast") -> str:
     """
     Provider priority: DeepSeek (if a key is set) → Groq (cycling keys) →
-    OpenRouter, mirroring _call_llm_json for plain-string responses.
+    OpenRouter, mirroring _call_llm_json for plain-string responses. ``tier``
+    selects the DeepSeek model ("fast" flash / "smart" pro+reasoning).
     """
     import groq
     import os
@@ -294,7 +331,7 @@ def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
     # Preferred: DeepSeek, when the user opted in with a key.
     if _deepseek_keys():
         try:
-            return _call_deepseek_str(system_prompt, user_content, temperature, max_tokens)
+            return _call_deepseek_str(system_prompt, user_content, temperature, max_tokens, tier=tier)
         except Exception as e:
             print(f"DeepSeek call failed ({type(e).__name__}: {e}); falling back to Groq/OpenRouter.")
 
@@ -474,7 +511,8 @@ def generate_video_topic(script_text: str, api_key: str) -> str:
     system_prompt = "You are a creative director. Given a video script, summarize what the video is about in one sharp, descriptive sentence. Focus on the core subject matter to help with B-roll search. Do not include quotes."
     
     try:
-        topic = _call_llm_str(client, system_prompt, f"SCRIPT:\n{script_text[:8000]}")
+        # Global single-pass synthesis → smart (reasoning) tier.
+        topic = _call_llm_str(client, system_prompt, f"SCRIPT:\n{script_text[:8000]}", tier="smart")
         return topic.strip('"')
     except Exception as e:
         print(f"Error generating video topic: {e}")
@@ -558,7 +596,8 @@ def generate_global_themes(script_text: str, api_key: str, num_themes: int = 5) 
         system_prompt = f.read().replace("{num_themes}", str(num_themes))
         
     try:
-        data = _call_llm_json(client, system_prompt, f"SCRIPT:\n{script_text}")
+        # Global single-pass thematic synthesis → smart (reasoning) tier.
+        data = _call_llm_json(client, system_prompt, f"SCRIPT:\n{script_text}", tier="smart")
         themes = data.get("themes", [])
         for t in themes:
             t.setdefault('keywords', [])

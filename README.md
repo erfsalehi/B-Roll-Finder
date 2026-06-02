@@ -163,7 +163,16 @@ All text-LLM steps (shot list, ranking, keywords, topic, the context segmenter) 
 DeepSeek (if DEEPSEEK_API_KEY set)  →  Groq (cycles GROQ_API_KEY / _2)  →  OpenRouter
 ```
 
-The DeepSeek tier (`deepseek/deepseek-v4-pro` by default) is reached **through OpenRouter** — put an OpenRouter key in `DEEPSEEK_API_KEY`. It leads when available and transparently falls back to the free providers on any error. Override the model slug with `DEEPSEEK_MODEL` (e.g. `deepseek/deepseek-v4-flash`).
+The DeepSeek tier is reached **through OpenRouter** — put an OpenRouter key in `DEEPSEEK_API_KEY`. It leads when available and transparently falls back to the free providers on any error.
+
+DeepSeek runs as **two model tiers, switched per call with the same key**, matching each task to the right model:
+
+| Tier | Model | Reasoning | Used for |
+|------|-------|-----------|----------|
+| **fast** | `deepseek/deepseek-v4-flash` | off | High-volume loop calls — shot slicing, ranking, keywords. Fast & cheap; no chain-of-thought to starve the JSON answer. |
+| **smart** | `deepseek/deepseek-v4-pro` | on | Once-per-video global passes — video topic, global themes, the structural pre-pass. Single calls that benefit from synthesis, so no rate-limit risk. |
+
+Override slugs with `DEEPSEEK_MODEL_FAST` / `DEEPSEEK_MODEL_SMART`.
 
 ### Advanced configuration (`.env`)
 
@@ -174,9 +183,10 @@ Optional toggles and tuning knobs, all off/default unless set:
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` | `false` | Run the subject-segmentation pre-pass (Step 2 `🧭`) |
 | `ENABLE_AUTO_SELECTION` | `false` | Auto-bind the top-ranked clip per shot (Step 4 `🤖`) |
 | `DIRECTOR_BLOCK_SIZE` | `20` | Transcription segments per shot-list LLM call. Raise it (e.g. `40`) on long transcripts to cut the number of calls and ease rate limits |
-| `DEEPSEEK_MODEL` | `deepseek/deepseek-v4-pro` | OpenRouter model slug for the preferred tier (e.g. `deepseek/deepseek-v4-flash`, which is faster) |
-| `DEEPSEEK_REASONING` | `off` | Chain-of-thought is **disabled by default** — for JSON extraction it just burns tokens, returns empty content, and is slow. Set `on` to re-enable |
-| `DEEPSEEK_MAX_TOKENS` | `8000` | Min token budget per DeepSeek call (matters mainly when reasoning is on) |
+| `DEEPSEEK_MODEL_FAST` | `deepseek/deepseek-v4-flash` | Model for the fast tier (loop calls) |
+| `DEEPSEEK_MODEL_SMART` | `deepseek/deepseek-v4-pro` | Model for the smart tier (global passes, reasoning on) |
+| `DEEPSEEK_REASONING` | _(unset)_ | Emergency override of the per-tier reasoning default (`on`/`off`); leave unset to use each tier's default |
+| `DEEPSEEK_MAX_TOKENS` | `8000` | Min token budget per DeepSeek call (matters mainly for the smart tier, where reasoning counts against it) |
 | `RANK_BATCH_SIZE` | `6` | Shots judged per ranking LLM call |
 | `RANK_MAX_WORKERS` | `3` | Concurrent ranking calls (lower under rate pressure) |
 | `RANK_JITTER_MIN` / `RANK_JITTER_MAX` | `0.5` / `1.5` | Random delay (s) before each ranking call; set `MAX=0` to disable |
