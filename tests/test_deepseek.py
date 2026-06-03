@@ -10,7 +10,9 @@ def _clean_env(monkeypatch):
     # Start every test from a known, key-free environment.
     for var in ("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY_2", "DEEPSEEK_MODEL",
                 "DEEPSEEK_MODEL_FAST", "DEEPSEEK_MODEL_SMART", "DEEPSEEK_REASONING",
-                "DEEPSEEK_MAX_TOKENS", "GROQ_API_KEY", "GROQ_API_KEY_2"):
+                "DEEPSEEK_MAX_TOKENS", "DEEPSEEK_NO_FALLBACK",
+                "OPENROUTER_REQUIRE_PARAMETERS", "OPENROUTER_PROVIDER_SORT",
+                "GROQ_API_KEY", "GROQ_API_KEY_2"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -164,6 +166,58 @@ def test_deepseek_retries_transient_chunked_error(monkeypatch):
     out = kw._call_deepseek_json("sys", "user")
     assert out == {"ok": 1}
     assert calls["n"] == 2   # retried the premature-end, then succeeded
+
+
+class _ProvResp:
+    """Fake OpenRouter response that names the serving provider."""
+    def __init__(self, content, provider=None):
+        self._c, self._p = content, provider
+    def raise_for_status(self):
+        pass
+    def json(self):
+        return {"provider": self._p, "choices": [{"message": {"content": self._c}}]}
+
+
+def test_deepseek_sets_provider_routing(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user")
+    prov = captured["payload"]["provider"]
+    assert prov["allow_fallbacks"] is True
+    assert prov["require_parameters"] is True   # default on
+
+
+def test_deepseek_excludes_provider_after_empty_content(monkeypatch):
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    seen_ignores = []
+    calls = {"n": 0}
+
+    def _post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        seen_ignores.append(json["provider"].get("ignore"))
+        if calls["n"] == 1:
+            return _ProvResp("", provider="BadCo")      # empty from BadCo
+        return _ProvResp('{"ok": 1}', provider="GoodCo")  # content from another
+
+    monkeypatch.setattr(kw.requests, "post", _post)
+    out = kw._call_deepseek_json("sys", "user")
+    assert out == {"ok": 1}
+    assert seen_ignores[0] is None                  # first attempt: nothing excluded
+    assert seen_ignores[1] == ["BadCo"]             # retry excludes the bad provider
+
+
+def test_deepseek_require_parameters_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    monkeypatch.setenv("OPENROUTER_REQUIRE_PARAMETERS", "false")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user")
+    assert "require_parameters" not in captured["payload"]["provider"]
 
 
 def test_deepseek_retries_empty_content_then_succeeds(monkeypatch):

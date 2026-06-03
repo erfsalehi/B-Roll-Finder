@@ -201,6 +201,22 @@ def _deepseek_request(system_prompt: str, user_content: str,
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
 
+    # OpenRouter provider routing. require_parameters restricts routing to upstream
+    # providers that actually support our params (json mode + reasoning) — a common
+    # cause of empty/garbage responses is a provider that silently ignores them.
+    # allow_fallbacks lets OpenRouter switch providers on a hard error. When a
+    # provider returns a 200 with EMPTY content (which OpenRouter counts as
+    # success and won't auto-switch for), we record it and exclude it on the
+    # retry, so we genuinely land on a DIFFERENT provider.
+    require_params = os.getenv("OPENROUTER_REQUIRE_PARAMETERS", "true").strip().lower() in ("1", "true", "yes", "on")
+    base_provider = {"allow_fallbacks": True}
+    if require_params:
+        base_provider["require_parameters"] = True
+    _sort = os.getenv("OPENROUTER_PROVIDER_SORT", "").strip()
+    if _sort:
+        base_provider["sort"] = _sort
+    ignored_providers: list = []
+
     last_error = None
     # When fallback to the free tiers is disabled, retry DeepSeek harder/longer
     # (the user is paying for it and would rather wait than drop to Groq).
@@ -212,6 +228,11 @@ def _deepseek_request(system_prompt: str, user_content: str,
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         for attempt, delay in enumerate(backoff_delays):
             is_last = attempt >= len(backoff_delays) - 1
+            # Route around providers that already gave us junk this run.
+            prov = dict(base_provider)
+            if ignored_providers:
+                prov["ignore"] = list(ignored_providers)
+            payload["provider"] = prov
             try:
                 # (connect, read) tuple: fail fast if the connection can't even
                 # be established (e.g. a TUN VPN that hasn't routed yet) so we
@@ -219,17 +240,19 @@ def _deepseek_request(system_prompt: str, user_content: str,
                 # large shot-list / ranking generations legitimately take a while.
                 resp = requests.post(DEEPSEEK_BASE, headers=headers, json=payload, timeout=(10, 120))
                 resp.raise_for_status()
-                content = resp.json()["choices"][0]["message"]["content"]
+                j = resp.json()
+                served = j.get("provider")  # OpenRouter names the upstream that answered
+                content = j["choices"][0]["message"]["content"]
                 if content and content.strip():
                     return content
-                # DeepSeek occasionally returns a 200 with EMPTY content (a
-                # documented quirk, more likely when a flaky link truncates the
-                # stream). Returning "" would make the caller's json.loads raise
-                # "Expecting value: line 1 column 1 (char 0)" and fall straight to
-                # the free tier — so treat empty content as transient and retry.
-                last_error = ValueError("DeepSeek returned empty content")
+                # 200 with EMPTY content — OpenRouter treats this as success and
+                # won't auto-switch, so exclude this provider and retry on another.
+                if served and served not in ignored_providers:
+                    ignored_providers.append(served)
+                last_error = ValueError(f"DeepSeek returned empty content (provider: {served})")
                 if not is_last:
-                    print(f"DeepSeek key {i+1} returned empty content. Waiting {delay}s…")
+                    print(f"DeepSeek empty content from provider '{served}'. "
+                          f"Excluding it and retrying in {delay}s…")
                     time.sleep(delay)
                     continue
                 break  # exhausted retries for this key → try the next key
