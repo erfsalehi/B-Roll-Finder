@@ -1,10 +1,31 @@
 import subprocess
 import os
 import time
+import threading
 
 # Maximum time (seconds) to allow FFmpeg to normalize a single file.
 # 10 minutes is generous even for large 4K sources on slow hardware.
 _NORMALIZE_TIMEOUT = 600
+
+# ── CPU guards for libx264 re-encoding ───────────────────────────────────────
+# libx264 is itself multi-threaded and grabs every core by default. The
+# DownloadManager can run up to 10 downloads at once (app.py), each able to
+# trigger a normalize, so without limits N encodes × all-cores thrash the box.
+# Cap threads per ffmpeg process and the number of simultaneous encodes so the
+# product stays near the core count, leaving headroom for downloads.
+def _env_int(name: str, default: int) -> int:
+    v = os.getenv(name, "").strip()
+    return int(v) if v.isdigit() and int(v) > 0 else default
+
+def _default_ffmpeg_threads() -> int:
+    try:
+        n = os.cpu_count() or 4
+    except Exception:
+        n = 4
+    return max(1, n // 4)
+
+_FFMPEG_THREADS = _env_int("BROLL_FFMPEG_THREADS", _default_ffmpeg_threads())
+_normalize_sem = threading.Semaphore(_env_int("BROLL_NORMALIZE_CONCURRENCY", 2))
 
 def normalize_video(input_path: str, target_res: str = "1920x1080", task_state: dict = None) -> str:
     """
@@ -40,6 +61,9 @@ def normalize_video(input_path: str, target_res: str = "1920x1080", task_state: 
 
     cmd = [
         "ffmpeg", "-y",
+        # Cap libx264's own thread pool so concurrent encodes don't each grab
+        # every core (see _FFMPEG_THREADS).
+        "-threads", str(_FFMPEG_THREADS),
         "-i", input_path,
         "-vf", (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
@@ -56,48 +80,52 @@ def normalize_video(input_path: str, target_res: str = "1920x1080", task_state: 
         output_path
     ]
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    start = time.monotonic()
+    # Limit how many libx264 encodes run at once (see _normalize_sem). The
+    # semaphore wraps only the encode, not the ffprobe fast-path above, so
+    # already-conformant clips never wait on a slot.
+    with _normalize_sem:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        start = time.monotonic()
 
-    try:
-        while proc.poll() is None:
-            # Respect cancellation from the download manager
-            if task_state and task_state.get('status') == 'cancelled':
-                proc.kill()
-                proc.wait()
-                if os.path.exists(output_path):
+        try:
+            while proc.poll() is None:
+                # Respect cancellation from the download manager
+                if task_state and task_state.get('status') == 'cancelled':
+                    proc.kill()
+                    proc.wait()
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    return input_path  # leave original; caller will clean up
+
+                # Hard timeout — never hang forever
+                if time.monotonic() - start > _NORMALIZE_TIMEOUT:
+                    proc.kill()
+                    proc.wait()
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    raise TimeoutError(
+                        f"FFmpeg timed out after {_NORMALIZE_TIMEOUT}s normalizing {os.path.basename(input_path)}"
+                    )
+
+                time.sleep(0.5)
+
+            if proc.returncode != 0:
+                stderr = proc.stderr.read().decode("utf-8", errors="replace")
+                raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
+
+            # Swap normalized file over the original
+            os.remove(input_path)
+            os.rename(output_path, input_path)
+            return input_path
+
+        except Exception:
+            # Clean up partial output on any failure
+            if os.path.exists(output_path):
+                try:
                     os.remove(output_path)
-                return input_path  # leave original; caller will clean up
-
-            # Hard timeout — never hang forever
-            if time.monotonic() - start > _NORMALIZE_TIMEOUT:
-                proc.kill()
-                proc.wait()
-                if os.path.exists(output_path):
-                    os.remove(output_path)
-                raise TimeoutError(
-                    f"FFmpeg timed out after {_NORMALIZE_TIMEOUT}s normalizing {os.path.basename(input_path)}"
-                )
-
-            time.sleep(0.5)
-
-        if proc.returncode != 0:
-            stderr = proc.stderr.read().decode("utf-8", errors="replace")
-            raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
-
-        # Swap normalized file over the original
-        os.remove(input_path)
-        os.rename(output_path, input_path)
-        return input_path
-
-    except Exception:
-        # Clean up partial output on any failure
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except OSError:
-                pass
-        raise
+                except OSError:
+                    pass
+            raise
 
 def compress_audio_for_whisper(input_path: str) -> str:
     """

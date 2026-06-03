@@ -11,10 +11,11 @@ requests==2.33.1
 # local SOCKS proxy (BOT_PROXY=socks5://127.0.0.1:PORT) where Telegram is blocked.
 PySocks==1.7.1
 pytest==8.4.2
-faiss-cpu
-sentence-transformers
-torch
-torchvision
+# Clip Library semantic search. fastembed serves all-MiniLM-L6-v2 via ONNX
+# runtime — same model/384-dim space as before but NO torch dependency, which
+# matters on the GPU-less server (the torch+CUDA stack was ~2.5 GB). The CLIP
+# "Smart Mode" that needed torch/torchvision/faiss has been removed.
+fastembed
 numpy
 tqdm
 # ── yt-dlp JS challenge solving ──────────────────────────────────────────────

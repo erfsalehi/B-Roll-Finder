@@ -70,26 +70,28 @@ def init_db() -> None:
 def _embed(text: str) -> np.ndarray:
     """
     Returns a normalised float32 embedding vector (384-dim) for text.
-    Lazy-loads all-MiniLM-L6-v2 on first call (~80 MB download once).
+
+    Uses fastembed (ONNX runtime) to serve ``all-MiniLM-L6-v2`` — same model,
+    same 384-dim space as the previous sentence-transformers path, but with no
+    torch dependency (the server is CPU-only and Smart Mode/CLIP is gone). The
+    model downloads once (~90 MB) on first call and is cached under
+    ~/.cache/fastembed. Vectors are L2-normalised so cosine similarity is a
+    plain dot product (see search_library).
     """
-    # Force the PyTorch backend. With Keras 3 installed, transformers tries
-    # the TensorFlow backend and dies with "Keras 3 ... not yet supported;
-    # install tf-keras" — which previously bubbled up through store_clip and
-    # left the whole Clip Library silently empty. sentence-transformers only
-    # needs torch, so opt out of TF/Flax before the import resolves a backend.
-    os.environ.setdefault("USE_TF", "0")
-    os.environ.setdefault("USE_FLAX", "0")
-    os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
     try:
-        from sentence_transformers import SentenceTransformer
+        from fastembed import TextEmbedding
     except ImportError:
         raise ImportError(
-            "sentence-transformers is required for the Clip Library.\n"
-            "Run:  pip install sentence-transformers"
+            "fastembed is required for the Clip Library.\n"
+            "Run:  pip install fastembed"
         )
     if not hasattr(_embed, '_model'):
-        _embed._model = SentenceTransformer('all-MiniLM-L6-v2')
-    vec = _embed._model.encode(text, normalize_embeddings=True)
+        _embed._model = TextEmbedding('sentence-transformers/all-MiniLM-L6-v2')
+    # fastembed.embed yields one vector per input; we pass a single text.
+    vec = np.asarray(next(iter(_embed._model.embed([text]))), dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec = vec / norm
     return vec.astype(np.float32)
 
 

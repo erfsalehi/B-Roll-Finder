@@ -1,0 +1,29 @@
+# Keep the build context (and image) small and free of secrets.
+.git
+.gitignore
+.dockerignore
+Dockerfile
+
+# Secrets & local config — pass these at runtime via --env-file instead.
+.env
+.env.*
+!.env.example
+
+# Local runtime state — recreated in the container / on volumes.
+venv/
+.cache/
+downloads/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Dev-only / docs — not needed at runtime.
+tests/
+scratch/
+*.pdf
+*.docx
+prd_*.txt
+*.zip
+run.bat
+run.sh
+start_bot.bat

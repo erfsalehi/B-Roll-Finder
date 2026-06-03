@@ -8,6 +8,51 @@ The end product is identical to a local run: downloaded clips + a Premiere
 FCPXML under `downloads/<project>/`. You pull the finished project to your
 editing machine (scp or a single zip).
 
+You can deploy either with **Docker** (simplest) or as a **venv + systemd
+service** (sections 1–2). Pick one.
+
+## Option A: Docker (recommended)
+
+A `Dockerfile` at the repo root builds a CPU-only image (ffmpeg included, no
+GPU/torch). Install Docker, then:
+
+```bash
+sudo apt update && sudo apt install -y docker.io git
+git clone https://github.com/erfsalehi/B-Roll-Finder.git
+cd B-Roll-Finder
+# Create .env with your keys (see the list under section 1 below).
+docker build -t broll-finder .
+```
+
+Run the always-on Telegram bot, persisting projects + caches on host volumes so
+the fastembed model and downloads survive restarts:
+
+```bash
+docker run -d --name broll-bot --restart unless-stopped \
+  --env-file .env \
+  -v "$PWD/downloads:/app/downloads" \
+  -v "$PWD/.cache:/app/.cache" \
+  broll-finder
+docker logs -f broll-bot          # live logs
+```
+
+To run the Streamlit UI instead (or alongside, with a different `--name`),
+override the command:
+
+```bash
+docker run -d --name broll-ui --restart unless-stopped \
+  --env-file .env -p 8501:8501 \
+  -v "$PWD/downloads:/app/downloads" -v "$PWD/.cache:/app/.cache" \
+  broll-finder \
+  streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+Reach the UI over an SSH tunnel (`ssh -L 8501:localhost:8501 user@SERVER`)
+rather than exposing it publicly. Update with `git pull && docker build -t
+broll-finder . && docker restart broll-bot`.
+
+## Option B: venv + systemd
+
 ## 1. One-time setup
 
 ```bash
@@ -19,6 +64,22 @@ sudo -u broll -H bash -lc '
   python3 -m venv venv
   ./venv/bin/pip install -r requirements.txt
 '
+```
+
+There is **no GPU/torch stack** — the Clip Library embeds with fastembed (ONNX
+runtime, CPU). On first use it downloads the ~90 MB MiniLM model once into
+`~/.cache/fastembed`.
+
+### Tuning CPU usage (optional)
+
+The app caps its own thread pools so it never saturates every vCPU (it shares
+cores with concurrent downloads and ffmpeg). Defaults are sized for an 8-vCPU
+box; override in `.env` if needed:
+
+```bash
+BROLL_TORCH_THREADS=4        # OMP/BLAS threads for numpy + the ONNX embedder (default: cores/2, max 4)
+BROLL_FFMPEG_THREADS=2       # libx264 threads per normalize encode (default: cores/4)
+BROLL_NORMALIZE_CONCURRENCY=2 # simultaneous libx264 encodes (default: 2)
 ```
 
 Create `/opt/B-Roll-Finder/.env` with your keys (same ones you use locally:

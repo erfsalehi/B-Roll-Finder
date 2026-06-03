@@ -5,6 +5,12 @@ import zipfile
 import io
 import re
 import pandas as pd
+
+# Cap native thread pools (torch/OMP/MKL) before any core.* import pulls them
+# in, so the CPU-only server doesn't oversubscribe cores. See core/runtime.py.
+from core.runtime import configure_runtime
+configure_runtime()
+
 from dotenv import load_dotenv, set_key
 from core.timing import get_audio_duration, parse_script_to_slots, calculate_wps
 from core.keywords import generate_keywords_for_slots, generate_keywords_with_ai_chunking
@@ -1597,7 +1603,7 @@ def render_classic_mode():
                     st.warning("No footage was added. All links might have been filtered by quality/size settings.")
 if app_mode == "Classic Finder":
     render_classic_mode()
-elif app_mode in ["Director", "Smart Mode"]:
+elif app_mode == "Director":
     ensure_shots_have_chunk_ids()
     from core.director_search import fetch_director_footage, clear_query_cache
     from core.director_rank import rank_shot_candidates
@@ -1605,60 +1611,6 @@ elif app_mode in ["Director", "Smart Mode"]:
     from core.output import generate_fcpxml, generate_shot_list_txt, _safe_for_fs
     st.title(f"🎬 B-Roll {app_mode}")
     
-    if app_mode == "Smart Mode":
-        from core.indexer import VideoIndexer
-        from core.smart_search import SmartSearch
-        indexer = VideoIndexer()
-        searcher = SmartSearch()
-        
-        st.info("💡 **The AI searches for visual meaning, not just keywords.**")
-        with st.expander("📦 AI Visual Search Manager (Feed the AI)", expanded=False):
-            st.markdown("### Build Your Foundation")
-            st.caption("Point the AI to your local footage or high-quality YouTube compilations to build your cinematic brain.")
-            
-            tab_yt, tab_local = st.tabs(["Bulk YouTube", "Local Folder"])
-            
-            with tab_yt:
-                lib_urls = st.text_area("Paste YouTube URLs (one per line)", placeholder="https://youtube.com/watch?v=...\nhttps://youtube.com/watch?v=...", height=100, key="lib_urls_bulk")
-                if st.button("🚀 Start Bulk Ingestion", width="stretch"):
-                    urls = [u.strip() for u in lib_urls.split("\n") if u.strip()]
-                    if urls:
-                        with st.status(f"Ingesting {len(urls)} videos...") as status:
-                            for i, url in enumerate(urls):
-                                def _prog(p, msg): status.update(label=f"[{i+1}/{len(urls)}] {msg}", state="running")
-                                count = indexer.download_and_index_youtube(url, progress_cb=_prog)
-                                st.write(f"✅ Indexed {count} scenes from video {i+1}")
-                            status.update(label=f"Done! Bulk ingestion complete.", state="complete")
-                            st.rerun()
-                    else:
-                        st.warning("Paste some URLs first.")
-            
-            with tab_local:
-                local_dir = st.text_input("Local Folder Path", placeholder="C:/Users/Name/Videos/MyStock", key="lib_local_dir")
-                if st.button("ðŸâ€   Index Local Folder", width="stretch"):
-                    if os.path.isdir(local_dir):
-                        video_files = [f for f in os.listdir(local_dir) if f.lower().endswith(('.mp4', '.mov', '.mkv', '.avi'))]
-                        if video_files:
-                            with st.status(f"Indexing {len(video_files)} local videos...") as status:
-                                for i, vf in enumerate(video_files):
-                                    v_path = os.path.join(local_dir, vf)
-                                    def _prog(p, msg): status.update(label=f"[{i+1}/{len(video_files)}] {msg}", state="running")
-                                    count = indexer.index_video(v_path, progress_cb=_prog)
-                                    st.write(f"✅ Indexed {count} scenes from {vf}")
-                                status.update(label="Local indexing complete.", state="complete")
-                                st.rerun()
-                        else:
-                            st.error("No video files found in that folder.")
-                    else:
-                        st.error("Invalid folder path.")
-            
-            st.divider()
-            stats = searcher.get_library_stats()
-            st.caption(f"Library Status: **{stats['unique_videos']}** videos | **{stats['total_segments']}** indexed scenes with Scene-Level Understanding.")
-            if st.button("🗑️👀 Clear Library", type="secondary"):
-                indexer.db.clear()
-                st.success("Library cleared.")
-                st.rerun()
     # ── Setup: API keys (collapsible, auto-collapses once Groq key is present) ──
     _key_status = {
         "Groq 1":     bool(os.getenv("GROQ_API_KEY")),
@@ -3509,42 +3461,6 @@ elif app_mode in ["Director", "Smart Mode"]:
                                 continue
                         # If we couldn't materialize from cache, fall
                         # through to a fresh download below.
-                    # ── smart_proxy: timestamp-precise section download ──────────
-                    # Look up the candidate metadata so we have timestamps & source
-                    res_meta = None
-                    for shot in selected_shots:
-                        for res in shot.get("selected_results", []):
-                            if res.get("url") == url and res.get("source") == "smart_proxy":
-                                res_meta = res
-                                break
-                        if res_meta:
-                            break
-                    if res_meta:
-                        try:
-                            from core.indexer import VideoIndexer
-                            _vi = VideoIndexer()
-                            quality_val = d_quality.replace("p", "") if d_quality not in ("Best", "Worst") else "1080"
-                            _vi.download_section(
-                                url=url,
-                                start_time=res_meta.get("timestamp_start", 0),
-                                end_time=res_meta.get("timestamp_end", 30),
-                                quality=quality_val,
-                                output_path=primary_path,
-                            )
-                            # Auto-index into permanent Smart Library
-                            if os.path.exists(primary_path):
-                                _vi.embed_and_index(
-                                    video_path=primary_path,
-                                    video_url=url,
-                                    video_title=res_meta.get("title"),
-                                    timestamp_start=res_meta.get("timestamp_start"),
-                                )
-                            for ext in extras:
-                                link_or_copy(primary_path, ext)
-                            added += 1
-                        except Exception as e:
-                            st.error(f"Smart section download failed for Shot {group['shots'][0]}: {e}")
-                        continue  # skip the regular dm.add_download below
                     try:
                         task_id = st.session_state.dm.add_download(
                             url, primary_path, d_quality,
@@ -3723,30 +3639,6 @@ elif app_mode in ["Director", "Smart Mode"]:
                         st.session_state.d_library_saved_batches = set()
                     st.session_state.d_library_saved_batches.add(_batch_key)
 
-            # ── Auto-Index on Completion ───────────────────────────────────
-            if completed == total_t and total_t > 0:
-                current_batch_ids = [t["id"] for t in tasks if t["status"] == "completed"]
-                if current_batch_ids:
-                    indexed_batch_ids = st.session_state.get("d_indexed_batches", set())
-                    batch_key = tuple(sorted(current_batch_ids))
-                    
-                    # Auto-indexing disabled for now
-                    # if batch_key not in indexed_batch_ids:
-                    #     with st.status("ðŸ§  Auto-indexing new footage for AI Visual Search...") as status:
-                    #         from core.indexer import VideoIndexer
-                    #         indexer = VideoIndexer()
-                    #         count = 0
-                    #         for t in tasks:
-                    #             if t["status"] == "completed" and os.path.exists(t["output_path"]):
-                    #                 status.update(label=f"Indexing {os.path.basename(t['output_path'])}...", state="running")
-                    #                 indexer.index_video(t["output_path"], video_url=t.get("url"))
-                    #                 count += 1
-                    #         status.update(label=f"Done! Auto-indexed {count} scenes into your library.", state="complete")
-                    #     
-                    #     if "d_indexed_batches" not in st.session_state:
-                    #          st.session_state.d_indexed_batches = set()
-                    #     st.session_state.d_indexed_batches.add(batch_key)
-                    #     save_cache()
             # Auto-refresh while anything is still moving (downloading, queued,
             # paused, or post-download processing).
             in_motion = (stats["downloading"] + stats["queued"]

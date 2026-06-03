@@ -24,6 +24,11 @@ import time
 import shutil
 import threading
 
+# Cap native thread pools (torch/OMP/MKL) before anything imports them, so the
+# CPU-only server doesn't oversubscribe cores. See core/runtime.py.
+from core.runtime import configure_runtime
+configure_runtime()
+
 import requests
 
 _API = "https://api.telegram.org/bot{token}/{method}"
