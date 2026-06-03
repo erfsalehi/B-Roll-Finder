@@ -35,6 +35,9 @@ _AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac")
 # ``cancel`` is a threading.Event the running pipeline checks at each stage.
 _BUSY = {"active": False, "project": None, "cancel": None}
 
+# Last completed project name, so /zip knows what to bundle by default.
+_LAST = {"project": None}
+
 
 # ── config ────────────────────────────────────────────────────────────────────
 
@@ -180,8 +183,16 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
         send_message(chat_id, f"❌ Couldn't fetch the audio: {e}")
         return {}
 
+    # Running step log, app-style: each stage is appended (✅ done, ⏳ current),
+    # so the editing status message reads like the app's progress panel.
+    steps: list = []
+
     def _progress(step, total, label):
-        edit_message(chat_id, msg_id, f"⚙️ [{step}/{total}] {label}…  ·  {proj}")
+        steps.append(label)
+        lines = [f"🎬 {proj}  ({step}/{total})"]
+        for i, lab in enumerate(steps):
+            lines.append(f"{'⏳' if i == len(steps) - 1 else '✅'} {lab}")
+        edit_message(chat_id, msg_id, "\n".join(lines[-18:]))   # cap to stay under TG limits
 
     from core.pipeline import PipelineCancelled
     cancel = _BUSY.get("cancel")
@@ -197,10 +208,16 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
         send_message(chat_id, f"❌ Pipeline failed for '{proj}': {e}")
         return {}
 
+    # Finalize the log (all steps done) and remember the project for /zip.
+    if steps:
+        edit_message(chat_id, msg_id,
+                     f"🎬 {proj} — ✅ complete\n" + "\n".join(f"✅ {s}" for s in steps[-18:]))
+    _LAST["project"] = proj
     send_message(chat_id, format_summary(proj, result))
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
         send_document(chat_id, xml_path, caption=f"{proj} — Premiere XML")
+    send_message(chat_id, f"📦 Send /zip to bundle '{proj}' (clips + XML) into one file on the server.")
     return result
 
 
@@ -287,6 +304,46 @@ def is_status_command(text: str) -> bool:
 
 def is_cancel_command(text: str) -> bool:
     return _command(text) in ("/cancel", "/stop", "/abort")
+
+
+def is_zip_command(text: str) -> bool:
+    return _command(text) in ("/zip", "/package", "/bundle")
+
+
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f}{unit}"
+        n /= 1024
+
+
+def handle_zip(chat_id, text: str) -> None:
+    """Bundle a project's clips + XML into a single zip on the server and report
+    its path/size. The file stays on the server (too big for Telegram) — pull it
+    with scp. ``/zip <name>`` targets a specific project; bare /zip uses the last."""
+    from core.output import zip_project
+
+    parts = text.strip().split(maxsplit=1)
+    name = parts[1].strip() if len(parts) > 1 else (_LAST.get("project") or "")
+    if not name:
+        send_message(chat_id, "No recent project to zip. Send a voice file first, "
+                              "or use /zip <project-name>.")
+        return
+    send_message(chat_id, f"📦 Zipping '{name}'…")
+    try:
+        res = zip_project(name)
+    except FileNotFoundError:
+        send_message(chat_id, f"❌ No downloaded project named '{name}'.")
+        return
+    except Exception as e:
+        send_message(chat_id, f"❌ Zip failed: {e}")
+        return
+    send_message(
+        chat_id,
+        f"✅ Zipped '{name}' — {res['files']} file(s), {_human_size(res['size_bytes'])}\n"
+        f"📁 {os.path.abspath(res['path'])}\n"
+        f"Pull it with:\nscp USER@SERVER:'{os.path.abspath(res['path'])}' .",
+    )
 
 
 def _run_job(chat_id, file_id, name) -> None:
@@ -376,6 +433,10 @@ def main() -> None:
                     send_message(chat_id, "Nothing is running right now.")
                 continue
 
+            if is_zip_command(text):
+                handle_zip(chat_id, text)
+                continue
+
             file_id, name = extract_audio(msg)
             if file_id:
                 if _BUSY.get("active"):
@@ -391,7 +452,8 @@ def main() -> None:
                 threading.Thread(target=_run_job, args=(chat_id, file_id, name), daemon=True).start()
             elif text:
                 send_message(chat_id, "Send me a voice message or an audio file and I'll build "
-                                      "the B-roll project. /status checks I'm online · /cancel stops a job.")
+                                      "the B-roll project.\n/status — am I online & ready\n"
+                                      "/cancel — stop the running job\n/zip [name] — bundle a finished project")
 
 
 if __name__ == "__main__":

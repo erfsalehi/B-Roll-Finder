@@ -97,6 +97,41 @@ def test_is_cancel_command_matches_variants():
     assert not tb.is_cancel_command("hello")
 
 
+def test_is_zip_command_matches_variants():
+    assert tb.is_zip_command("/zip")
+    assert tb.is_zip_command("/zip my-proj")     # with an argument
+    assert tb.is_zip_command("/package")
+    assert not tb.is_zip_command("/status")
+
+
+def test_human_size():
+    assert tb._human_size(512) == "512.0B"
+    assert tb._human_size(2048) == "2.0KB"
+    assert tb._human_size(5 * 1024 * 1024) == "5.0MB"
+    assert tb._human_size(3 * 1024 ** 3) == "3.0GB"
+
+
+def test_handle_zip_uses_last_project(monkeypatch):
+    sent = []
+    monkeypatch.setattr(tb, "send_message", lambda chat, text: sent.append(text))
+    monkeypatch.setitem(tb._LAST, "project", "lastproj")
+    import core.output
+    monkeypatch.setattr(core.output, "zip_project",
+                        lambda name, out_path=None: {"path": f"downloads/{name}.zip",
+                                                     "size_bytes": 2048, "files": 3})
+    tb.handle_zip(123, "/zip")
+    assert any("lastproj" in m for m in sent)
+    assert any("2.0KB" in m for m in sent)
+
+
+def test_handle_zip_no_project(monkeypatch):
+    sent = []
+    monkeypatch.setattr(tb, "send_message", lambda chat, text: sent.append(text))
+    monkeypatch.setitem(tb._LAST, "project", None)
+    tb.handle_zip(123, "/zip")
+    assert any("No recent project" in m for m in sent)
+
+
 def test_check_health_reports_keys_and_pipeline(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "g")
     monkeypatch.setenv("PEXELS_API_KEY", "p")
