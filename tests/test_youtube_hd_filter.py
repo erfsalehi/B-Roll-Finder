@@ -4,21 +4,39 @@ import core.stock_apis as stock_apis
 from core.director_search import filter_youtube_sd_candidates, auto_fetch_plan
 
 
-def test_auto_fetch_plan_prefers_stock_when_keys_present(monkeypatch):
+def _clear_auto_env(monkeypatch):
+    for v in ("AUTO_USE_PEXELS", "AUTO_USE_YOUTUBE", "AUTO_PEXELS_NUM",
+              "AUTO_YOUTUBE_NUM", "AUTO_MIN_HEIGHT"):
+        monkeypatch.delenv(v, raising=False)
+
+
+def test_auto_fetch_plan_pexels_on_pixabay_and_ytapi_off(monkeypatch):
+    _clear_auto_env(monkeypatch)
     monkeypatch.setenv("PEXELS_API_KEY", "x")
-    monkeypatch.delenv("PIXABAY_API_KEY", raising=False)
     p = auto_fetch_plan()
     assert p["use_pexels"] is True
-    assert p["use_youtube_search"] is False   # stock available → skip slow yt-dlp
-    assert p["min_height"] == 720             # HD-preferred
+    assert p["use_pixabay"] is False          # removed as an auto source
+    assert p["use_youtube_api"] is False       # removed as an auto source
+    assert p["use_youtube_search"] is False    # default off
+    assert p["min_height"] == 720
 
 
-def test_auto_fetch_plan_falls_back_to_youtube_without_stock(monkeypatch):
+def test_auto_fetch_plan_env_overrides(monkeypatch):
+    _clear_auto_env(monkeypatch)
+    monkeypatch.setenv("PEXELS_API_KEY", "x")
+    monkeypatch.setenv("AUTO_PEXELS_NUM", "5")
+    monkeypatch.setenv("AUTO_USE_YOUTUBE", "1")
+    monkeypatch.setenv("AUTO_YOUTUBE_NUM", "2")
+    p = auto_fetch_plan()
+    assert p["pexels_num_results"] == 5
+    assert p["use_youtube_search"] is True and p["youtube_search_num_results"] == 2
+
+
+def test_auto_fetch_plan_pexels_disabled_without_key(monkeypatch):
+    _clear_auto_env(monkeypatch)
     monkeypatch.delenv("PEXELS_API_KEY", raising=False)
-    monkeypatch.delenv("PIXABAY_API_KEY", raising=False)
     p = auto_fetch_plan()
     assert p["use_pexels"] is False and p["use_pixabay"] is False
-    assert p["use_youtube_search"] is True
 
 
 def _yt(url, definition=None):

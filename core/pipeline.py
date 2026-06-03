@@ -102,7 +102,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     from core.transcription import transcribe_audio
     from core.director import generate_shot_list_from_transcription, segment_script_structure
     from core.keywords import generate_video_topic
-    from core.director_search import (fetch_director_footage, filter_youtube_sd_candidates,
+    from core.director_search import (fetch_with_retries, filter_youtube_sd_candidates,
                                       auto_fetch_plan)
     from core.director_youtube import seed_youtube_keywords
     from core.director_rank import rank_shot_candidates, auto_select_top_candidates, review_timeline
@@ -165,7 +165,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         seed_youtube_keywords(shots)
     except Exception:
         pass
-    fetch_director_footage(shots, errors=errors, **auto_fetch_plan())
+    fetch_with_retries(shots, errors=errors)  # retries empty shots on flaky links
 
     # 6 — HD filter
     if os.getenv("YOUTUBE_API_KEY"):

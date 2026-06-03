@@ -111,24 +111,71 @@ def _classic_youtube_candidate(item: dict, query: str) -> dict:
     }
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def auto_fetch_plan() -> dict:
-    """Default fetch settings for fully-automatic mode, derived from the API keys
-    present. Prefers stock sources (fast & reliable) and only falls back to
-    YouTube classic search when no stock key exists; prefers HD. Returns kwargs
-    ready to splat into :func:`fetch_director_footage`.
+    """Fetch settings for fully-automatic mode. All knobs are env-configurable so
+    auto mode honours how many videos to pull from which source (it no longer
+    hardcodes them). Defaults: Pexels on, YouTube-classic optional, and Pixabay /
+    YouTube-Data-API OFF (removed as auto sources). Returns kwargs ready to splat
+    into :func:`fetch_director_footage`.
+
+    Env:
+      AUTO_USE_PEXELS (1/0, default 1)   AUTO_PEXELS_NUM   (per query, default 3)
+      AUTO_USE_YOUTUBE (1/0, default 0)  AUTO_YOUTUBE_NUM  (per query, default 4)
+      AUTO_MIN_HEIGHT  (default 720)
     """
-    pex = bool(os.getenv("PEXELS_API_KEY"))
-    pix = bool(os.getenv("PIXABAY_API_KEY"))
+    def _flag(name, default):
+        v = os.getenv(name)
+        if v is None:
+            return default
+        return v.strip().lower() in ("1", "true", "yes", "on")
+
+    use_pexels = _flag("AUTO_USE_PEXELS", True) and bool(os.getenv("PEXELS_API_KEY"))
+    use_youtube = _flag("AUTO_USE_YOUTUBE", False)
     return {
-        "use_pexels": pex,
-        "use_pixabay": pix,
-        "use_youtube_search": not (pex or pix),
-        "use_youtube_api": False,
-        "pexels_num_results": 3,
-        "pixabay_num_results": 3,
-        "youtube_search_num_results": 4,
-        "min_height": 720,
+        "use_pexels": use_pexels,
+        "use_pixabay": False,            # removed as an auto source
+        "use_youtube_search": use_youtube,
+        "use_youtube_api": False,        # removed as an auto source
+        "pexels_num_results": _env_int("AUTO_PEXELS_NUM", 3),
+        "pixabay_num_results": 0,
+        "youtube_search_num_results": _env_int("AUTO_YOUTUBE_NUM", 4),
+        "min_height": _env_int("AUTO_MIN_HEIGHT", 720),
     }
+
+
+def fetch_with_retries(shots: list, plan: dict = None, passes: int = 2,
+                       wait_seconds: float = 8.0, errors: list = None,
+                       progress_callback=None) -> list:
+    """Fetch candidates, then re-fetch shots that came back EMPTY up to ``passes``
+    more times (waiting between). On a flaky/rate-limited connection the first
+    pass leaves gaps — without this the back half of a long run silently ends up
+    with 0 candidates. The query cache is cleared between passes so previously
+    failed queries actually re-hit the API.
+    """
+    import time
+    plan = plan or auto_fetch_plan()
+    if errors is None:
+        errors = []
+
+    fetch_director_footage(shots, errors=errors, progress_callback=progress_callback, **plan)
+
+    for _ in range(max(0, passes)):
+        empties = [s for s in shots
+                   if s.get("priority") != "none" and not s.get("video_results")
+                   and (s.get("search_queries") or s.get("youtube_keywords"))]
+        if not empties:
+            break
+        time.sleep(wait_seconds)
+        clear_query_cache()  # so the failed/empty queries re-hit the API
+        fetch_director_footage(shots, errors=errors, retry_only=True, **plan)
+    return shots
 
 
 def filter_youtube_sd_candidates(shots: list, api_key: str, max_checks: int = 200,

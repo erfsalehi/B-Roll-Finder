@@ -130,6 +130,12 @@ def _deepseek_keys() -> list:
     return [k.strip() for k in keys if k and k.strip()]
 
 
+def _deepseek_no_fallback() -> bool:
+    """When set, DeepSeek failures are re-raised instead of falling back to the
+    free Groq/OpenRouter tiers (paid-only mode — wait & retry rather than degrade)."""
+    return os.getenv("DEEPSEEK_NO_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _deepseek_tier(tier: str) -> tuple:
     """Resolve (model_slug, reasoning_enabled) for a tier.
 
@@ -196,7 +202,12 @@ def _deepseek_request(system_prompt: str, user_content: str,
         payload["response_format"] = {"type": "json_object"}
 
     last_error = None
-    backoff_delays = [2, 5, 15]
+    # When fallback to the free tiers is disabled, retry DeepSeek harder/longer
+    # (the user is paying for it and would rather wait than drop to Groq).
+    if os.getenv("DEEPSEEK_NO_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
+        backoff_delays = [5, 15, 30, 60, 90]
+    else:
+        backoff_delays = [2, 5, 15]
     for i, api_key in enumerate(keys):
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         for attempt, delay in enumerate(backoff_delays):
@@ -287,6 +298,9 @@ def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
         try:
             return _call_deepseek_json(system_prompt, user_content, temperature, max_tokens, tier=tier)
         except Exception as e:
+            if _deepseek_no_fallback():
+                print(f"DeepSeek call failed ({type(e).__name__}: {e}); NOT falling back (paid-only mode).")
+                raise
             print(f"DeepSeek call failed ({type(e).__name__}: {e}); falling back to Groq/OpenRouter.")
 
     # Pool of Groq keys
@@ -333,6 +347,9 @@ def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
         try:
             return _call_deepseek_str(system_prompt, user_content, temperature, max_tokens, tier=tier)
         except Exception as e:
+            if _deepseek_no_fallback():
+                print(f"DeepSeek call failed ({type(e).__name__}: {e}); NOT falling back (paid-only mode).")
+                raise
             print(f"DeepSeek call failed ({type(e).__name__}: {e}); falling back to Groq/OpenRouter.")
 
     keys = [os.getenv("GROQ_API_KEY", ""), os.getenv("GROQ_API_KEY_2", "")]

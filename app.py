@@ -64,7 +64,7 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
     from core.transcription import transcribe_audio
     from core.director import generate_shot_list_from_transcription, segment_script_structure
     from core.keywords import generate_video_topic
-    from core.director_search import fetch_director_footage, filter_youtube_sd_candidates, auto_fetch_plan
+    from core.director_search import fetch_with_retries, filter_youtube_sd_candidates, auto_fetch_plan
     from core.director_rank import rank_shot_candidates, auto_select_top_candidates, review_timeline
 
     key = os.getenv("GROQ_API_KEY")
@@ -135,7 +135,9 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
             seed_youtube_keywords(shots)
         except Exception:
             pass
-        fetch_director_footage(shots, errors=[], **auto_fetch_plan())
+        # Fetch + retry empty shots, so a flaky connection doesn't leave the back
+        # half of a long run with 0 candidates.
+        fetch_with_retries(shots, errors=[])
 
         # 6 — Drop SD YouTube clips (HD only) when a YouTube key is available
         if os.getenv("YOUTUBE_API_KEY"):
