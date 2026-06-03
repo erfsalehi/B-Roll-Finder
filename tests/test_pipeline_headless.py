@@ -92,6 +92,15 @@ def test_download_cancels(monkeypatch, tmp_path):
         pipeline.download_selected_clips(shots, "p", should_cancel=lambda: True)
 
 
+def test_pipeline_skips_qa_when_disabled(_mock_stages, monkeypatch):
+    import core.director_rank
+    monkeypatch.setattr(core.director_rank, "review_timeline",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("QA must not run")))
+    res = pipeline.run_pipeline_headless("voice.mp3", project_name="noqa",
+                                         download=False, run_qa=False)
+    assert res["qa"]["overall"] == "QA review skipped."
+
+
 def test_pipeline_raises_without_key(monkeypatch, tmp_path):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)

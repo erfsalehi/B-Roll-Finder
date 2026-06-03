@@ -51,7 +51,7 @@ def _set_env_flag(name: str, value: bool) -> None:
     os.environ[name] = val
 
 
-def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
+def _run_fully_auto(audio_path: str, also_download: bool = False, run_qa: bool = True) -> None:
     """Drive the whole Director pipeline end-to-end with default settings.
 
     Runs every stage sequentially through the Step 5.5 QA review — transcribe →
@@ -161,10 +161,14 @@ def _run_fully_auto(audio_path: str, also_download: bool = False) -> None:
         st.write("🤖 Auto-selecting the best clips…")
         auto_select_top_candidates(shots)
 
-        # 9 — Final QA review (smart tier)
-        _tick("🎬 Final QA review…")
-        st.write("🎬 Final QA review…")
-        st.session_state.d_qa_result = review_timeline(shots, api_key=key, video_topic=topic)
+        # 9 — Final QA review (smart tier) — optional
+        if run_qa:
+            _tick("🎬 Final QA review…")
+            st.write("🎬 Final QA review…")
+            st.session_state.d_qa_result = review_timeline(shots, api_key=key, video_topic=topic)
+        else:
+            st.session_state.pop("d_qa_result", None)
+            st.write("⏭ Skipped QA review.")
 
         save_cache()
         n_sel = sum(1 for s in shots if s.get("selected_results"))
@@ -1848,8 +1852,15 @@ elif app_mode in ["Director", "Smart Mode"]:
                     "fetch → HD filter → rank → auto-select → QA review — then stops so you can "
                     "review and download. No manual clicks in between."
                 )
+                _fa_qa = st.checkbox(
+                    "Run the Step 5.5 QA review",
+                    value=True,
+                    key="d_auto_qa",
+                    help="Optional holistic 'executive producer' pass over the timeline. "
+                         "Uncheck to skip it (faster; goes straight to review/download).",
+                )
                 _fa_dl = st.checkbox(
-                    "Also download automatically once the QA review finishes",
+                    "Also download automatically when finished",
                     key="d_auto_dl_after",
                     help="Leave off to review first and download manually in Step 6.",
                 )
@@ -1858,7 +1869,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                         st.error("Set a Groq API key in Setup above first.")
                     else:
                         try:
-                            _run_fully_auto(audio_path, also_download=_fa_dl)
+                            _run_fully_auto(audio_path, also_download=_fa_dl, run_qa=_fa_qa)
                         except Exception as e:
                             st.error(f"Fully-automatic run failed: {e}")
         else:

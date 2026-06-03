@@ -90,7 +90,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
 
 def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: str = "auto",
                           download: bool = True, context_aware: bool = None,
-                          progress_callback=None, should_cancel=None) -> dict:
+                          progress_callback=None, should_cancel=None, run_qa: bool = None) -> dict:
     """Drive transcribe → topic → (context pre-pass) → shot list → fetch → HD
     filter → rank → auto-select → QA review → [download] → FCPXML, headless.
 
@@ -112,6 +112,9 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         raise ValueError("GROQ_API_KEY is required.")
     if context_aware is None:
         context_aware = _flag("ENABLE_CONTEXT_AWARE_KEYWORDS")
+    if run_qa is None:
+        # Default on; set ENABLE_QA_REVIEW=false to skip the Step 5.5 review.
+        run_qa = os.getenv("ENABLE_QA_REVIEW", "true").strip().lower() in ("1", "true", "yes", "on")
 
     total = 11 if download else 10
     errors = []
@@ -186,9 +189,12 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     _p(8, "Auto-selecting clips")
     auto_select_top_candidates(shots)
 
-    # 9 — QA review
-    _p(9, "Final QA review")
-    qa = review_timeline(shots, api_key=key, video_topic=topic)
+    # 9 — QA review (optional)
+    if run_qa:
+        _p(9, "Final QA review")
+        qa = review_timeline(shots, api_key=key, video_topic=topic)
+    else:
+        qa = {"overall": "QA review skipped.", "issues": []}
 
     result = {
         "project_name": project_name,
