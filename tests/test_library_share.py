@@ -122,6 +122,32 @@ def test_merge_trim_newest_wins(tmp_path, monkeypatch):
     assert row["in_seconds"] == 2.0 and row["out_seconds"] == 8.0  # newer won
 
 
+def test_inject_library_candidates_prepends_and_dedupes(tmp_path, monkeypatch):
+    lib = _fresh_lib(tmp_path, monkeypatch, "a.db")
+    monkeypatch.setattr(lib, "search_library",
+                        lambda q, top_k=5: [{"url": "lib1", "from_library": True},
+                                            {"url": "dup", "from_library": True}])
+    shots = [
+        {"priority": "medium", "shot_intent": "engine close-up",
+         "video_results": [{"url": "dup"}, {"url": "fresh"}]},
+        {"priority": "none", "shot_intent": "talking head", "video_results": []},
+    ]
+    n = lib.inject_library_candidates(shots, top_k=5)
+    assert n == 1                                   # 'dup' deduped, only 'lib1' added
+    urls = [c["url"] for c in shots[0]["video_results"]]
+    assert urls == ["lib1", "dup", "fresh"]         # library hit prepended
+    assert shots[1]["video_results"] == []          # priority 'none' skipped
+
+
+def test_inject_library_candidates_survives_search_error(tmp_path, monkeypatch):
+    lib = _fresh_lib(tmp_path, monkeypatch, "a.db")
+    monkeypatch.setattr(lib, "search_library",
+                        lambda q, top_k=5: (_ for _ in ()).throw(RuntimeError("model down")))
+    shots = [{"priority": "medium", "shot_intent": "x", "video_results": [{"url": "a"}]}]
+    assert lib.inject_library_candidates(shots) == 0   # graceful, no crash
+    assert shots[0]["video_results"] == [{"url": "a"}]
+
+
 def test_import_rejects_foreign_file(tmp_path, monkeypatch):
     dst = _fresh_lib(tmp_path, monkeypatch, "dst.db")
     bad = tmp_path / "bad.json"

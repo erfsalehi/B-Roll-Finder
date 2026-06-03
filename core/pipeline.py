@@ -22,6 +22,13 @@ def _flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _flag_default(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None or v.strip() == "":
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _check_cancel(should_cancel) -> None:
     if should_cancel and should_cancel():
         raise PipelineCancelled("Cancelled by user.")
@@ -169,6 +176,16 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     except Exception:
         pass
     fetch_with_retries(shots, errors=errors)  # retries empty shots on flaky links
+
+    # Clip Library: add previously-downloaded footage as candidates (free).
+    if _flag_default("AUTO_USE_LIBRARY", True):
+        try:
+            from core.clip_library import get_library_stats, inject_library_candidates
+            if get_library_stats().get("total", 0):
+                _p(5, "Searching Clip Library")
+                inject_library_candidates(shots, top_k=int(os.getenv("AUTO_LIBRARY_NUM", "5") or 5))
+        except Exception as e:
+            errors.append(f"clip_library: {e}")
 
     # 6 — HD filter
     if os.getenv("YOUTUBE_API_KEY"):

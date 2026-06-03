@@ -153,6 +153,18 @@ def _run_fully_auto(audio_path: str, also_download: bool = False, run_qa: bool =
         # half of a long run with 0 candidates.
         fetch_with_retries(shots, errors=[])
 
+        # Clip Library: add previously-downloaded footage as candidates (free,
+        # no API), so the ranker judges it alongside the fresh results.
+        if _env_flag_default("AUTO_USE_LIBRARY", True) and get_library_stats().get("total", 0):
+            _tick("📚 Searching the Clip Library…")
+            st.write("📚 Searching the Clip Library…")
+            try:
+                from core.clip_library import inject_library_candidates
+                _n_lib = inject_library_candidates(shots, top_k=int(os.getenv("AUTO_LIBRARY_NUM", "5") or 5))
+                st.write(f"   added {_n_lib} library clip(s)")
+            except Exception as e:
+                print(f"[auto] clip library inject skipped: {e}")
+
         # 6 — Drop SD YouTube clips (HD only) when a YouTube key is available
         if os.getenv("YOUTUBE_API_KEY"):
             _tick("🎥 Dropping SD YouTube clips…")
@@ -1881,11 +1893,24 @@ elif app_mode in ["Director", "Smart Mode"]:
                     _fa_yt_n = st.number_input("YouTube videos / query", min_value=0, max_value=20,
                                                value=int(os.getenv("AUTO_YOUTUBE_NUM", "5") or 5),
                                                key="d_auto_yt_n", disabled=not _fa_use_yt)
+                _fa_lib_total = get_library_stats().get("total", 0)
+                _lc1, _lc2 = st.columns(2)
+                with _lc1:
+                    _fa_use_lib = st.checkbox(f"📚 Clip Library ({_fa_lib_total} clips)",
+                                              value=_env_flag_default("AUTO_USE_LIBRARY", True), key="d_auto_use_lib")
+                with _lc2:
+                    _fa_lib_n = st.number_input("Library results / shot", min_value=0, max_value=20,
+                                                value=int(os.getenv("AUTO_LIBRARY_NUM", "5") or 5),
+                                                key="d_auto_lib_n", disabled=not _fa_use_lib)
                 # Persist only when something changed (avoids rewriting .env every rerun).
                 if _fa_use_pex != _env_flag_default("AUTO_USE_PEXELS", True):
                     _set_env_flag("AUTO_USE_PEXELS", _fa_use_pex)
                 if _fa_use_yt != _env_flag_default("AUTO_USE_YOUTUBE", True):
                     _set_env_flag("AUTO_USE_YOUTUBE", _fa_use_yt)
+                if _fa_use_lib != _env_flag_default("AUTO_USE_LIBRARY", True):
+                    _set_env_flag("AUTO_USE_LIBRARY", _fa_use_lib)
+                if str(int(_fa_lib_n)) != (os.getenv("AUTO_LIBRARY_NUM") or ""):
+                    _set_env_value("AUTO_LIBRARY_NUM", int(_fa_lib_n))
                 if str(int(_fa_pex_n)) != (os.getenv("AUTO_PEXELS_NUM") or ""):
                     _set_env_value("AUTO_PEXELS_NUM", int(_fa_pex_n))
                 if str(int(_fa_yt_n)) != (os.getenv("AUTO_YOUTUBE_NUM") or ""):

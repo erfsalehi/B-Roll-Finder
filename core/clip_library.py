@@ -226,6 +226,37 @@ def search_library(
         return []
 
 
+def inject_library_candidates(shots: list, top_k: int = 5,
+                              only_with_results: bool = False) -> int:
+    """Prepend semantic Clip Library matches to each shot's ``video_results``.
+
+    Searches the library with each shot's intent (or its first queries) and adds
+    the deduped hits to the front of its candidates, so previously-downloaded
+    footage is judged alongside fresh API results — no quota, no network. Used by
+    auto mode / the headless pipeline. Returns the number of hits injected.
+    """
+    injected = 0
+    for shot in shots:
+        if shot.get("priority") == "none":
+            continue
+        if only_with_results and not shot.get("video_results"):
+            continue
+        q = (shot.get("shot_intent") or "").strip() or " ".join((shot.get("search_queries") or [])[:2])
+        if not q:
+            continue
+        try:
+            hits = search_library(q, top_k=top_k)
+        except Exception as e:
+            print(f"[ClipLibrary] inject search failed: {e}")
+            hits = []
+        if hits:
+            existing = {r.get("url") for r in shot.get("video_results", [])}
+            new_hits = [h for h in hits if h.get("url") not in existing]
+            shot["video_results"] = new_hits + (shot.get("video_results") or [])
+            injected += len(new_hits)
+    return injected
+
+
 # ── Preferred trims (learned from re-imported Premiere edits) ───────────────
 
 def record_trim(
