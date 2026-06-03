@@ -51,6 +51,20 @@ def _set_env_flag(name: str, value: bool) -> None:
     os.environ[name] = val
 
 
+def _set_env_value(name: str, value: str) -> None:
+    """Persist a string/number setting to .env and reflect it in the live process."""
+    set_key(ENV_FILE, name, str(value))
+    os.environ[name] = str(value)
+
+
+def _env_flag_default(name: str, default: bool) -> bool:
+    """Read a boolean toggle, defaulting to ``default`` when the var is unset."""
+    v = os.getenv(name)
+    if v is None or v.strip() == "":
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _run_fully_auto(audio_path: str, also_download: bool = False, run_qa: bool = True) -> None:
     """Drive the whole Director pipeline end-to-end with default settings.
 
@@ -1848,10 +1862,39 @@ elif app_mode in ["Director", "Smart Mode"]:
             with st.container(border=True):
                 st.markdown("### ⚡ Fully Automatic Mode")
                 st.caption(
-                    "Runs every step with default settings — transcribe → topic → shot list → "
-                    "fetch → HD filter → rank → auto-select → QA review — then stops so you can "
-                    "review and download. No manual clicks in between."
+                    "Runs every step — transcribe → topic → shot list → fetch → HD filter → "
+                    "rank → auto-select → QA review — then stops so you can review and download. "
+                    "No manual clicks in between."
                 )
+
+                # Sources & how many videos to pull per query, per shot. Saved to
+                # .env so both auto mode and the Telegram bot's headless run use them.
+                st.markdown("**Sources — videos per query, per shot**")
+                _sc1, _sc2 = st.columns(2)
+                with _sc1:
+                    _fa_use_pex = st.checkbox("Pexels", value=_env_flag_default("AUTO_USE_PEXELS", True), key="d_auto_use_pex")
+                    _fa_pex_n = st.number_input("Pexels videos / query", min_value=0, max_value=20,
+                                                value=int(os.getenv("AUTO_PEXELS_NUM", "5") or 5),
+                                                key="d_auto_pex_n", disabled=not _fa_use_pex)
+                with _sc2:
+                    _fa_use_yt = st.checkbox("YouTube", value=_env_flag_default("AUTO_USE_YOUTUBE", True), key="d_auto_use_yt")
+                    _fa_yt_n = st.number_input("YouTube videos / query", min_value=0, max_value=20,
+                                               value=int(os.getenv("AUTO_YOUTUBE_NUM", "5") or 5),
+                                               key="d_auto_yt_n", disabled=not _fa_use_yt)
+                # Persist only when something changed (avoids rewriting .env every rerun).
+                if _fa_use_pex != _env_flag_default("AUTO_USE_PEXELS", True):
+                    _set_env_flag("AUTO_USE_PEXELS", _fa_use_pex)
+                if _fa_use_yt != _env_flag_default("AUTO_USE_YOUTUBE", True):
+                    _set_env_flag("AUTO_USE_YOUTUBE", _fa_use_yt)
+                if str(int(_fa_pex_n)) != (os.getenv("AUTO_PEXELS_NUM") or ""):
+                    _set_env_value("AUTO_PEXELS_NUM", int(_fa_pex_n))
+                if str(int(_fa_yt_n)) != (os.getenv("AUTO_YOUTUBE_NUM") or ""):
+                    _set_env_value("AUTO_YOUTUBE_NUM", int(_fa_yt_n))
+                st.caption(
+                    f"Each shot has ~2–3 queries, so ~{(int(_fa_pex_n) if _fa_use_pex else 0) + (int(_fa_yt_n) if _fa_use_yt else 0)} "
+                    "videos/query → roughly 2–3× that many candidates per shot for the ranker to judge."
+                )
+
                 _fa_qa = st.checkbox(
                     "Run the Step 5.5 QA review",
                     value=True,
