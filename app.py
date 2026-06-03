@@ -187,6 +187,19 @@ def _run_fully_auto(audio_path: str, also_download: bool = False, run_qa: bool =
         st.write("🤖 Auto-selecting the best clips…")
         auto_select_top_candidates(shots)
 
+        # 8b — Repair pass: rescue shots that ended up empty (failed fetch / bad
+        # shot-list block) by re-generating queries + re-fetching + re-selecting.
+        _empty_before = sum(1 for s in shots if s.get("priority") != "none" and not s.get("selected_results"))
+        if _empty_before:
+            _tick(f"🩹 Repairing {_empty_before} empty shot(s)…")
+            st.write(f"🩹 Repairing {_empty_before} empty shot(s)…")
+            try:
+                from core.pipeline import repair_empty_shots
+                _rec = repair_empty_shots(shots, groq_key=key, video_topic=topic, errors=[])
+                st.write(f"   recovered {_rec} shot(s)")
+            except Exception as e:
+                print(f"[auto] repair pass issue: {e}")
+
         # 9 — Final QA review (smart tier) — optional
         if run_qa:
             _tick("🎬 Final QA review…")

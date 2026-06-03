@@ -95,6 +95,56 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
     return {"ok": ok, "failed": failed, "skipped": skipped, "dir": base_dir, "errors": errors}
 
 
+def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
+                       errors: list = None, progress=None) -> int:
+    """Final repair pass before download: rescue shots that ended up with NO
+    selected clip — whether from a failed fetch (connection reset / DNS) or a
+    failed shot-list block (the LLM JSON got truncated, leaving a shot with no
+    queries). For those shots it regenerates missing queries, re-fetches (with
+    its own retry passes), re-injects the Clip Library, re-ranks, and re-runs
+    auto-select. Idempotent and safe to call repeatedly. Returns how many shots
+    were recovered (now have a selection).
+    """
+    from core.director import ensure_shot_queries
+    from core.director_youtube import seed_youtube_keywords
+    from core.director_search import fetch_with_retries
+    from core.director_rank import rank_shot_candidates, auto_select_top_candidates
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    targets = [s for s in shots if s.get("priority") != "none" and not s.get("selected_results")]
+    if not targets:
+        return 0
+    still_empty_before = len(targets)
+    if progress:
+        progress(f"Repairing {still_empty_before} empty shot(s)…")
+
+    # Shots from a truncated director block have no queries — synthesize them.
+    ensure_shot_queries(targets, video_topic)
+    try:
+        seed_youtube_keywords(targets)
+    except Exception:
+        pass
+
+    if errors is None:
+        errors = []
+    fetch_with_retries(targets, errors=errors)   # re-fetch just the empties
+
+    try:
+        from core.clip_library import get_library_stats, inject_library_candidates
+        if _flag_default("AUTO_USE_LIBRARY", True) and get_library_stats().get("total", 0):
+            inject_library_candidates(targets, top_k=int(os.getenv("AUTO_LIBRARY_NUM", "5") or 5))
+    except Exception:
+        pass
+
+    try:
+        rank_shot_candidates(targets, api_key=key, video_topic=video_topic)
+    except Exception as e:
+        errors.append(f"repair rank: {e}")
+
+    auto_select_top_candidates(shots)   # full list → only fills the still-empty ones
+    return still_empty_before - sum(1 for s in targets if not s.get("selected_results"))
+
+
 def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: str = "auto",
                           download: bool = True, context_aware: bool = None,
                           progress_callback=None, should_cancel=None, run_qa: bool = None) -> dict:
@@ -205,6 +255,10 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # 8 — Auto-select
     _p(8, "Auto-selecting clips")
     auto_select_top_candidates(shots)
+
+    # 8b — Repair pass: rescue any shots still empty (failed fetch / bad block).
+    _p(8, "Repairing empty shots")
+    repair_empty_shots(shots, groq_key=key, video_topic=topic, errors=errors)
 
     # 9 — QA review (optional)
     if run_qa:

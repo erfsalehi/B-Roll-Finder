@@ -101,6 +101,42 @@ def test_pipeline_skips_qa_when_disabled(_mock_stages, monkeypatch):
     assert res["qa"]["overall"] == "QA review skipped."
 
 
+def test_repair_empty_shots_refetches_and_selects(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setenv("AUTO_USE_LIBRARY", "false")   # isolate from the real library
+
+    import core.director, core.director_youtube, core.director_search, core.director_rank
+
+    # A failed-block shot (no queries, no candidates) + an already-selected shot.
+    empty = {"slot_id": 2, "priority": "medium", "shot_intent": "engine",
+             "search_queries": [], "video_results": [], "selected_results": []}
+    done = {"slot_id": 1, "priority": "medium", "video_results": [{"url": "x"}],
+            "selected_results": [{"url": "x"}]}
+    shots = [done, empty]
+
+    monkeypatch.setattr(core.director, "ensure_shot_queries",
+                        lambda ts, topic="": [s.__setitem__("search_queries", ["q"]) for s in ts])
+    monkeypatch.setattr(core.director_youtube, "seed_youtube_keywords", lambda ts: ts)
+    # Re-fetch fills the empty shot with a candidate.
+    def _fetch(ts, **k):
+        for s in ts:
+            if not s.get("video_results"):
+                s["video_results"] = [{"url": "recovered"}]
+    monkeypatch.setattr(core.director_search, "fetch_with_retries", _fetch)
+    monkeypatch.setattr(core.director_rank, "rank_shot_candidates", lambda ts, **k: None)
+
+    recovered = pipeline.repair_empty_shots(shots, groq_key="k")
+    assert recovered == 1
+    assert empty["selected_results"]                       # now has a pick
+    assert empty["selected_results"][0]["url"] == "recovered"
+    assert done["selected_results"] == [{"url": "x"}]      # untouched
+
+
+def test_repair_empty_shots_noop_when_all_selected():
+    shots = [{"slot_id": 1, "priority": "medium", "selected_results": [{"url": "x"}]}]
+    assert pipeline.repair_empty_shots(shots) == 0
+
+
 def test_pipeline_raises_without_key(monkeypatch, tmp_path):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
