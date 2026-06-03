@@ -137,7 +137,7 @@ def auto_fetch_plan() -> dict:
         return v.strip().lower() in ("1", "true", "yes", "on")
 
     use_pexels = _flag("AUTO_USE_PEXELS", True) and bool(os.getenv("PEXELS_API_KEY"))
-    use_youtube = _flag("AUTO_USE_YOUTUBE", False)
+    use_youtube = _flag("AUTO_USE_YOUTUBE", True)   # Pexels + YouTube classic by default
     return {
         "use_pexels": use_pexels,
         "use_pixabay": False,            # removed as an auto source

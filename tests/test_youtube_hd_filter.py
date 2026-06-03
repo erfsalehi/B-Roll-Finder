@@ -17,7 +17,7 @@ def test_auto_fetch_plan_pexels_on_pixabay_and_ytapi_off(monkeypatch):
     assert p["use_pexels"] is True
     assert p["use_pixabay"] is False          # removed as an auto source
     assert p["use_youtube_api"] is False       # removed as an auto source
-    assert p["use_youtube_search"] is False    # default off
+    assert p["use_youtube_search"] is True     # Pexels + YouTube classic by default
     assert p["min_height"] == 720
 
 

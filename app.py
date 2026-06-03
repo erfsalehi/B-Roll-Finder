@@ -2146,28 +2146,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                                          help="Videos below this resolution will be skipped and replaced with next best matches.")
             min_h = res_map.get(min_res_label, 0)
 
-        col_s2a, col_s2b, col_s2c, col_s2d, col_s2e = st.columns(5)
+        # Pixabay and the YouTube Data API have been removed as search sources.
+        use_pixabay, pix_num = False, 0
+        use_youtube_api, yt_api_num = False, 0
+        col_s2a, col_s2d, col_s2e = st.columns(3)
         with col_s2a:
             use_pexels  = st.checkbox("Pexels",  value=bool(os.getenv("PEXELS_API_KEY")),  key="d_pex_cb", on_change=save_cache)
             pex_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pex_nr", on_change=save_cache) if use_pexels else 0
-        with col_s2b:
-            use_pixabay = st.checkbox("Pixabay", value=bool(os.getenv("PIXABAY_API_KEY")), key="d_pix_cb", on_change=save_cache)
-            pix_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_pix_nr", on_change=save_cache) if use_pixabay else 0
-        with col_s2c:
-            use_youtube_api = st.checkbox(
-                "YouTube API",
-                value=bool(os.getenv("YOUTUBE_API_KEY")),
-                key="d_yt_api_cb",
-                on_change=save_cache,
-                help=(
-                    "Adds YouTube as a search source. Each YT search costs "
-                    "100 quota units (default daily quota: 10,000), so to stay "
-                    "within budget the director only runs ONE YouTube search "
-                    "per shot — using the first query. Pexels and Pixabay still "
-                    "run all queries. Selected YT clips download via yt-dlp."
-                ),
-            )
-            yt_api_num = st.number_input("Results/query", value=3, min_value=1, max_value=10, key="d_ytapi_nr", on_change=save_cache) if use_youtube_api else 0
         with col_s2d:
             use_youtube_search = st.checkbox(
                 "YouTube Search",
@@ -2480,13 +2465,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                     _fdf(
                         st.session_state.director_shots,
                         use_pexels=st.session_state.get("d_pex_cb", False),
-                        use_pixabay=st.session_state.get("d_pix_cb", False),
+                        use_pixabay=False,
                         use_youtube=st.session_state.get("d_yt_search_cb", True),
                         pexels_num_results=int(st.session_state.get("d_pex_nr", 3)),
-                        pixabay_num_results=int(st.session_state.get("d_pix_nr", 3)),
-                        youtube_api_num_results=int(st.session_state.get("d_ytapi_nr", 3)),
+                        pixabay_num_results=0,
+                        youtube_api_num_results=0,
                         youtube_search_num_results=int(st.session_state.get("d_yts_nr", 3)),
-                        use_youtube_api=st.session_state.get("d_yt_api_cb", False),
+                        use_youtube_api=False,
                         use_youtube_search=st.session_state.get("d_yt_search_cb", True),
                         retry_only=True, min_height=_minh, errors=_rerrs,
                         pexels_max_queries=_cap,
@@ -2543,9 +2528,9 @@ elif app_mode in ["Director", "Smart Mode"]:
                         updated = fetch_director_footage(
                             st.session_state.director_shots,
                             use_pexels=st.session_state.get("d_pex_cb", True),
-                            use_pixabay=st.session_state.get("d_pix_cb", True),
+                            use_pixabay=False,
                             use_youtube_search=st.session_state.get("d_yt_search_cb", True),
-                            use_youtube_api=st.session_state.get("d_yt_api_cb", False),
+                            use_youtube_api=False,
                             pexels_num_results=int(st.session_state.get("d_pex_nr", 3)),
                             pixabay_num_results=int(st.session_state.get("d_pix_nr", 3)),
                             youtube_api_num_results=int(st.session_state.get("d_ytapi_nr", 3)),
@@ -3207,7 +3192,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                     save_cache()
                     with st.spinner("Fetching..."):
                         from core.director_search import fetch_director_footage
-                        updated_subset = fetch_director_footage([shot], use_pexels=st.session_state.get("d_pex_cb"), use_pixabay=st.session_state.get("d_pix_cb"), use_youtube=st.session_state.get("d_yt_search_cb"), pexels_num_results=st.session_state.get("d_pex_nr", 3), pixabay_num_results=st.session_state.get("d_pix_nr", 3), youtube_api_num_results=st.session_state.get("d_ytapi_nr", 3), youtube_search_num_results=st.session_state.get("d_yts_nr", 3), use_youtube_api=st.session_state.get("d_yt_api_cb"), use_youtube_search=st.session_state.get("d_yt_search_cb"), progress_callback=None, errors=[], retry_only=False)
+                        updated_subset = fetch_director_footage([shot], use_pexels=st.session_state.get("d_pex_cb"), use_pixabay=False, use_youtube=st.session_state.get("d_yt_search_cb"), pexels_num_results=st.session_state.get("d_pex_nr", 3), pixabay_num_results=0, youtube_api_num_results=0, youtube_search_num_results=st.session_state.get("d_yts_nr", 3), use_youtube_api=False, use_youtube_search=st.session_state.get("d_yt_search_cb"), progress_callback=None, errors=[], retry_only=False)
                         if updated_subset:
                             for s in st.session_state.director_shots:
                                 if s["slot_id"] == slot_id:
