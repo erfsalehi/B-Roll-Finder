@@ -188,6 +188,17 @@ if os.getenv("BROLL_BYPASS_HTTP_PROXY", "").strip().lower() in ("1", "true", "ye
                  "ALL_PROXY", "all_proxy"):
         os.environ.pop(_var, None)
 
+# Where APIs are blocked / DNS is poisoned (censored networks), route ALL of the
+# app's outbound traffic through your VPN's local proxy. Setting HTTP(S)_PROXY
+# makes requests/httpx resolve DNS on the proxy side, fixing "getaddrinfo failed"
+# for hosts the local resolver can't reach. Use socks5h:// (not socks5://) for a
+# SOCKS proxy so DNS is resolved remotely too. Applied AFTER the bypass above so
+# an explicit proxy always wins.
+_app_proxy = os.getenv("APP_PROXY", "").strip()
+if _app_proxy:
+    for _var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        os.environ[_var] = _app_proxy
+
 
 # Keep yt-dlp fresh — YouTube breaks stale versions and downloads start
 # failing. @st.cache_resource makes this fire exactly once per server process
@@ -734,6 +745,12 @@ def render_classic_mode():
                                              help="Optional. Route the bot through your VPN's local proxy, e.g. "
                                                   "http://127.0.0.1:10809 or socks5://127.0.0.1:10808 (V2RayN/Hiddify). "
                                                   "Leave blank if Telegram is reachable directly (e.g. on a server).")
+            app_proxy_input  = st.text_input("App Proxy (where stock/AI APIs are blocked)",
+                                             value=os.getenv("APP_PROXY", ""),
+                                             help="Optional. Routes ALL app traffic (Pexels, Groq, etc.) through your "
+                                                  "VPN's local proxy — fixes 'getaddrinfo failed' DNS errors on "
+                                                  "censored networks. Use socks5h://127.0.0.1:PORT for SOCKS "
+                                                  "(remote DNS). Restart the app after saving.")
             st.markdown("&nbsp;")
         _browser_options = ["None", "chrome", "firefox", "edge", "brave", "safari", "opera", "chromium"]
         _current_browser = os.getenv("YT_COOKIE_BROWSER", "None")
@@ -764,6 +781,7 @@ def render_classic_mode():
                 if tg_token_input:   set_key(ENV_FILE, "TELEGRAM_BOT_TOKEN",     tg_token_input)
                 set_key(ENV_FILE, "TELEGRAM_ALLOWED_USERS", tg_users_input or "")
                 set_key(ENV_FILE, "BOT_PROXY", bot_proxy_input or "")
+                set_key(ENV_FILE, "APP_PROXY", app_proxy_input or "")
                 set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")
@@ -1671,6 +1689,13 @@ elif app_mode in ["Director", "Smart Mode"]:
                                              help="Optional. Route the bot through your VPN's local proxy, e.g. "
                                                   "http://127.0.0.1:10809 or socks5://127.0.0.1:10808 (V2RayN/Hiddify). "
                                                   "Leave blank if Telegram is reachable directly (e.g. on a server).")
+            app_proxy_input  = st.text_input("App Proxy (where stock/AI APIs are blocked)",
+                                             value=os.getenv("APP_PROXY", ""),
+                                             key="d_app_proxy",
+                                             help="Optional. Routes ALL app traffic (Pexels, Groq, etc.) through your "
+                                                  "VPN's local proxy — fixes 'getaddrinfo failed' DNS errors on "
+                                                  "censored networks. Use socks5h://127.0.0.1:PORT for SOCKS "
+                                                  "(remote DNS). Restart the app after saving.")
             st.markdown("&nbsp;")  # vertical spacer to align rows
         _browser_options_d = ["None", "chrome", "firefox", "edge", "brave", "safari", "opera", "chromium"]
         _current_browser_d = os.getenv("YT_COOKIE_BROWSER", "None")
@@ -1701,6 +1726,7 @@ elif app_mode in ["Director", "Smart Mode"]:
                 if tg_token_input:   set_key(ENV_FILE, "TELEGRAM_BOT_TOKEN",     tg_token_input)
                 set_key(ENV_FILE, "TELEGRAM_ALLOWED_USERS", tg_users_input or "")
                 set_key(ENV_FILE, "BOT_PROXY", bot_proxy_input or "")
+                set_key(ENV_FILE, "APP_PROXY", app_proxy_input or "")
                 set_key(ENV_FILE, "YT_COOKIE_BROWSER", cookie_browser_d)
                 load_dotenv(ENV_FILE, override=True)
                 st.success("API keys saved to .env. Refresh the page to re-evaluate the status pill.")

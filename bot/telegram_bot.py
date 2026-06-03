@@ -318,6 +318,14 @@ def main() -> None:
         for _v in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
             os.environ.pop(_v, None)
 
+    # Route the pipeline's traffic (Pexels/Groq/etc.) through a proxy too, so a
+    # job triggered on a censored network can still reach the stock/AI APIs.
+    # Prefer APP_PROXY; fall back to BOT_PROXY so one setting can cover both.
+    _app_proxy = os.getenv("APP_PROXY", "").strip() or os.getenv("BOT_PROXY", "").strip()
+    if _app_proxy:
+        for _v in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ[_v] = _app_proxy
+
     if not _token():
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get one from @BotFather).")
     allowed = allowed_user_ids()
