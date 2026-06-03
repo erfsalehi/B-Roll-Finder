@@ -150,19 +150,29 @@ def auto_fetch_plan() -> dict:
     }
 
 
-def fetch_with_retries(shots: list, plan: dict = None, passes: int = 2,
-                       wait_seconds: float = 8.0, errors: list = None,
+def fetch_with_retries(shots: list, plan: dict = None, passes: int = None,
+                       wait_seconds: float = None, errors: list = None,
                        progress_callback=None) -> list:
     """Fetch candidates, then re-fetch shots that came back EMPTY up to ``passes``
     more times (waiting between). On a flaky/rate-limited connection the first
     pass leaves gaps — without this the back half of a long run silently ends up
     with 0 candidates. The query cache is cleared between passes so previously
     failed queries actually re-hit the API.
+
+    ``passes`` / ``wait_seconds`` default from AUTO_FETCH_PASSES (2) and
+    AUTO_FETCH_WAIT (8s) — raise them for a slower-but-more-thorough run.
     """
     import time
     plan = plan or auto_fetch_plan()
     if errors is None:
         errors = []
+    if passes is None:
+        passes = _env_int("AUTO_FETCH_PASSES", 2)
+    if wait_seconds is None:
+        try:
+            wait_seconds = float(os.getenv("AUTO_FETCH_WAIT", "8"))
+        except (TypeError, ValueError):
+            wait_seconds = 8.0
 
     fetch_director_footage(shots, errors=errors, progress_callback=progress_callback, **plan)
 
