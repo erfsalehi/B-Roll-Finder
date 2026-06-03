@@ -1,0 +1,20 @@
+[Unit]
+Description=B-Roll Finder Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit User and the two paths to match your server.
+User=broll
+WorkingDirectory=/opt/B-Roll-Finder
+ExecStart=/opt/B-Roll-Finder/venv/bin/python -m bot.telegram_bot
+Restart=always
+RestartSec=10
+# Load env from .env via python-dotenv inside the bot; this is a backstop.
+EnvironmentFile=-/opt/B-Roll-Finder/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

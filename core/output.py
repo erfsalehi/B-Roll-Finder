@@ -276,6 +276,36 @@ def clip_filename(slot_id, footage_num: int, matched_query: str, seen_filenames:
     return filename
 
 
+def zip_project(project_name: str, out_path: str = None) -> dict:
+    """Bundle a project's downloaded clips + FCPXML into one .zip for transfer
+    (e.g. download from the server to your editing machine).
+
+    Packages everything under ``downloads/<project>/`` preserving the folder
+    layout, so unzipping recreates ``<project>/director/*.mp4`` + the XML. Returns
+    ``{path, size_bytes, files}``. Raises FileNotFoundError if the project folder
+    doesn't exist yet.
+    """
+    import zipfile
+    proj = _safe_for_fs(project_name, 50)
+    proj_dir = os.path.join("downloads", proj)
+    if not os.path.isdir(proj_dir):
+        raise FileNotFoundError(f"No downloaded project at {proj_dir}")
+
+    out_path = out_path or os.path.join("downloads", f"{proj}.zip")
+    files = 0
+    # ZIP_DEFLATED barely shrinks already-compressed mp4s but keeps the bundle
+    # to a single portable file; allowZip64 handles multi-GB projects.
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+        for root, _dirs, names in os.walk(proj_dir):
+            for name in names:
+                fp = os.path.join(root, name)
+                if os.path.abspath(fp) == os.path.abspath(out_path):
+                    continue  # never zip the zip itself
+                z.write(fp, os.path.relpath(fp, "downloads"))
+                files += 1
+    return {"path": out_path, "size_bytes": os.path.getsize(out_path), "files": files}
+
+
 def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None,
                     sfx_list: list = None, time_offset: float = 0.0) -> str:
     """
