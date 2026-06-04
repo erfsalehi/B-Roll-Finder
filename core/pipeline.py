@@ -188,6 +188,54 @@ def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
     return still_empty_before - sum(1 for s in targets if not s.get("selected_results"))
 
 
+def fill_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
+                     errors: list = None, progress=None, passes: int = 2) -> int:
+    """Aggressively get a clip onto EVERY shot that has none.
+
+    Runs :func:`repair_empty_shots` up to ``passes`` times (regenerate queries →
+    re-fetch → re-rank → re-select), and after each pass drops Shorts, purges any
+    Short that slipped into a selection, biases YouTube to the front, and
+    re-selects so a Short-free YouTube clip is preferred. Returns the number of
+    shots newly filled across all passes.
+    """
+    from core.director_rank import auto_select_top_candidates, prioritize_youtube
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    if errors is None:
+        errors = []
+    filled = 0
+    for p in range(max(1, passes)):
+        empties = [s for s in shots
+                   if s.get("priority") != "none" and not s.get("selected_results")]
+        if not empties:
+            break
+        if progress:
+            progress(f"Fill pass {p + 1}: {len(empties)} empty shot(s)…")
+        before = len(empties)
+        repair_empty_shots(shots, groq_key=key, video_topic=video_topic,
+                           errors=errors, progress=progress)
+        drop_shorts(shots)
+        # A Short may already sit in a selection (repair selects before we drop) —
+        # purge it so the slot re-fills with a non-Short clip.
+        for s in shots:
+            sel = s.get("selected_results") or []
+            cleaned = [c for c in sel if not _is_short(c)]
+            if len(cleaned) != len(sel):
+                if cleaned:
+                    s["selected_results"] = cleaned
+                else:
+                    s.pop("selected_results", None)
+                    s.pop("auto_selected", None)
+        prioritize_youtube(shots)
+        auto_select_top_candidates(shots)
+        still = sum(1 for s in shots
+                    if s.get("priority") != "none" and not s.get("selected_results"))
+        filled += before - still
+        if still == 0 or before == still:   # done, or no further progress
+            break
+    return filled
+
+
 def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topic: str = "",
                          errors: list = None, progress=None,
                          severities=("high", "medium"), only_slots=None) -> int:

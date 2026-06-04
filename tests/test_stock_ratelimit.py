@@ -9,12 +9,17 @@ import core.stock_apis as s
 
 
 @pytest.fixture(autouse=True)
-def _reset_gates():
+def _reset_gates(monkeypatch):
+    # No extra keys → the pool is just the single "key" the tests pass.
+    monkeypatch.delenv("PEXELS_API_KEY_2", raising=False)
+    monkeypatch.delenv("PEXELS_API_KEYS", raising=False)
     s._PEXELS_GATE.until = 0.0
     s._PIXABAY_GATE.until = 0.0
+    s._pexels_gates.clear()
     yield
     s._PEXELS_GATE.until = 0.0
     s._PIXABAY_GATE.until = 0.0
+    s._pexels_gates.clear()
 
 
 class _Resp:
@@ -52,7 +57,7 @@ def test_429_trips_gate_and_blocks_siblings():
     assert len(errs) == 10                  # every query reported something
     assert len(set(errs)) == 1              # ...but all identical → de-dupes to one line
     assert "rate limit reached" in errs[0]
-    assert s._PEXELS_GATE.blocked_for() > 3000
+    assert s._pexels_gate("key").blocked_for() > 3000   # per-key breaker tripped
 
 
 def test_remaining_zero_trips_gate_proactively():
@@ -65,7 +70,7 @@ def test_remaining_zero_trips_gate_proactively():
     with mock.patch("core.stock_apis.requests.get", lambda *a, **k: good):
         errs = []
         s.search_pexels("first", "key", 3, errors=errs)  # succeeds, but quota now 0
-    assert s._PEXELS_GATE.blocked_for() > 1000
+    assert s._pexels_gate("key").blocked_for() > 1000
     assert errs == []  # the successful call itself reported no error
 
 
@@ -75,7 +80,7 @@ def test_successful_response_does_not_trip_gate():
     with mock.patch("core.stock_apis.requests.get", lambda *a, **k: good):
         errs = []
         s.search_pexels("ok", "key", 3, errors=errs)
-    assert s._PEXELS_GATE.blocked_for() == 0
+    assert s._pexels_gate("key").blocked_for() == 0
     assert errs == []
 
 

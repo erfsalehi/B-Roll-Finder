@@ -8,7 +8,7 @@ import bot.telegram_bot as tb
 def test_new_command_predicates():
     assert tb.is_settings_command("/settings") and tb.is_settings_command("/config")
     assert tb.is_download_command("/download") and tb.is_download_command("/go@Bot")
-    assert tb.is_refine_command("/refine") and tb.is_refine_command("/redo")
+    assert tb.is_refine_command("/refine") and tb.is_refine_command("/improve")
     assert tb.is_details_command("/details") and tb.is_details_command("/shots")
     assert tb.is_help_command("/help") and tb.is_help_command("/start")
     assert not tb.is_download_command("/status")

@@ -36,6 +36,7 @@ import requests
 
 from bot import settings as bot_settings
 from bot import fileserver
+from bot import logsetup
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -248,7 +249,11 @@ def is_download_command(text: str) -> bool:
 
 
 def is_refine_command(text: str) -> bool:
-    return _command(text) in ("/refine", "/improve", "/redo")
+    return _command(text) in ("/refine", "/improve")
+
+
+def is_redo_command(text: str) -> bool:
+    return _command(text) in ("/redo", "/fill", "/rescue")
 
 
 def is_details_command(text: str) -> bool:
@@ -257,6 +262,10 @@ def is_details_command(text: str) -> bool:
 
 def is_help_command(text: str) -> bool:
     return _command(text) in ("/help", "/start", "/commands")
+
+
+def is_logs_command(text: str) -> bool:
+    return _command(text) in ("/logs", "/log")
 
 
 def is_cleanup_command(text: str) -> bool:
@@ -585,6 +594,96 @@ def _run_refine(chat_id, only_slots=None) -> None:
     send_message(chat_id, format_review(proj, result))
 
 
+def _run_redo(chat_id) -> None:
+    """Review gate → /redo: aggressively get a clip onto every shot that has
+    none, with YouTube emphasized."""
+    pend = _PENDING.get(chat_id)
+    if not pend:
+        send_message(chat_id, "Nothing to /redo. Send a voice file first.")
+        return
+    from core.pipeline import fill_empty_shots, write_fcpxml
+    from core.director_rank import review_timeline
+    proj, settings, shots = pend["project"], pend["settings"], pend["shots"]
+
+    empties = [s for s in shots
+               if s.get("priority") != "none" and not s.get("selected_results")]
+    if not empties:
+        send_message(chat_id, "✅ Every shot already has a clip. /download to proceed.")
+        return
+
+    status = send_message(chat_id, f"♻️ Re-fetching {len(empties)} empty shot(s) for '{proj}' "
+                                   "(YouTube-first)…")
+    msg_id = status.get("message_id")
+
+    def _p(label):
+        edit_message(chat_id, msg_id, f"♻️ {proj}: {label}")
+
+    # Force YouTube on and pull more YouTube candidates while filling gaps.
+    redo_settings = dict(settings, use_youtube=True,
+                         youtube_num=max(8, int(settings.get("youtube_num", 4))))
+    key = os.getenv("GROQ_API_KEY")
+    try:
+        with bot_settings.apply_env(redo_settings):
+            n = fill_empty_shots(shots, groq_key=key, video_topic=pend["topic"],
+                                 errors=pend["errors"], progress=_p, passes=3)
+            new_qa = review_timeline(shots, api_key=key, video_topic=pend["topic"]) if n else pend["qa"]
+            write_fcpxml(shots, proj)
+    except Exception as e:
+        send_message(chat_id, f"❌ Redo failed: {e}")
+        return
+
+    result = pend["result"]
+    result["n_selected"] = sum(1 for s in shots if s.get("selected_results"))
+    result["n_clips"] = sum(len(s.get("selected_results") or []) for s in shots)
+    result["qa"] = new_qa
+    pend["qa"] = new_qa
+    still = sum(1 for s in shots
+                if s.get("priority") != "none" and not s.get("selected_results"))
+    edit_message(chat_id, msg_id, f"♻️ {proj} — filled {n} shot(s); {still} still empty.")
+    send_message(chat_id, format_review(proj, result))
+
+
+# ── log export + command registration ────────────────────────────────────────
+
+def handle_logs(chat_id) -> None:
+    """Send the captured bot log as a .txt document."""
+    dest = os.path.join(".cache", f"broll-bot-{time.strftime('%Y%m%d_%H%M%S')}.log")
+    path = logsetup.snapshot_logs(dest)
+    if not path:
+        send_message(chat_id, "No logs captured yet.")
+        return
+    send_document(chat_id, path, caption="B-Roll bot logs")
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+# (command, description) pairs registered with Telegram so typing '/' shows a menu.
+_BOT_COMMANDS = [
+    ("settings", "Sources, counts, quality, QA, review gate"),
+    ("status", "Is the bot online and ready?"),
+    ("details", "Per-shot clip breakdown (pending project)"),
+    ("download", "Fetch clips for the reviewed project"),
+    ("refine", "Re-pick QA-flagged shots (or /refine 4 9)"),
+    ("redo", "Re-fetch shots with no clip (YouTube-first)"),
+    ("cancel", "Stop the running job / discard pending"),
+    ("zip", "Bundle a finished project (link + attach)"),
+    ("cleanup", "Show disk usage / delete a project"),
+    ("logs", "Export the bot logs as a file"),
+    ("help", "Show the command list"),
+]
+
+
+def register_commands() -> None:
+    """Tell Telegram our command list so clients show a '/' suggestion menu."""
+    cmds = [{"command": c, "description": d} for c, d in _BOT_COMMANDS]
+    try:
+        _call("setMyCommands", commands=json.dumps(cmds))
+    except Exception as e:
+        print(f"[bot] setMyCommands failed: {e}")
+
+
 # ── health / status check ──────────────────────────────────────────────────────
 
 # Lightweight reachability probes — a general-connectivity endpoint plus the API
@@ -777,9 +876,11 @@ _HELP = (
     "/details — per-shot breakdown of the project awaiting review\n"
     "/download — fetch clips for the reviewed project\n"
     "/refine [shots] — re-pick QA-flagged shots (or named ones, e.g. /refine 4 9)\n"
+    "/redo — re-fetch shots with no clip (YouTube-first)\n"
     "/cancel — stop the running job (or discard a pending one)\n"
     "/zip [name] — bundle a finished project (link + attach)\n"
-    "/cleanup [name|all] — list or delete downloaded projects (free disk)"
+    "/cleanup [name|all] — list or delete downloaded projects (free disk)\n"
+    "/logs — export the bot logs as a file"
 )
 
 
@@ -824,8 +925,14 @@ def main() -> None:
         for _v in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             os.environ[_v] = _app_proxy
 
+    # Capture stdout/stderr to .cache/bot.log so /logs can export them.
+    logsetup.install_file_logging()
+
     if not _token():
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get one from @BotFather).")
+
+    # Register the command list so Telegram shows a '/' suggestion menu.
+    register_commands()
 
     # Optional HTTP file server for project-zip download links (BOT_FILE_SERVER=1).
     if os.getenv("BOT_FILE_SERVER", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -912,8 +1019,12 @@ def main() -> None:
                 handle_cleanup(chat_id, text)
                 continue
 
+            if is_logs_command(text):
+                handle_logs(chat_id)
+                continue
+
             # Review-gate actions: need a pending project and a free worker.
-            if is_download_command(text) or is_refine_command(text):
+            if is_download_command(text) or is_refine_command(text) or is_redo_command(text):
                 if _BUSY.get("active"):
                     send_message(chat_id, f"⏳ Busy with '{_BUSY.get('project')}'. One moment…")
                     continue
@@ -924,6 +1035,9 @@ def main() -> None:
                              cancel=threading.Event())
                 if is_download_command(text):
                     threading.Thread(target=_job_thread, args=(_run_download, chat_id),
+                                     daemon=True).start()
+                elif is_redo_command(text):
+                    threading.Thread(target=_job_thread, args=(_run_redo, chat_id),
                                      daemon=True).start()
                 else:
                     slots = _parse_slots(text)

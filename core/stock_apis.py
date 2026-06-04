@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import random
@@ -120,8 +121,51 @@ class _RateLimitGate:
             return _dt.datetime.fromtimestamp(self.until).strftime("%H:%M")
 
 
-_PEXELS_GATE  = _RateLimitGate("Pexels")
+_PEXELS_GATE  = _RateLimitGate("Pexels")   # fallback / status when no pool
 _PIXABAY_GATE = _RateLimitGate("Pixabay")
+
+# ── Pexels multi-key rotation ─────────────────────────────────────────────────
+# Pexels rate-limits PER KEY (~200 req/hr free tier). Configure extra keys and
+# the search rotates to the next one when a key's quota is exhausted, instead of
+# going dark for the rest of the hour. Extra keys come from PEXELS_API_KEY_2,
+# PEXELS_API_KEY_3, … and/or a comma list in PEXELS_API_KEYS.
+_pexels_gates: dict = {}
+_pexels_gates_lock = threading.Lock()
+
+
+def _pexels_gate(key: str) -> "_RateLimitGate":
+    """The rate-limit breaker for one Pexels key (one per key, created lazily)."""
+    with _pexels_gates_lock:
+        g = _pexels_gates.get(key)
+        if g is None:
+            g = _RateLimitGate("Pexels")
+            _pexels_gates[key] = g
+        return g
+
+
+def _extra_pexels_keys() -> list:
+    out = []
+    for k in (os.getenv("PEXELS_API_KEYS", "") or "").replace(";", ",").split(","):
+        if k.strip():
+            out.append(k.strip())
+    i = 2
+    while True:
+        v = (os.getenv(f"PEXELS_API_KEY_{i}", "") or "").strip()
+        if not v:
+            break
+        out.append(v)
+        i += 1
+    return out
+
+
+def pexels_key_pool(primary: str = None) -> list:
+    """Ordered, de-duped list of Pexels keys: the primary first, then extras."""
+    keys = []
+    for k in [primary if primary is not None else os.getenv("PEXELS_API_KEY", "")] + _extra_pexels_keys():
+        k = (k or "").strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
 
 
 def get_rate_limit_status() -> dict:
@@ -132,13 +176,25 @@ def get_rate_limit_status() -> dict:
     not limited).
     """
     out = {}
-    for key, gate in (("pexels", _PEXELS_GATE), ("pixabay", _PIXABAY_GATE)):
-        secs = gate.blocked_for()
-        out[key] = {
-            "blocked": secs > 0,
-            "seconds": secs,
-            "reset_at": gate.reset_clock_str(),
-        }
+    # Pexels: across the whole key pool — "blocked" only when EVERY key is out
+    # of quota; seconds = soonest key to free up.
+    pool = pexels_key_pool() or [None]
+    gates = [_pexels_gate(k) if k else _PEXELS_GATE for k in pool]
+    blocked_secs = [g.blocked_for() for g in gates]
+    soonest = min(blocked_secs)
+    all_blocked = all(s > 0 for s in blocked_secs)
+    open_gate = next((g for g, s in zip(gates, blocked_secs) if s <= 0), gates[0])
+    out["pexels"] = {
+        "blocked": all_blocked,
+        "seconds": soonest if all_blocked else 0.0,
+        "reset_at": open_gate.reset_clock_str() if all_blocked else "",
+    }
+    secs = _PIXABAY_GATE.blocked_for()
+    out["pixabay"] = {
+        "blocked": secs > 0,
+        "seconds": secs,
+        "reset_at": _PIXABAY_GATE.reset_clock_str(),
+    }
     return out
 
 
@@ -260,70 +316,93 @@ def _pexels_slug_to_text(page_url: str) -> str:
 
 
 def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list = None, page: int = 1) -> list:
-    if not api_key or not keyword:
+    """Search Pexels, rotating across the key pool when a key is rate-limited.
+
+    ``api_key`` is the primary key; :func:`pexels_key_pool` adds any extras from
+    the environment. Each key has its own breaker, so once one key's hourly quota
+    is gone the search moves to the next instead of going dark.
+    """
+    if not keyword:
         return []
+    keys = pexels_key_pool(api_key)
+    if not keys:
+        return []
+
+    last_gate = None
+    for key in keys:
+        gate = _pexels_gate(key)
+        last_gate = gate
+        if gate.blocked_for() > 0:
+            continue  # this key is exhausted — try the next
+        try:
+            return _search_pexels_one(keyword, key, num_results, page)
+        except _RateLimited:
+            continue  # rotate to the next key
+        except Exception as e:
+            # Network/parse error isn't key-specific — surface and stop.
+            msg = f"Pexels search failed for '{keyword}': {e}{_network_hint(e)}"
+            print(msg)
+            if errors is not None:
+                errors.append(msg)
+            return []
+
+    # Every key is rate-limited.
+    if errors is not None:
+        errors.append(_rate_limit_message("Pexels", last_gate or _PEXELS_GATE))
+    return []
+
+
+def _search_pexels_one(keyword: str, api_key: str, num_results: int = 3, page: int = 1) -> list:
+    """Single-key Pexels search. Raises ``_RateLimited`` if this key is limited
+    (so the caller can rotate to the next key)."""
+    gate = _pexels_gate(api_key)
+    if gate.blocked_for() > 0:
+        raise _RateLimited(gate.until)
 
     url = "https://api.pexels.com/videos/search"
     headers = {"Authorization": api_key}
     params = {"query": keyword, "per_page": min(num_results, 80), "page": max(1, page)}
 
-    # Skip immediately if Pexels' quota is known-exhausted — avoids burning a
-    # rate-limiter token and a doomed request, and keeps the error log to one
-    # shared line instead of one per query.
-    if _PEXELS_GATE.blocked_for() > 0:
-        if errors is not None:
-            errors.append(_rate_limit_message("Pexels", _PEXELS_GATE))
-        return []
-
     results = []
-    try:
-        with _PEXELS_RL:
-            response = _http_get_with_retry(url, headers=headers, params=params,
-                                            rate_gate=_PEXELS_GATE)
-        data = response.json()
+    with _PEXELS_RL:
+        response = _http_get_with_retry(url, headers=headers, params=params,
+                                        rate_gate=gate)
+    data = response.json()
 
-        for video in data.get('videos', []):
-            video_files = video.get('video_files', [])
-            if not video_files:
-                continue
+    for video in data.get('videos', []):
+        video_files = video.get('video_files', [])
+        if not video_files:
+            continue
 
-            # 1080p only: keep files at full HD or above (landscape height >= 1080,
-            # or a vertical clip at least 1920 wide), then pick the one closest to
-            # 1080 — avoids pulling a 4K master we'd only downscale to the 1080p
-            # download cap. Videos with no >=1080 file are skipped entirely.
-            qualifying = [vf for vf in video_files
-                          if (vf.get('height') or 0) >= 1080 or (vf.get('width') or 0) >= 1920]
-            if not qualifying:
-                continue
-            best_file = min(qualifying, key=lambda vf: vf.get('height') or 0)
+        # 1080p only: keep files at full HD or above (landscape height >= 1080,
+        # or a vertical clip at least 1920 wide), then pick the one closest to
+        # 1080 — avoids pulling a 4K master we'd only downscale to the 1080p
+        # download cap. Videos with no >=1080 file are skipped entirely.
+        qualifying = [vf for vf in video_files
+                      if (vf.get('height') or 0) >= 1080 or (vf.get('width') or 0) >= 1920]
+        if not qualifying:
+            continue
+        best_file = min(qualifying, key=lambda vf: vf.get('height') or 0)
 
-            page_url = video.get('url', '')
-            semantic = _pexels_slug_to_text(page_url)
-            author = video.get('user', {}).get('name', 'Unknown')
-            results.append({
-                'title': semantic.title() if semantic else f"Pexels Video {video.get('id')}",
-                'url': best_file.get('link'),
-                'page_url': page_url,
-                'source': 'pexels',
-                'thumbnail': video.get('image', ''),
-                'description': f"By {author}",
-                'duration': video.get('duration'),
-                'is_short': False,
-                'width': best_file.get('width'),
-                'height': best_file.get('height'),
-                'quality': best_file.get('quality'),
-                'file_size': None,
-            })
-            if len(results) >= num_results:
-                break
-    except _RateLimited:
-        if errors is not None:
-            errors.append(_rate_limit_message("Pexels", _PEXELS_GATE))
-    except Exception as e:
-        msg = f"Pexels search failed for '{keyword}': {e}{_network_hint(e)}"
-        print(msg)
-        if errors is not None:
-            errors.append(msg)
+        page_url = video.get('url', '')
+        semantic = _pexels_slug_to_text(page_url)
+        author = video.get('user', {}).get('name', 'Unknown')
+        results.append({
+            'title': semantic.title() if semantic else f"Pexels Video {video.get('id')}",
+            'url': best_file.get('link'),
+            'page_url': page_url,
+            'source': 'pexels',
+            'thumbnail': video.get('image', ''),
+            'description': f"By {author}",
+            'duration': video.get('duration'),
+            'is_short': False,
+            'width': best_file.get('width'),
+            'height': best_file.get('height'),
+            'quality': best_file.get('quality'),
+            'file_size': None,
+        })
+        if len(results) >= num_results:
+            break
 
     return results
 
