@@ -30,11 +30,20 @@ the fastembed model and downloads survive restarts:
 ```bash
 docker run -d --name broll-bot --restart unless-stopped \
   --env-file .env \
+  -p 8770:8770 \
   -v "$PWD/downloads:/app/downloads" \
   -v "$PWD/.cache:/app/.cache" \
   broll-finder
 docker logs -f broll-bot          # live logs
 ```
+
+`-p 8770:8770` exposes the download-link server (enable with `BOT_FILE_SERVER=1`
+and set `BOT_PUBLIC_HOST` in `.env`). Drop it if you don't want HTTP links.
+
+Bot usage: send a voice/audio file; control everything from chat — `/settings`
+(inline menu: sources, per-source counts, quality, QA on/off, review gate),
+`/status`, `/details`, `/download`, `/refine`, `/cancel`, `/zip`. With the review
+gate on, the bot pauses after selection + QA so you can `/refine` or `/download`.
 
 To run the Streamlit UI instead (or alongside, with a different `--name`),
 override the command:

@@ -145,16 +145,121 @@ def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
     return still_empty_before - sum(1 for s in targets if not s.get("selected_results"))
 
 
+def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topic: str = "",
+                         errors: list = None, progress=None,
+                         severities=("high", "medium")) -> int:
+    """QA-driven re-pick: for each shot the Step 5.5 review flagged, regenerate
+    better search queries from the reviewer's suggestion, re-fetch, re-rank, and
+    re-select — so the timeline self-corrects the problems the QA pass found.
+
+    Only shots whose issue ``severity`` is in ``severities`` are touched. Returns
+    how many flagged shots ended up with a (re)selection. Safe to call repeatedly.
+    """
+    from core.director import regenerate_shot_queries
+    from core.director_youtube import seed_youtube_keywords
+    from core.director_search import fetch_with_retries, filter_youtube_sd_candidates
+    from core.director_rank import rank_shot_candidates, auto_select_top_candidates
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    by_slot: dict = {}
+    for it in (qa.get("issues") or []):
+        if it.get("severity") in severities and it.get("slot_id") is not None:
+            by_slot.setdefault(it["slot_id"], []).append(it)
+    if not by_slot:
+        return 0
+    if errors is None:
+        errors = []
+
+    targets = [s for s in shots if s.get("slot_id") in by_slot and s.get("priority") != "none"]
+    if not targets:
+        return 0
+    if progress:
+        progress(f"Refining {len(targets)} flagged shot(s)…")
+
+    # Regenerate queries per flagged shot, guided by that shot's QA feedback, then
+    # clear its old candidates/selection so it gets a fresh fetch + pick.
+    for s in targets:
+        sid = s.get("slot_id")
+        notes = "; ".join(
+            f"{i.get('problem', '')} → {i.get('suggestion', '')}".strip(" →")
+            for i in by_slot[sid]
+        )
+        try:
+            regenerate_shot_queries(
+                shots, {sid}, api_key=key, video_topic=video_topic,
+                custom_instructions=f"QA feedback to fix for this shot: {notes}",
+            )
+        except Exception as e:
+            errors.append(f"refine regen slot {sid}: {e}")
+        s["video_results"] = []
+        s.pop("selected_results", None)
+        s.pop("auto_selected", None)
+
+    try:
+        seed_youtube_keywords(targets)
+    except Exception:
+        pass
+    fetch_with_retries(targets, errors=errors)
+
+    if os.getenv("YOUTUBE_API_KEY"):
+        try:
+            filter_youtube_sd_candidates(targets, api_key=os.getenv("YOUTUBE_API_KEY"))
+        except Exception as e:
+            errors.append(f"refine hd_filter: {e}")
+
+    if _flag_default("AUTO_USE_LIBRARY", True):
+        try:
+            from core.clip_library import get_library_stats, inject_library_candidates
+            if get_library_stats().get("total", 0):
+                inject_library_candidates(targets, top_k=int(os.getenv("AUTO_LIBRARY_NUM", "5") or 5))
+        except Exception as e:
+            errors.append(f"refine clip_library: {e}")
+
+    try:
+        rank_shot_candidates(targets, api_key=key, video_topic=video_topic)
+    except Exception as e:
+        errors.append(f"refine rank: {e}")
+
+    auto_select_top_candidates(shots)   # fills the now-empty refreshed shots
+    return sum(1 for s in targets if s.get("selected_results"))
+
+
+def write_fcpxml(shots: list, project_name: str) -> str:
+    """Render the Premiere FCPXML for ``shots`` and write it to the project dir.
+    Returns the absolute XML path."""
+    xml = generate_fcpxml(shots, project_name=project_name)
+    proj = _safe_for_fs(project_name, 50)
+    xml_path = os.path.join(os.path.abspath("downloads"), proj, f"{proj}.xml")
+    os.makedirs(os.path.dirname(xml_path), exist_ok=True)
+    with open(xml_path, "w", encoding="utf-8") as f:
+        f.write(xml)
+    return xml_path
+
+
+def finalize_project(shots: list, project_name: str, quality: str = "1080",
+                     should_cancel=None, progress=None) -> dict:
+    """Download the selected clips and (re)write the FCPXML — the back half of the
+    pipeline, split out so the bot's review gate can run it after the user
+    approves (or after a /refine). Returns ``{download, xml_path}``."""
+    dl = download_selected_clips(shots, project_name, quality=quality,
+                                 progress=progress, should_cancel=should_cancel)
+    return {"download": dl, "xml_path": write_fcpxml(shots, project_name)}
+
+
 def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: str = "auto",
                           download: bool = True, context_aware: bool = None,
-                          progress_callback=None, should_cancel=None, run_qa: bool = None) -> dict:
+                          progress_callback=None, should_cancel=None, run_qa: bool = None,
+                          auto_refine: bool = None, quality: str = "1080") -> dict:
     """Drive transcribe → topic → (context pre-pass) → shot list → fetch → HD
-    filter → rank → auto-select → QA review → [download] → FCPXML, headless.
+    filter → rank → auto-select → QA review → [auto-refine] → [download] → FCPXML.
 
     ``progress_callback(step, total, label)`` is invoked at each stage. Returns a
     dict with ``project_name, topic, shots, n_shots, n_selected, n_clips, qa,
     xml_path, download, errors``. Raises only on the hard failures that make
     continuing pointless (no transcription / no shots / no key).
+
+    ``auto_refine`` (default env ``AUTO_REFINE``, off) re-picks QA-flagged shots
+    before download. ``quality`` is the download resolution passed to yt-dlp.
     """
     from core.transcription import transcribe_audio
     from core.director import generate_shot_list_from_transcription, segment_script_structure
@@ -172,6 +277,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     if run_qa is None:
         # Default on; set ENABLE_QA_REVIEW=false to skip the Step 5.5 review.
         run_qa = os.getenv("ENABLE_QA_REVIEW", "true").strip().lower() in ("1", "true", "yes", "on")
+    if auto_refine is None:
+        auto_refine = _flag_default("AUTO_REFINE", False)
 
     total = 11 if download else 10
     errors = []
@@ -264,6 +371,16 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     if run_qa:
         _p(9, "Final QA review")
         qa = review_timeline(shots, api_key=key, video_topic=topic)
+        # 9b — auto-refine flagged shots, then re-review so the report reflects
+        # the fixes. Off by default; the bot turns it on per-job.
+        if auto_refine and qa.get("issues"):
+            _p(9, f"Refining {len(qa['issues'])} flagged shot(s)")
+            n_ref = refine_flagged_shots(shots, qa, groq_key=key, video_topic=topic,
+                                         errors=errors)
+            if n_ref:
+                _p(9, "Re-reviewing refined timeline")
+                qa = review_timeline(shots, api_key=key, video_topic=topic)
+                qa["refined"] = n_ref
     else:
         qa = {"overall": "QA review skipped.", "issues": []}
 
@@ -283,15 +400,10 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # 10 — Download (optional)
     if download:
         _p(10, "Downloading clips")
-        result["download"] = download_selected_clips(shots, project_name, should_cancel=should_cancel)
+        result["download"] = download_selected_clips(shots, project_name, quality=quality,
+                                                     should_cancel=should_cancel)
 
     # Final — FCPXML
     _p(total, "Writing Premiere XML")
-    xml = generate_fcpxml(shots, project_name=project_name)
-    proj = _safe_for_fs(project_name, 50)
-    xml_path = os.path.join(os.path.abspath("downloads"), proj, f"{proj}.xml")
-    os.makedirs(os.path.dirname(xml_path), exist_ok=True)
-    with open(xml_path, "w", encoding="utf-8") as f:
-        f.write(xml)
-    result["xml_path"] = xml_path
+    result["xml_path"] = write_fcpxml(shots, project_name)
     return result

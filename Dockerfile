@@ -45,6 +45,10 @@ ENV HOME=/app \
 # the SQLite clip library) across container restarts.
 VOLUME ["/app/downloads", "/app/.cache"]
 
+# Optional download-link server (BOT_FILE_SERVER=1). Map it with -p to hand out
+# project-zip links; also used by the Streamlit UI override.
+EXPOSE 8770 8501
+
 # Intentionally runs as root: the bot self-upgrades yt-dlp daily in-process
 # (core/app_utils.update_yt_dlp does `pip install --upgrade yt-dlp`), which must
 # be able to write to site-packages. YouTube breaks stale yt-dlp, so keeping it

@@ -20,6 +20,7 @@ only the small FCPXML is sent back over Telegram.
 """
 
 import os
+import json
 import time
 import shutil
 import threading
@@ -31,14 +32,28 @@ configure_runtime()
 
 import requests
 
+from bot import settings as bot_settings
+from bot import fileserver
+
 _API = "https://api.telegram.org/bot{token}/{method}"
 _FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
 _AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac")
+
+# Telegram bot upload cap for sendDocument (~50 MB). Bigger bundles go by link.
+_TG_UPLOAD_LIMIT = 50 * 1024 * 1024
 
 # Tracks the single in-flight job. The pipeline runs in a background thread so
 # the polling loop stays responsive (can answer /status and /cancel mid-job).
 # ``cancel`` is a threading.Event the running pipeline checks at each stage.
 _BUSY = {"active": False, "project": None, "cancel": None}
+
+# Projects paused at the review gate, keyed by chat_id: holds the selected shots
+# + QA so /download, /refine, /details can act on them between messages.
+_PENDING: dict = {}
+
+# File server port (set in main() when BOT_FILE_SERVER is enabled), used to build
+# download links.
+_FILESERVER = {"port": None}
 
 # Last completed project name, so /zip knows what to bundle by default.
 _LAST = {"project": None}
@@ -109,21 +124,34 @@ def _call(method: str, _timeout: int = 60, **params) -> dict:
     return resp.json()
 
 
-def send_message(chat_id, text: str) -> dict:
+def send_message(chat_id, text: str, reply_markup: dict = None) -> dict:
+    params = {"chat_id": chat_id, "text": text}
+    if reply_markup is not None:
+        params["reply_markup"] = json.dumps(reply_markup)
     try:
-        return _call("sendMessage", chat_id=chat_id, text=text).get("result", {})
+        return _call("sendMessage", **params).get("result", {})
     except Exception as e:
         print(f"[bot] sendMessage failed: {e}")
         return {}
 
 
-def edit_message(chat_id, message_id, text: str) -> None:
+def edit_message(chat_id, message_id, text: str, reply_markup: dict = None) -> None:
     if not message_id:
         return
+    params = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if reply_markup is not None:
+        params["reply_markup"] = json.dumps(reply_markup)
     try:
-        _call("editMessageText", chat_id=chat_id, message_id=message_id, text=text)
+        _call("editMessageText", **params)
     except Exception:
         pass  # editing is best-effort (rate limits / identical text)
+
+
+def answer_callback(callback_query_id: str, text: str = "") -> None:
+    try:
+        _call("answerCallbackQuery", callback_query_id=callback_query_id, text=text)
+    except Exception:
+        pass
 
 
 def download_telegram_file(file_id: str, dest_path: str) -> str:
@@ -151,6 +179,196 @@ def send_document(chat_id, path: str, caption: str = "") -> None:
         send_message(chat_id, f"(Couldn't attach the XML: {e})")
 
 
+# ── settings menu (inline keyboard) ─────────────────────────────────────────────
+
+def build_settings_keyboard(chat_id) -> dict:
+    """Inline keyboard: one tappable button per option (tap to toggle/cycle),
+    plus Reset and Close. callback_data is ``set:<key>`` / ``settings:<action>``."""
+    s = bot_settings.get_settings(chat_id)
+    rows = []
+    for opt in bot_settings.OPTIONS:
+        val = bot_settings.display_value(opt, s.get(opt["key"]))
+        rows.append([{"text": f"{opt['label']}: {val}", "callback_data": f"set:{opt['key']}"}])
+    rows.append([
+        {"text": "↺ Reset", "callback_data": "settings:reset"},
+        {"text": "✖ Close", "callback_data": "settings:close"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+def _settings_text() -> str:
+    return ("⚙️ Settings — tap a row to change it.\n"
+            "Counts are per query/shot. Changes are saved and used for your next job.")
+
+
+def send_settings(chat_id) -> None:
+    send_message(chat_id, _settings_text(), reply_markup=build_settings_keyboard(chat_id))
+
+
+def handle_settings_callback(cb: dict) -> None:
+    """React to a tap on the /settings keyboard."""
+    data = cb.get("data") or ""
+    msg = cb.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    message_id = msg.get("message_id")
+    cb_id = cb.get("id")
+
+    if data == "settings:close":
+        edit_message(chat_id, message_id, "⚙️ Settings saved.")
+        answer_callback(cb_id, "Saved")
+        return
+    if data == "settings:reset":
+        bot_settings.reset(chat_id)
+        edit_message(chat_id, message_id, _settings_text(),
+                     reply_markup=build_settings_keyboard(chat_id))
+        answer_callback(cb_id, "Reset to defaults")
+        return
+    if data.startswith("set:"):
+        key = data[4:]
+        try:
+            s = bot_settings.toggle(chat_id, key)
+            opt = next(o for o in bot_settings.OPTIONS if o["key"] == key)
+            edit_message(chat_id, message_id, _settings_text(),
+                         reply_markup=build_settings_keyboard(chat_id))
+            answer_callback(cb_id, f"{opt['label']}: {bot_settings.display_value(opt, s[key])}")
+        except Exception:
+            answer_callback(cb_id, "Couldn't update that.")
+
+
+# ── command predicates ───────────────────────────────────────────────────────
+
+def is_settings_command(text: str) -> bool:
+    return _command(text) in ("/settings", "/options", "/config")
+
+
+def is_download_command(text: str) -> bool:
+    return _command(text) in ("/download", "/go", "/approve", "/accept")
+
+
+def is_refine_command(text: str) -> bool:
+    return _command(text) in ("/refine", "/improve", "/redo")
+
+
+def is_details_command(text: str) -> bool:
+    return _command(text) in ("/details", "/detail", "/shots")
+
+
+def is_help_command(text: str) -> bool:
+    return _command(text) in ("/help", "/start", "/commands")
+
+
+# ── reporting (per-shot + QA + errors) ───────────────────────────────────────
+
+def _shot_clip_info(shots: list) -> list:
+    """Per selected shot: ``(slot_id, priority, n_clips, sources)``."""
+    out = []
+    for s in shots:
+        sel = s.get("selected_results") or []
+        if not sel:
+            continue
+        srcs = []
+        for r in sel:
+            src = (r.get("source") or "?").lower()
+            if src not in srcs:
+                srcs.append(src)
+        out.append((s.get("slot_id"), s.get("priority", "—"), len(sel), ",".join(srcs)))
+    return out
+
+
+def format_qa_block(qa: dict, limit: int = 8) -> list:
+    """QA verdict + flagged issues, each pinned to its shot number."""
+    lines = []
+    verdict = (qa or {}).get("overall") or "—"
+    issues = (qa or {}).get("issues") or []
+    head = f"QA: {verdict}"
+    if qa.get("refined"):
+        head += f"  (auto-refined {qa['refined']} shot[s])"
+    lines.append(head)
+    for it in issues[:limit]:
+        sev = it.get("severity", "med")
+        sug = it.get("suggestion", "")
+        line = f"  ⚠️ #{it.get('slot_id')} ({sev}) {it.get('problem', '')}"
+        if sug:
+            line += f" → {sug}"
+        lines.append(line[:300])
+    if len(issues) > limit:
+        lines.append(f"  …and {len(issues) - limit} more")
+    return lines
+
+
+def format_errors_block(errors: list, limit: int = 6) -> list:
+    if not errors:
+        return []
+    lines = [f"❗ {len(errors)} issue(s) during processing:"]
+    for e in errors[:limit]:
+        lines.append(f"  • {str(e)[:200]}")
+    if len(errors) > limit:
+        lines.append(f"  …and {len(errors) - limit} more")
+    return lines
+
+
+def format_review(proj: str, result: dict) -> str:
+    """Pre-download review: counts, per-shot clip spread, QA flags, errors, and
+    the action prompt."""
+    shots = result.get("shots") or []
+    lines = [
+        f"📋 {proj} — ready to review",
+        f"Shots: {result.get('n_shots', 0)}  ·  with clips: {result.get('n_selected', 0)}"
+        f"  ·  clips: {result.get('n_clips', 0)}",
+    ]
+    empties = [s.get("slot_id") for s in shots
+               if s.get("priority") != "none" and not s.get("selected_results")]
+    if empties:
+        lines.append(f"⚪ No clip for shot(s): {', '.join(str(e) for e in empties[:20])}")
+    lines += format_qa_block(result.get("qa") or {})
+    lines += format_errors_block(result.get("errors") or [])
+    lines.append("")
+    lines.append("Reply:  /download  ·  /refine  ·  /details  ·  /cancel")
+    return "\n".join(lines)
+
+
+def format_details(shots: list) -> str:
+    info = _shot_clip_info(shots)
+    if not info:
+        return "No shots have clips selected yet."
+    lines = ["🎞 Per-shot selection:"]
+    for slot, prio, n, srcs in info[:60]:
+        lines.append(f"  #{slot} [{prio}] {n} clip(s) · {srcs}")
+    return "\n".join(lines)
+
+
+# ── project delivery (zip → Telegram attach + download link) ─────────────────
+
+def deliver_project(chat_id, project: str) -> None:
+    """Zip the finished project, attach it to Telegram when it fits under the
+    upload cap, and always provide a signed download link (when the file server
+    is up) plus the scp path."""
+    from core.output import zip_project
+    try:
+        res = zip_project(project)
+    except FileNotFoundError:
+        send_message(chat_id, f"(No files to bundle for '{project}'.)")
+        return
+    except Exception as e:
+        send_message(chat_id, f"(Couldn't zip '{project}': {e})")
+        return
+
+    abs_path = os.path.abspath(res["path"])
+    size = res["size_bytes"]
+    lines = [f"📦 {project} — {res['files']} file(s), {_human_size(size)}"]
+
+    port = _FILESERVER.get("port")
+    if port:
+        link = fileserver.build_link(abs_path, fileserver.public_host(), port)
+        if link:
+            lines.append(f"🔗 {link}\n(link expires in 24h)")
+    lines.append(f"scp USER@SERVER:'{abs_path}' .")
+    send_message(chat_id, "\n".join(lines))
+
+    if size <= _TG_UPLOAD_LIMIT and os.path.exists(abs_path):
+        send_document(chat_id, abs_path, caption=f"{project} — clips + XML")
+
+
 # ── job ────────────────────────────────────────────────────────────────────────
 
 def format_summary(proj: str, result: dict) -> str:
@@ -170,42 +388,67 @@ def format_summary(proj: str, result: dict) -> str:
     return "\n".join(lines)
 
 
+def _progress_logger(chat_id, proj, msg_id):
+    """App-style running step log: appends each stage (✅ done, ⏳ current) to a
+    single edited message."""
+    steps: list = []
+
+    def _cb(step, total, label):
+        steps.append(label)
+        lines = [f"🎬 {proj}  ({step}/{total})"]
+        for i, lab in enumerate(steps):
+            lines.append(f"{'⏳' if i == len(steps) - 1 else '✅'} {lab}")
+        edit_message(chat_id, msg_id, "\n".join(lines[-18:]))   # cap under TG limits
+
+    return _cb
+
+
+def _should_cancel():
+    cancel = _BUSY.get("cancel")
+    return cancel.is_set if cancel is not None else None
+
+
+def _deliver_completed(chat_id, proj, result) -> None:
+    """Final reporting for a fully-processed (downloaded) project: summary, the
+    Premiere XML, then the zipped bundle (Telegram attach + download link)."""
+    send_message(chat_id, format_summary(proj, result))
+    xml_path = result.get("xml_path")
+    if xml_path and os.path.exists(xml_path):
+        send_document(chat_id, xml_path, caption=f"{proj} — Premiere XML")
+    deliver_project(chat_id, proj)
+
+
 def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
-    """Download the audio and run the headless pipeline, reporting progress back
-    to the chat. Returns the pipeline result (or ``{}`` on early failure)."""
-    from core.pipeline import run_pipeline_headless
+    """Download the audio and run the pipeline under the chat's settings. With
+    the review gate on, stops after selection + QA and waits for /download;
+    otherwise downloads and delivers end-to-end."""
+    from core.pipeline import run_pipeline_headless, PipelineCancelled
 
     proj = project_name_from(suggested_name, time.strftime("video_%Y%m%d_%H%M%S"))
     ext = os.path.splitext(suggested_name or "")[1].lower() or ".mp3"
     audio_path = os.path.join(".cache", f"bot_{proj}{ext}")
 
+    settings = bot_settings.get_settings(chat_id)
+    review_gate = bool(settings.get("review_gate"))
+
     status = send_message(chat_id, f"🎬 Received '{proj}'. Downloading…")
     msg_id = status.get("message_id")
-
     try:
         download_telegram_file(file_id, audio_path)
     except Exception as e:
         send_message(chat_id, f"❌ Couldn't fetch the audio: {e}")
         return {}
 
-    # Running step log, app-style: each stage is appended (✅ done, ⏳ current),
-    # so the editing status message reads like the app's progress panel.
-    steps: list = []
-
-    def _progress(step, total, label):
-        steps.append(label)
-        lines = [f"🎬 {proj}  ({step}/{total})"]
-        for i, lab in enumerate(steps):
-            lines.append(f"{'⏳' if i == len(steps) - 1 else '✅'} {lab}")
-        edit_message(chat_id, msg_id, "\n".join(lines[-18:]))   # cap to stay under TG limits
-
-    from core.pipeline import PipelineCancelled
-    cancel = _BUSY.get("cancel")
-    should_cancel = cancel.is_set if cancel is not None else None
-
+    progress = _progress_logger(chat_id, proj, msg_id)
     try:
-        result = run_pipeline_headless(audio_path, project_name=proj, download=True,
-                                       progress_callback=_progress, should_cancel=should_cancel)
+        with bot_settings.apply_env(settings):
+            result = run_pipeline_headless(
+                audio_path, project_name=proj, download=not review_gate,
+                progress_callback=progress, should_cancel=_should_cancel(),
+                run_qa=bool(settings.get("qa")),
+                auto_refine=bool(settings.get("auto_refine")),
+                quality=str(settings.get("quality", 1080)),
+            )
     except PipelineCancelled:
         send_message(chat_id, f"⏹ Cancelled '{proj}'.")
         return {}
@@ -213,17 +456,87 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
         send_message(chat_id, f"❌ Pipeline failed for '{proj}': {e}")
         return {}
 
-    # Finalize the log (all steps done) and remember the project for /zip.
-    if steps:
-        edit_message(chat_id, msg_id,
-                     f"🎬 {proj} — ✅ complete\n" + "\n".join(f"✅ {s}" for s in steps[-18:]))
+    edit_message(chat_id, msg_id, f"🎬 {proj} — ✅ stages complete")
     _LAST["project"] = proj
-    send_message(chat_id, format_summary(proj, result))
-    xml_path = result.get("xml_path")
-    if xml_path and os.path.exists(xml_path):
-        send_document(chat_id, xml_path, caption=f"{proj} — Premiere XML")
-    send_message(chat_id, f"📦 Send /zip to bundle '{proj}' (clips + XML) into one file on the server.")
+
+    if review_gate:
+        _PENDING[chat_id] = {
+            "project": proj, "shots": result.get("shots") or [],
+            "qa": result.get("qa") or {}, "topic": result.get("topic", ""),
+            "errors": result.get("errors") or [], "result": result, "settings": settings,
+        }
+        send_message(chat_id, format_review(proj, result))
+    else:
+        _deliver_completed(chat_id, proj, result)
     return result
+
+
+def _run_download(chat_id) -> None:
+    """Review gate → /download: fetch the approved selection and deliver."""
+    pend = _PENDING.get(chat_id)
+    if not pend:
+        send_message(chat_id, "Nothing is waiting for /download. Send a voice file first.")
+        return
+    from core.pipeline import finalize_project, PipelineCancelled
+    proj, settings, result = pend["project"], pend["settings"], pend["result"]
+
+    status = send_message(chat_id, f"⬇️ Downloading clips for '{proj}'…")
+    msg_id = status.get("message_id")
+
+    def _p(done, total):
+        edit_message(chat_id, msg_id, f"⬇️ {proj}: downloaded {done}/{total} clip(s)…")
+
+    try:
+        with bot_settings.apply_env(settings):
+            fin = finalize_project(pend["shots"], proj, quality=str(settings.get("quality", 1080)),
+                                   should_cancel=_should_cancel(), progress=_p)
+    except PipelineCancelled:
+        send_message(chat_id, f"⏹ Cancelled '{proj}'.")
+        return
+    except Exception as e:
+        send_message(chat_id, f"❌ Download failed for '{proj}': {e}")
+        return
+    result["download"] = fin["download"]
+    result["xml_path"] = fin["xml_path"]
+    _PENDING.pop(chat_id, None)
+    _deliver_completed(chat_id, proj, result)
+
+
+def _run_refine(chat_id) -> None:
+    """Review gate → /refine: re-pick QA-flagged shots, re-review, re-show."""
+    pend = _PENDING.get(chat_id)
+    if not pend:
+        send_message(chat_id, "Nothing to /refine. Send a voice file first.")
+        return
+    from core.pipeline import refine_flagged_shots, write_fcpxml
+    from core.director_rank import review_timeline
+    proj, settings, qa, shots = pend["project"], pend["settings"], pend["qa"], pend["shots"]
+    if not qa.get("issues"):
+        send_message(chat_id, "No QA-flagged shots to refine — use /download to proceed.")
+        return
+
+    status = send_message(chat_id, f"🛠 Refining {len(qa['issues'])} flagged shot(s) for '{proj}'…")
+    msg_id = status.get("message_id")
+    key = os.getenv("GROQ_API_KEY")
+    try:
+        with bot_settings.apply_env(settings):
+            n = refine_flagged_shots(shots, qa, groq_key=key, video_topic=pend["topic"],
+                                     errors=pend["errors"])
+            new_qa = review_timeline(shots, api_key=key, video_topic=pend["topic"]) if n else qa
+            write_fcpxml(shots, proj)
+    except Exception as e:
+        send_message(chat_id, f"❌ Refine failed: {e}")
+        return
+
+    result = pend["result"]
+    result["n_selected"] = sum(1 for s in shots if s.get("selected_results"))
+    result["n_clips"] = sum(len(s.get("selected_results") or []) for s in shots)
+    if n:
+        new_qa["refined"] = n
+    result["qa"] = new_qa
+    pend["qa"] = new_qa
+    edit_message(chat_id, msg_id, f"🛠 {proj} — refined {n} shot(s).")
+    send_message(chat_id, format_review(proj, result))
 
 
 # ── health / status check ──────────────────────────────────────────────────────
@@ -323,11 +636,9 @@ def _human_size(n: int) -> str:
 
 
 def handle_zip(chat_id, text: str) -> None:
-    """Bundle a project's clips + XML into a single zip on the server and report
-    its path/size. The file stays on the server (too big for Telegram) — pull it
-    with scp. ``/zip <name>`` targets a specific project; bare /zip uses the last."""
-    from core.output import zip_project
-
+    """Bundle a project's clips + XML and deliver it (Telegram attach when small,
+    plus a signed download link and the scp path). ``/zip <name>`` targets a
+    specific project; bare /zip uses the last one."""
     parts = text.strip().split(maxsplit=1)
     name = parts[1].strip() if len(parts) > 1 else (_LAST.get("project") or "")
     if not name:
@@ -335,26 +646,29 @@ def handle_zip(chat_id, text: str) -> None:
                               "or use /zip <project-name>.")
         return
     send_message(chat_id, f"📦 Zipping '{name}'…")
-    try:
-        res = zip_project(name)
-    except FileNotFoundError:
-        send_message(chat_id, f"❌ No downloaded project named '{name}'.")
-        return
-    except Exception as e:
-        send_message(chat_id, f"❌ Zip failed: {e}")
-        return
-    send_message(
-        chat_id,
-        f"✅ Zipped '{name}' — {res['files']} file(s), {_human_size(res['size_bytes'])}\n"
-        f"📁 {os.path.abspath(res['path'])}\n"
-        f"Pull it with:\nscp USER@SERVER:'{os.path.abspath(res['path'])}' .",
-    )
+    deliver_project(chat_id, name)
 
 
-def _run_job(chat_id, file_id, name) -> None:
-    """Background-thread wrapper: runs one job and always clears the busy flag."""
+_HELP = (
+    "🎬 Send a voice message or audio file and I'll build the B-roll project.\n"
+    "/settings — choose sources, counts, quality, QA, review gate\n"
+    "/status — am I online & ready\n"
+    "/details — per-shot breakdown of the project awaiting review\n"
+    "/download — fetch clips for the reviewed project\n"
+    "/refine — re-pick the QA-flagged shots, then review again\n"
+    "/cancel — stop the running job (or discard a pending one)\n"
+    "/zip [name] — bundle a finished project (link + attach)"
+)
+
+
+def _help_text() -> str:
+    return _HELP
+
+
+def _job_thread(fn, chat_id, *args) -> None:
+    """Background-thread wrapper: run one unit of work and always clear busy."""
     try:
-        handle_audio(chat_id, file_id, name)
+        fn(chat_id, *args)
     except Exception as e:
         send_message(chat_id, f"❌ Unexpected error: {e}")
     finally:
@@ -390,6 +704,11 @@ def main() -> None:
 
     if not _token():
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get one from @BotFather).")
+
+    # Optional HTTP file server for project-zip download links (BOT_FILE_SERVER=1).
+    if os.getenv("BOT_FILE_SERVER", "").strip().lower() in ("1", "true", "yes", "on"):
+        _FILESERVER["port"] = fileserver.start_server()
+
     allowed = allowed_user_ids()
     if not allowed:
         print("WARNING: TELEGRAM_ALLOWED_USERS is empty — every message will be ignored "
@@ -414,6 +733,14 @@ def main() -> None:
 
         for upd in resp.get("result", []):
             offset = upd["update_id"] + 1
+
+            # Inline-keyboard taps from the /settings menu.
+            cb = upd.get("callback_query")
+            if cb:
+                if is_allowed((cb.get("from") or {}).get("id"), allowed):
+                    handle_settings_callback(cb)
+                continue
+
             msg = upd.get("message") or upd.get("channel_post")
             if not msg:
                 continue
@@ -423,9 +750,17 @@ def main() -> None:
                 continue
             text = msg.get("text") or ""
 
+            if is_help_command(text):
+                send_message(chat_id, _help_text())
+                continue
+
             if is_status_command(text):
                 send_message(chat_id, "🔎 Checking…")
                 send_message(chat_id, format_health(check_health(), _BUSY))
+                continue
+
+            if is_settings_command(text):
+                send_settings(chat_id)
                 continue
 
             if is_cancel_command(text):
@@ -434,12 +769,35 @@ def main() -> None:
                     cancel.set()
                     send_message(chat_id, f"⏹ Cancelling '{_BUSY.get('project')}' "
                                           "after the current stage…")
+                elif _PENDING.get(chat_id):
+                    proj = _PENDING.pop(chat_id)["project"]
+                    send_message(chat_id, f"⏹ Discarded pending project '{proj}'.")
                 else:
                     send_message(chat_id, "Nothing is running right now.")
                 continue
 
+            if is_details_command(text):
+                pend = _PENDING.get(chat_id)
+                send_message(chat_id, format_details(pend["shots"]) if pend
+                             else "No project is waiting for review.")
+                continue
+
             if is_zip_command(text):
                 handle_zip(chat_id, text)
+                continue
+
+            # Review-gate actions: need a pending project and a free worker.
+            if is_download_command(text) or is_refine_command(text):
+                if _BUSY.get("active"):
+                    send_message(chat_id, f"⏳ Busy with '{_BUSY.get('project')}'. One moment…")
+                    continue
+                if not _PENDING.get(chat_id):
+                    send_message(chat_id, "Nothing to act on — send a voice file first.")
+                    continue
+                fn = _run_download if is_download_command(text) else _run_refine
+                _BUSY.update(active=True, project=_PENDING[chat_id]["project"],
+                             cancel=threading.Event())
+                threading.Thread(target=_job_thread, args=(fn, chat_id), daemon=True).start()
                 continue
 
             file_id, name = extract_audio(msg)
@@ -448,17 +806,20 @@ def main() -> None:
                     send_message(chat_id, f"⏳ Still processing '{_BUSY.get('project')}'. "
                                           "Send /cancel to stop it, or wait and resend.")
                     continue
+                if _PENDING.get(chat_id):
+                    send_message(chat_id, f"📋 '{_PENDING[chat_id]['project']}' is awaiting review. "
+                                          "Reply /download, /refine, or /cancel first.")
+                    continue
                 # Claim the slot in THIS thread (avoids a race with a second file),
                 # then run the job in the background so the loop keeps polling and
                 # can answer /status and /cancel mid-job.
                 _BUSY.update(active=True,
                              project=project_name_from(name, time.strftime("video_%Y%m%d_%H%M%S")),
                              cancel=threading.Event())
-                threading.Thread(target=_run_job, args=(chat_id, file_id, name), daemon=True).start()
+                threading.Thread(target=_job_thread, args=(handle_audio, chat_id, file_id, name),
+                                 daemon=True).start()
             elif text:
-                send_message(chat_id, "Send me a voice message or an audio file and I'll build "
-                                      "the B-roll project.\n/status — am I online & ready\n"
-                                      "/cancel — stop the running job\n/zip [name] — bundle a finished project")
+                send_message(chat_id, _help_text())
 
 
 if __name__ == "__main__":
