@@ -491,6 +491,7 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
                 progress_callback=progress, should_cancel=_should_cancel(),
                 run_qa=bool(settings.get("qa")),
                 auto_refine=bool(settings.get("auto_refine")),
+                auto_fill=bool(settings.get("auto_fill")),
                 quality=str(settings.get("quality", 1080)),
             )
     except PipelineCancelled:

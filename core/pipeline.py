@@ -354,7 +354,8 @@ def finalize_project(shots: list, project_name: str, quality: str = "1080",
 def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: str = "auto",
                           download: bool = True, context_aware: bool = None,
                           progress_callback=None, should_cancel=None, run_qa: bool = None,
-                          auto_refine: bool = None, quality: str = "1080") -> dict:
+                          auto_refine: bool = None, quality: str = "1080",
+                          auto_fill: bool = None) -> dict:
     """Drive transcribe → topic → (context pre-pass) → shot list → fetch → HD
     filter → rank → auto-select → QA review → [auto-refine] → [download] → FCPXML.
 
@@ -385,6 +386,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         run_qa = os.getenv("ENABLE_QA_REVIEW", "true").strip().lower() in ("1", "true", "yes", "on")
     if auto_refine is None:
         auto_refine = _flag_default("AUTO_REFINE", False)
+    if auto_fill is None:
+        auto_fill = _flag_default("AUTO_FILL", True)
 
     total = 11 if download else 10
     errors = []
@@ -476,9 +479,16 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     _p(8, "Auto-selecting clips")
     auto_select_top_candidates(shots)
 
-    # 8b — Repair pass: rescue any shots still empty (failed fetch / bad block).
-    _p(8, "Repairing empty shots")
-    repair_empty_shots(shots, groq_key=key, video_topic=topic, errors=errors)
+    # 8b — Rescue any shots still empty (failed fetch / bad block). auto_fill
+    # (default on) runs the aggressive multi-pass fill so nearly every shot ends
+    # with a clip; otherwise a single lighter repair pass.
+    if auto_fill:
+        _p(8, "Filling empty shots")
+        fill_empty_shots(shots, groq_key=key, video_topic=topic, errors=errors,
+                         progress=lambda lbl: _p(8, lbl))
+    else:
+        _p(8, "Repairing empty shots")
+        repair_empty_shots(shots, groq_key=key, video_topic=topic, errors=errors)
 
     # 9 — QA review (optional)
     if run_qa:

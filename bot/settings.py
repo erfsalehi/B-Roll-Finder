@@ -31,6 +31,7 @@ OPTIONS = [
     {"key": "quality",     "label": "Download quality","type": "choice","choices": [480, 720, 1080], "fmt": lambda v: f"{v}p"},
     {"key": "qa",          "label": "QA review (5.5)","type": "bool",   "env": "ENABLE_QA_REVIEW"},
     {"key": "auto_refine", "label": "Auto-refine flagged", "type": "bool"},
+    {"key": "auto_fill",   "label": "Auto-fill empty shots", "type": "bool"},
     {"key": "review_gate", "label": "Pause to review", "type": "bool"},
 ]
 
@@ -44,6 +45,7 @@ DEFAULTS = {
     "quality": 1080,
     "qa": True,
     "auto_refine": True,
+    "auto_fill": True,
     "review_gate": True,
 }
 
