@@ -42,8 +42,10 @@ and set `BOT_PUBLIC_HOST` in `.env`). Drop it if you don't want HTTP links.
 
 Bot usage: send a voice/audio file; control everything from chat — `/settings`
 (inline menu: sources, per-source counts, quality, QA on/off, review gate),
-`/status`, `/details`, `/download`, `/refine`, `/cancel`, `/zip`. With the review
-gate on, the bot pauses after selection + QA so you can `/refine` or `/download`.
+`/status`, `/details`, `/download`, `/refine [shots]`, `/cancel`, `/zip`,
+`/cleanup [name|all]`. With the review gate on, the bot pauses after selection +
+QA so you can `/refine` (all flagged, or named shots like `/refine 4 9`) or
+`/download`. Each finished project also ships a shot-number SRT.
 
 To run the Streamlit UI instead (or alongside, with a different `--name`),
 override the command:

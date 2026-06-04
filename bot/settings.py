@@ -28,7 +28,7 @@ OPTIONS = [
     {"key": "use_library", "label": "Clip Library",  "type": "bool",   "env": "AUTO_USE_LIBRARY"},
     {"key": "library_num", "label": "Library / shot","type": "choice", "env": "AUTO_LIBRARY_NUM",  "choices": [1, 2, 3, 5, 8, 10]},
     {"key": "min_height",  "label": "Min height",    "type": "choice", "env": "AUTO_MIN_HEIGHT",   "choices": [0, 480, 720, 1080], "fmt": lambda v: "off" if not v else f"{v}p"},
-    {"key": "quality",     "label": "Download quality","type": "choice","choices": [480, 720, 1080, 1440, 2160], "fmt": lambda v: f"{v}p"},
+    {"key": "quality",     "label": "Download quality","type": "choice","choices": [480, 720, 1080], "fmt": lambda v: f"{v}p"},
     {"key": "qa",          "label": "QA review (5.5)","type": "bool",   "env": "ENABLE_QA_REVIEW"},
     {"key": "auto_refine", "label": "Auto-refine flagged", "type": "bool"},
     {"key": "review_gate", "label": "Pause to review", "type": "bool"},

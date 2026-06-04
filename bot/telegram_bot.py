@@ -257,6 +257,10 @@ def is_help_command(text: str) -> bool:
     return _command(text) in ("/help", "/start", "/commands")
 
 
+def is_cleanup_command(text: str) -> bool:
+    return _command(text) in ("/cleanup", "/clean", "/disk")
+
+
 # ── reporting (per-shot + QA + errors) ───────────────────────────────────────
 
 def _shot_clip_info(shots: list) -> list:
@@ -408,13 +412,31 @@ def _should_cancel():
     return cancel.is_set if cancel is not None else None
 
 
+def send_shots_srt(chat_id, proj: str, shots: list) -> None:
+    """Generate and send the shot-number SRT (drop it on the audio to see
+    'Shot N' over each shot's run). Written next to the project's XML."""
+    try:
+        from core.output import generate_shots_srt, clip_base_dir, _safe_for_fs
+        srt = generate_shots_srt(shots)
+        proj_dir = os.path.dirname(clip_base_dir(proj))   # downloads/<proj>/
+        os.makedirs(proj_dir, exist_ok=True)
+        srt_path = os.path.join(proj_dir, f"{_safe_for_fs(proj, 50)}.shots.srt")
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write(srt)
+        send_document(chat_id, srt_path, caption=f"{proj} — shot-number SRT")
+    except Exception as e:
+        send_message(chat_id, f"(Couldn't build the shot SRT: {e})")
+
+
 def _deliver_completed(chat_id, proj, result) -> None:
     """Final reporting for a fully-processed (downloaded) project: summary, the
-    Premiere XML, then the zipped bundle (Telegram attach + download link)."""
+    Premiere XML, the shot-number SRT, then the zipped bundle (Telegram attach +
+    download link)."""
     send_message(chat_id, format_summary(proj, result))
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
         send_document(chat_id, xml_path, caption=f"{proj} — Premiere XML")
+    send_shots_srt(chat_id, proj, result.get("shots") or [])
     deliver_project(chat_id, proj)
 
 
@@ -466,6 +488,7 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
             "errors": result.get("errors") or [], "result": result, "settings": settings,
         }
         send_message(chat_id, format_review(proj, result))
+        send_shots_srt(chat_id, proj, result.get("shots") or [])
     else:
         _deliver_completed(chat_id, proj, result)
     return result
@@ -502,8 +525,15 @@ def _run_download(chat_id) -> None:
     _deliver_completed(chat_id, proj, result)
 
 
-def _run_refine(chat_id) -> None:
-    """Review gate → /refine: re-pick QA-flagged shots, re-review, re-show."""
+def _parse_slots(text: str) -> set:
+    """Pull shot numbers out of a '/refine 4 9' or '/refine 4,9' command."""
+    import re
+    return {int(n) for n in re.findall(r"\d+", text or "")}
+
+
+def _run_refine(chat_id, only_slots=None) -> None:
+    """Review gate → /refine: re-pick flagged shots (or the specific shot numbers
+    the user named), re-review, re-show."""
     pend = _PENDING.get(chat_id)
     if not pend:
         send_message(chat_id, "Nothing to /refine. Send a voice file first.")
@@ -511,17 +541,20 @@ def _run_refine(chat_id) -> None:
     from core.pipeline import refine_flagged_shots, write_fcpxml
     from core.director_rank import review_timeline
     proj, settings, qa, shots = pend["project"], pend["settings"], pend["qa"], pend["shots"]
-    if not qa.get("issues"):
-        send_message(chat_id, "No QA-flagged shots to refine — use /download to proceed.")
+    if not only_slots and not qa.get("issues"):
+        send_message(chat_id, "No QA-flagged shots to refine. Name shots to redo, "
+                              "e.g. /refine 4 9 — or /download to proceed.")
         return
 
-    status = send_message(chat_id, f"🛠 Refining {len(qa['issues'])} flagged shot(s) for '{proj}'…")
+    target_desc = (f"shot(s) {', '.join(map(str, sorted(only_slots)))}" if only_slots
+                   else f"{len(qa['issues'])} flagged shot(s)")
+    status = send_message(chat_id, f"🛠 Refining {target_desc} for '{proj}'…")
     msg_id = status.get("message_id")
     key = os.getenv("GROQ_API_KEY")
     try:
         with bot_settings.apply_env(settings):
             n = refine_flagged_shots(shots, qa, groq_key=key, video_topic=pend["topic"],
-                                     errors=pend["errors"])
+                                     errors=pend["errors"], only_slots=only_slots)
             new_qa = review_timeline(shots, api_key=key, video_topic=pend["topic"]) if n else qa
             write_fcpxml(shots, proj)
     except Exception as e:
@@ -649,15 +682,91 @@ def handle_zip(chat_id, text: str) -> None:
     deliver_project(chat_id, name)
 
 
+def _project_disk_usage() -> list:
+    """List downloaded projects as ``(name, bytes)`` sorted largest-first."""
+    root = os.path.abspath("downloads")
+    out = []
+    if not os.path.isdir(root):
+        return out
+    for name in os.listdir(root):
+        d = os.path.join(root, name)
+        if not os.path.isdir(d):
+            continue
+        total = 0
+        for r, _dirs, files in os.walk(d):
+            for fn in files:
+                try:
+                    total += os.path.getsize(os.path.join(r, fn))
+                except OSError:
+                    pass
+        out.append((name, total))
+    return sorted(out, key=lambda x: x[1], reverse=True)
+
+
+def handle_cleanup(chat_id, text: str) -> None:
+    """Disk management. ``/cleanup`` lists projects + sizes; ``/cleanup <name>``
+    deletes that project's folder (and its .zip); ``/cleanup all`` clears every
+    downloaded project. Frees space on the always-on server."""
+    import shutil as _shutil
+    parts = text.strip().split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    root = os.path.abspath("downloads")
+
+    if not arg:
+        usage = _project_disk_usage()
+        if not usage:
+            send_message(chat_id, "No downloaded projects on the server.")
+            return
+        total = sum(b for _, b in usage)
+        lines = [f"💾 Downloads: {_human_size(total)} across {len(usage)} project(s)"]
+        for name, b in usage[:25]:
+            lines.append(f"  • {name} — {_human_size(b)}")
+        lines.append("\nDelete one: /cleanup <name>   ·   delete all: /cleanup all")
+        send_message(chat_id, "\n".join(lines))
+        return
+
+    if arg.lower() == "all":
+        usage = _project_disk_usage()
+        for name, _ in usage:
+            _shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+            zp = os.path.join(root, f"{name}.zip")
+            if os.path.exists(zp):
+                try:
+                    os.remove(zp)
+                except OSError:
+                    pass
+        send_message(chat_id, f"🗑 Cleared {len(usage)} project(s).")
+        return
+
+    # Delete a single named project (guard against path traversal).
+    from core.output import _safe_for_fs
+    safe = _safe_for_fs(arg, 50)
+    proj_dir = os.path.join(root, safe)
+    if not os.path.isdir(proj_dir):
+        send_message(chat_id, f"❌ No project named '{arg}'. Use /cleanup to list them.")
+        return
+    _shutil.rmtree(proj_dir, ignore_errors=True)
+    zp = os.path.join(root, f"{safe}.zip")
+    if os.path.exists(zp):
+        try:
+            os.remove(zp)
+        except OSError:
+            pass
+    if _LAST.get("project") == arg:
+        _LAST["project"] = None
+    send_message(chat_id, f"🗑 Deleted '{arg}'.")
+
+
 _HELP = (
     "🎬 Send a voice message or audio file and I'll build the B-roll project.\n"
     "/settings — choose sources, counts, quality, QA, review gate\n"
     "/status — am I online & ready\n"
     "/details — per-shot breakdown of the project awaiting review\n"
     "/download — fetch clips for the reviewed project\n"
-    "/refine — re-pick the QA-flagged shots, then review again\n"
+    "/refine [shots] — re-pick QA-flagged shots (or named ones, e.g. /refine 4 9)\n"
     "/cancel — stop the running job (or discard a pending one)\n"
-    "/zip [name] — bundle a finished project (link + attach)"
+    "/zip [name] — bundle a finished project (link + attach)\n"
+    "/cleanup [name|all] — list or delete downloaded projects (free disk)"
 )
 
 
@@ -786,6 +895,10 @@ def main() -> None:
                 handle_zip(chat_id, text)
                 continue
 
+            if is_cleanup_command(text):
+                handle_cleanup(chat_id, text)
+                continue
+
             # Review-gate actions: need a pending project and a free worker.
             if is_download_command(text) or is_refine_command(text):
                 if _BUSY.get("active"):
@@ -794,10 +907,16 @@ def main() -> None:
                 if not _PENDING.get(chat_id):
                     send_message(chat_id, "Nothing to act on — send a voice file first.")
                     continue
-                fn = _run_download if is_download_command(text) else _run_refine
                 _BUSY.update(active=True, project=_PENDING[chat_id]["project"],
                              cancel=threading.Event())
-                threading.Thread(target=_job_thread, args=(fn, chat_id), daemon=True).start()
+                if is_download_command(text):
+                    threading.Thread(target=_job_thread, args=(_run_download, chat_id),
+                                     daemon=True).start()
+                else:
+                    slots = _parse_slots(text)
+                    threading.Thread(target=_job_thread,
+                                     args=(_run_refine, chat_id, slots or None),
+                                     daemon=True).start()
                 continue
 
             file_id, name = extract_audio(msg)

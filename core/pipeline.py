@@ -29,6 +29,49 @@ def _flag_default(name: str, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+# Hard ceiling on download resolution — we never pull above 1080p.
+MAX_DOWNLOAD_HEIGHT = 1080
+
+
+def cap_quality(quality) -> str:
+    """Clamp a requested quality to the 1080p ceiling. Returns a digit string
+    yt-dlp / the direct downloader understand (e.g. '1080')."""
+    digits = "".join(ch for ch in str(quality) if ch.isdigit())
+    h = int(digits) if digits else MAX_DOWNLOAD_HEIGHT
+    return str(min(h, MAX_DOWNLOAD_HEIGHT))
+
+
+def _is_short(c: dict) -> bool:
+    """A candidate is a YouTube Short if flagged, URL-marked, or <=60s."""
+    if c.get("is_short"):
+        return True
+    url = (c.get("url") or c.get("page_url") or "").lower()
+    if "/shorts/" in url:
+        return True
+    dur = c.get("duration")
+    try:
+        # Only treat a known-short duration as a Short for YouTube sources; stock
+        # clips are legitimately short and must not be dropped.
+        if dur is not None and float(dur) <= 60 and \
+                (c.get("source") or "").lower() == "youtube":
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def drop_shorts(shots: list) -> int:
+    """Remove YouTube Shorts from every shot's candidate list (in place).
+    Returns how many candidates were dropped."""
+    removed = 0
+    for s in shots:
+        cands = s.get("video_results") or []
+        kept = [c for c in cands if not _is_short(c)]
+        removed += len(cands) - len(kept)
+        s["video_results"] = kept
+    return removed
+
+
 def _check_cancel(should_cancel) -> None:
     if should_cancel and should_cancel():
         raise PipelineCancelled("Cancelled by user.")
@@ -147,24 +190,35 @@ def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
 
 def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topic: str = "",
                          errors: list = None, progress=None,
-                         severities=("high", "medium")) -> int:
+                         severities=("high", "medium"), only_slots=None) -> int:
     """QA-driven re-pick: for each shot the Step 5.5 review flagged, regenerate
     better search queries from the reviewer's suggestion, re-fetch, re-rank, and
     re-select — so the timeline self-corrects the problems the QA pass found.
 
-    Only shots whose issue ``severity`` is in ``severities`` are touched. Returns
-    how many flagged shots ended up with a (re)selection. Safe to call repeatedly.
+    By default touches shots whose issue ``severity`` is in ``severities``. Pass
+    ``only_slots`` (an iterable of slot_ids) to refine exactly those shots instead
+    — even ones the QA pass didn't flag (used by the bot's ``/refine 4 9``).
+    Returns how many targeted shots ended up with a (re)selection.
     """
     from core.director import regenerate_shot_queries
     from core.director_youtube import seed_youtube_keywords
     from core.director_search import fetch_with_retries, filter_youtube_sd_candidates
-    from core.director_rank import rank_shot_candidates, auto_select_top_candidates
+    from core.director_rank import rank_shot_candidates, auto_select_top_candidates, prioritize_youtube
 
     key = groq_key or os.getenv("GROQ_API_KEY")
     by_slot: dict = {}
     for it in (qa.get("issues") or []):
-        if it.get("severity") in severities and it.get("slot_id") is not None:
+        if it.get("slot_id") is None:
+            continue
+        if only_slots is not None:
+            if it["slot_id"] in only_slots:
+                by_slot.setdefault(it["slot_id"], []).append(it)
+        elif it.get("severity") in severities:
             by_slot.setdefault(it["slot_id"], []).append(it)
+    if only_slots is not None:
+        # Include explicitly-named slots even if QA didn't flag them.
+        for sid in only_slots:
+            by_slot.setdefault(sid, [])
     if not by_slot:
         return 0
     if errors is None:
@@ -183,7 +237,7 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
         notes = "; ".join(
             f"{i.get('problem', '')} → {i.get('suggestion', '')}".strip(" →")
             for i in by_slot[sid]
-        )
+        ) or "Find a more relevant, higher-quality clip than the current pick."
         try:
             regenerate_shot_queries(
                 shots, {sid}, api_key=key, video_topic=video_topic,
@@ -207,6 +261,8 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
         except Exception as e:
             errors.append(f"refine hd_filter: {e}")
 
+    drop_shorts(targets)   # Shorts never allowed
+
     if _flag_default("AUTO_USE_LIBRARY", True):
         try:
             from core.clip_library import get_library_stats, inject_library_candidates
@@ -220,6 +276,7 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     except Exception as e:
         errors.append(f"refine rank: {e}")
 
+    prioritize_youtube(targets)         # keep the ~70% YouTube bias on refresh
     auto_select_top_candidates(shots)   # fills the now-empty refreshed shots
     return sum(1 for s in targets if s.get("selected_results"))
 
@@ -241,7 +298,7 @@ def finalize_project(shots: list, project_name: str, quality: str = "1080",
     """Download the selected clips and (re)write the FCPXML — the back half of the
     pipeline, split out so the bot's review gate can run it after the user
     approves (or after a /refine). Returns ``{download, xml_path}``."""
-    dl = download_selected_clips(shots, project_name, quality=quality,
+    dl = download_selected_clips(shots, project_name, quality=cap_quality(quality),
                                  progress=progress, should_cancel=should_cancel)
     return {"download": dl, "xml_path": write_fcpxml(shots, project_name)}
 
@@ -267,7 +324,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     from core.director_search import (fetch_with_retries, filter_youtube_sd_candidates,
                                       auto_fetch_plan)
     from core.director_youtube import seed_youtube_keywords
-    from core.director_rank import rank_shot_candidates, auto_select_top_candidates, review_timeline
+    from core.director_rank import (rank_shot_candidates, auto_select_top_candidates,
+                                     review_timeline, prioritize_youtube)
 
     key = groq_key or os.getenv("GROQ_API_KEY")
     if not key:
@@ -344,7 +402,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         except Exception as e:
             errors.append(f"clip_library: {e}")
 
-    # 6 — HD filter
+    # 6 — HD filter (YouTube Data API is used ONLY here — to drop SD clips; the
+    # YouTube *search* itself is done with yt-dlp + keywords, no Data API quota).
     if os.getenv("YOUTUBE_API_KEY"):
         _p(6, "Dropping SD YouTube clips")
         try:
@@ -352,12 +411,18 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         except Exception as e:
             errors.append(f"hd_filter: {e}")
 
+    # 6b — Drop YouTube Shorts: never allowed in selections.
+    drop_shorts(shots)
+
     # 7 — Rank
     _p(7, "Ranking candidates")
     try:
         rank_shot_candidates(shots, api_key=key, video_topic=topic)
     except Exception as e:
         errors.append(f"rank: {e}")
+
+    # 7b — Bias selection toward YouTube (~70% of shots lead with a YouTube clip).
+    prioritize_youtube(shots)
 
     # 8 — Auto-select
     _p(8, "Auto-selecting clips")
@@ -397,10 +462,11 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         "xml_path": None,
     }
 
-    # 10 — Download (optional)
+    # 10 — Download (optional) — capped at 1080p.
     if download:
         _p(10, "Downloading clips")
-        result["download"] = download_selected_clips(shots, project_name, quality=quality,
+        result["download"] = download_selected_clips(shots, project_name,
+                                                     quality=cap_quality(quality),
                                                      should_cancel=should_cancel)
 
     # Final — FCPXML

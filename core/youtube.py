@@ -609,20 +609,20 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
     # module-level _cookies_broken flag without Python complaining about
     # using the name before the global declaration.
     global _cookies_broken
-    # Map simple quality strings to yt-dlp format strings
-    # We prioritize h264 for Premiere Pro compatibility
+    # Map quality → target height. Accepts "1080", "1080p", or int; "Best"/"Worst"
+    # are handled below as special selectors. Parsing the digits (rather than a
+    # fixed lookup) means a bare "1080" from the headless/bot path actually caps
+    # height instead of silently falling through to no limit.
+    def _parse_height(q):
+        digits = "".join(ch for ch in str(q) if ch.isdigit())
+        return int(digits) if digits else 0
+
     if strict_quality:
-        # Require exactly the height or higher (if higher is ok, but usually exact is what they mean by 'only get 1080p')
-        # However, yt-dlp's [height=1080] might fail if exactly 1080 isn't available.
-        # We'll use [height>=1080] if they want 1080p or better, or [height=1080] if they want ONLY 1080.
-        # Let's go with [height>=target] to be safe but strictly above the threshold.
-        res_map = {'1080p': 1080, '720p': 720, '480p': 480}
-        min_h = res_map.get(quality, 0)
+        min_h = _parse_height(quality)
         q_filter = f"[height>={min_h}]" if min_h > 0 else ""
     else:
-        res_map = {'1080p': 1080, '720p': 720, '480p': 480}
-        max_h = res_map.get(quality, 9999)
-        q_filter = f"[height<={max_h}]"
+        max_h = _parse_height(quality)
+        q_filter = f"[height<={max_h}]" if max_h > 0 else ""
 
     # Format selector: video-only by default (no_audio=True) — skips downloading
     # a separate audio stream and the subsequent FFmpeg merge, roughly halving

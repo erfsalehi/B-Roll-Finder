@@ -304,6 +304,50 @@ def _asset_ident(c: dict):
     return c.get("url") or c.get("clip_url") or c.get("page_url") or c.get("title") or id(c)
 
 
+def _is_youtube(c: dict) -> bool:
+    return (c.get("source") or c.get("original_source") or "").lower() == "youtube"
+
+
+def prioritize_youtube(shots: list, ratio: float = None) -> list:
+    """Make YouTube the lead pick for ~``ratio`` of shots (default 0.7).
+
+    Run after ranking, before auto-selection. For each shot that has at least one
+    YouTube candidate, promote the best-ranked YouTube clip to the front for a
+    deterministic ~ratio fraction of shots (the rest keep their best non-YouTube
+    clip in front). The ranker's relative order is otherwise preserved, so
+    auto-select — which binds from the top — picks YouTube most of the time.
+
+    Deterministic (a running counter drives the split) so reruns are stable.
+    ``YOUTUBE_PRIORITY_RATIO`` overrides the default.
+    """
+    if ratio is None:
+        try:
+            ratio = float(os.getenv("YOUTUBE_PRIORITY_RATIO", "0.7"))
+        except (TypeError, ValueError):
+            ratio = 0.7
+    ratio = max(0.0, min(1.0, ratio))
+    bucket = int(round(ratio * 10))   # e.g. 0.7 → YouTube-first on 7 of every 10
+
+    def _promote(cands, pred):
+        idx = next((i for i, c in enumerate(cands) if pred(c) and not c.get("irrelevant")), None)
+        if idx is None or idx == 0:
+            return cands
+        return [cands[idx]] + cands[:idx] + cands[idx + 1:]
+
+    k = 0
+    for s in shots:
+        if s.get("priority") == "none" or s.get("skipped"):
+            continue
+        cands = s.get("video_results") or []
+        if not any(_is_youtube(c) for c in cands):
+            continue  # no YouTube option here — leave as ranked
+        want_yt = (k % 10) < bucket
+        k += 1
+        s["video_results"] = _promote(cands, _is_youtube) if want_yt \
+            else _promote(cands, lambda c: not _is_youtube(c))
+    return shots
+
+
 def _auto_pick_count(shot: dict, seconds_per_clip: float, min_clips: int, max_clips: int) -> int:
     """How many clips to auto-bind for a shot, scaled by its duration.
 

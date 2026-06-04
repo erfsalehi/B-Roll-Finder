@@ -287,14 +287,15 @@ def search_pexels(keyword: str, api_key: str, num_results: int = 3, errors: list
             if not video_files:
                 continue
 
-            # Prefer highest-resolution HD/UHD file
-            best_file = video_files[0]
-            for vf in video_files:
-                if vf.get('quality') in ['hd', 'uhd']:
-                    if (vf.get('width', 0) * vf.get('height', 0)) > (best_file.get('width', 0) * best_file.get('height', 0)):
-                        best_file = vf
-                    elif best_file.get('quality') not in ['hd', 'uhd']:
-                        best_file = vf
+            # 1080p only: keep files at full HD or above (landscape height >= 1080,
+            # or a vertical clip at least 1920 wide), then pick the one closest to
+            # 1080 — avoids pulling a 4K master we'd only downscale to the 1080p
+            # download cap. Videos with no >=1080 file are skipped entirely.
+            qualifying = [vf for vf in video_files
+                          if (vf.get('height') or 0) >= 1080 or (vf.get('width') or 0) >= 1920]
+            if not qualifying:
+                continue
+            best_file = min(qualifying, key=lambda vf: vf.get('height') or 0)
 
             page_url = video.get('url', '')
             semantic = _pexels_slug_to_text(page_url)
