@@ -726,6 +726,24 @@ def check_health(timeout: int = 8) -> list:
                            ("YouTube", "YOUTUBE_API_KEY")) if os.getenv(k)]
     checks.append(("Search sources", bool(srcs), ", ".join(srcs) or "NONE enabled"))
 
+    # Pexels key pool — confirms extra keys for rate-limit rotation are loaded.
+    try:
+        from core.stock_apis import pexels_key_pool
+        n_pex = len(pexels_key_pool())
+        if n_pex:
+            checks.append(("Pexels keys", True,
+                           f"{n_pex} key(s)" + (" (rotation on)" if n_pex > 1 else "")))
+    except Exception:
+        pass
+
+    # YouTube cookie source — the #1 thing that silently breaks YouTube on a server.
+    try:
+        from core.youtube import cookie_mode
+        ck_ok, ck_detail = cookie_mode()
+        checks.append(("YouTube cookies", ck_ok, ck_detail))
+    except Exception as e:
+        checks.append(("YouTube cookies", False, f"unknown ({e})"))
+
     ds = bool(os.getenv("DEEPSEEK_API_KEY"))
     checks.append(("DeepSeek (OpenRouter)", ds, "set" if ds else "not set (free tier)"))
 

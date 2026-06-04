@@ -99,6 +99,35 @@ def _get_cookie_opts() -> dict:
     return {}
 
 
+def cookie_mode() -> tuple:
+    """Describe the active YouTube cookie source for /status, as ``(ok, detail)``.
+
+    ``ok`` is False for states that will hurt YouTube on a server: a configured
+    cookie file that's missing, a browser source on a headless host (which can't
+    work), or cookies disabled after a failure. ``ok`` is True for a valid file
+    and (neutrally) for no-cookies, which still works for search."""
+    if _cookies_broken:
+        return False, "disabled this session (source failed — see /logs)"
+
+    cfile = os.getenv("YT_COOKIE_FILE", "").strip()
+    if cfile:
+        if os.path.exists(cfile):
+            return True, f"file {cfile}"
+        return False, f"file {cfile} NOT FOUND — YouTube will bot-block"
+
+    browser = os.getenv("YT_COOKIE_BROWSER", "").strip().lower()
+    if browser and browser != "none":
+        # A browser cookie DB cannot exist in a headless container/server.
+        return False, (f"browser '{browser}' — won't work on a server; "
+                       "set YT_COOKIE_FILE to a mounted cookies.txt")
+
+    root_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
+    if os.path.exists(root_file):
+        return True, f"file {root_file}"
+
+    return True, "none (search OK; downloads may bot-block on a datacenter IP)"
+
+
 class _QuietLogger:
     """Suppress all yt-dlp output (including ERROR lines) for metadata-only calls."""
     def debug(self, msg):   pass

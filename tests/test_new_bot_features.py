@@ -87,6 +87,35 @@ def test_snapshot_logs_none_when_absent(tmp_path, monkeypatch):
     assert L.snapshot_logs(str(tmp_path / "snap.txt")) is None
 
 
+# ── YouTube cookie-mode status ────────────────────────────────────────────────
+
+def test_cookie_mode_flags_missing_file(monkeypatch):
+    import core.youtube as y
+    monkeypatch.setattr(y, "_cookies_broken", False)
+    monkeypatch.setenv("YT_COOKIE_FILE", "/nope/cookies.txt")
+    ok, detail = y.cookie_mode()
+    assert ok is False and "NOT FOUND" in detail
+
+
+def test_cookie_mode_flags_browser_on_server(monkeypatch):
+    import core.youtube as y
+    monkeypatch.setattr(y, "_cookies_broken", False)
+    monkeypatch.delenv("YT_COOKIE_FILE", raising=False)
+    monkeypatch.setenv("YT_COOKIE_BROWSER", "firefox")
+    ok, detail = y.cookie_mode()
+    assert ok is False and "won't work on a server" in detail
+
+
+def test_cookie_mode_ok_with_file(tmp_path, monkeypatch):
+    import core.youtube as y
+    monkeypatch.setattr(y, "_cookies_broken", False)
+    cookie = tmp_path / "cookies.txt"
+    cookie.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setenv("YT_COOKIE_FILE", str(cookie))
+    ok, detail = y.cookie_mode()
+    assert ok is True and "file" in detail
+
+
 # ── new command predicates ────────────────────────────────────────────────────
 
 def test_redo_and_logs_predicates():
