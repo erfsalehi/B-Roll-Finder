@@ -20,10 +20,12 @@ only the small FCPXML is sent back over Telegram.
 """
 
 import os
+import re
 import json
 import time
 import shutil
 import threading
+from collections import Counter
 
 # Cap native thread pools (torch/OMP/MKL) before anything imports them, so the
 # CPU-only server doesn't oversubscribe cores. See core/runtime.py.
@@ -300,14 +302,25 @@ def format_qa_block(qa: dict, limit: int = 8) -> list:
     return lines
 
 
+def _err_signature(msg: str) -> str:
+    """Collapse a specific error to its type: mask quoted queries/paths and
+    numbers so 3,000 'search failed for <query>' lines become one signature."""
+    s = re.sub(r"'[^']*'", "'…'", str(msg))
+    s = re.sub(r"\d+", "#", s)
+    return s.strip()[:180]
+
+
 def format_errors_block(errors: list, limit: int = 6) -> list:
+    """Group errors by type so a systemic failure shows as one line with a
+    count, not thousands of near-identical messages."""
     if not errors:
         return []
-    lines = [f"❗ {len(errors)} issue(s) during processing:"]
-    for e in errors[:limit]:
-        lines.append(f"  • {str(e)[:200]}")
-    if len(errors) > limit:
-        lines.append(f"  …and {len(errors) - limit} more")
+    counts = Counter(_err_signature(e) for e in errors)
+    lines = [f"❗ {len(errors)} issue(s) during processing ({len(counts)} type[s]):"]
+    for sig, n in counts.most_common(limit):
+        lines.append(f"  • {sig}" + (f"  (×{n})" if n > 1 else ""))
+    if len(counts) > limit:
+        lines.append(f"  …and {len(counts) - limit} more type(s)")
     return lines
 
 

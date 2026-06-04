@@ -41,34 +41,58 @@ def _is_dpapi_error(err: Exception) -> bool:
     msg = str(err).lower()
     return "dpapi" in msg or "failed to decrypt" in msg or "app-bound" in msg
 
+def _is_cookie_error(err: Exception) -> bool:
+    """Any failure that means the configured cookie SOURCE is unusable — so we
+    should disable cookies for the session and retry without them rather than
+    failing every call. Covers Chrome DPAPI *and* a missing/unreadable browser
+    cookie database (e.g. YT_COOKIE_BROWSER=firefox on a headless server with no
+    Firefox profile → 'could not find firefox cookies database')."""
+    if _is_dpapi_error(err):
+        return True
+    msg = str(err).lower()
+    return (
+        ("could not find" in msg and "cookies database" in msg)
+        or ("could not copy" in msg and "cookie" in msg)
+        or "unsupported browser" in msg
+    )
+
 def _mark_cookies_broken() -> None:
     global _cookies_broken
     if not _cookies_broken:
         _cookies_broken = True
         print(
-            "\n[yt-dlp] WARNING: Cookie decryption failed (Chrome App-Bound Encryption / DPAPI).\n"
+            "\n[yt-dlp] WARNING: Configured cookie source is unusable "
+            "(decryption failed, or the browser cookie DB doesn't exist here).\n"
             "  Falling back to no-cookie mode for this session.\n"
-            "  To fix: set 'YouTube Cookie Browser' to 'firefox' in Setup,\n"
-            "  OR run: pip install -U yt-dlp  (requires yt-dlp >= 2024.11)\n"
+            "  On a server: unset YT_COOKIE_BROWSER and instead mount a cookies.txt\n"
+            "  and point YT_COOKIE_FILE at it (see deploy/README.md).\n"
         )
 
 def _get_cookie_opts() -> dict:
     """Return yt-dlp cookie options from the environment.
 
     Priority:
-      1. YT_COOKIE_BROWSER env var  → use cookiesfrombrowser (e.g. 'firefox')
-      2. cookies.txt in project root → use cookiefile
-      3. Neither / DPAPI broken      → empty dict (no cookies)
+      1. YT_COOKIE_FILE env var      → use that cookies.txt (best for servers)
+      2. YT_COOKIE_BROWSER env var   → use cookiesfrombrowser (e.g. 'firefox')
+      3. cookies.txt in project root → use cookiefile
+      4. Neither / source broken     → empty dict (no cookies)
 
-    NOTE: Chrome v127+ uses App-Bound Encryption which breaks yt-dlp's DPAPI
-    reader on Windows. Use Firefox, or update yt-dlp to >= 2024.11.
+    On a headless server use a cookies FILE (YT_COOKIE_FILE) — a browser cookie
+    DB (YT_COOKIE_BROWSER) doesn't exist there and also helps dodge the
+    datacenter-IP "confirm you're not a bot" check. Chrome v127+ App-Bound
+    Encryption can break the DPAPI reader on Windows; Firefox or a file avoids it.
     """
     if _cookies_broken:
         return {}
+    # 1 — explicit cookies file (works headless; survives in a container)
+    cookie_file_env = os.getenv("YT_COOKIE_FILE", "").strip()
+    if cookie_file_env and os.path.exists(cookie_file_env):
+        return {"cookiefile": cookie_file_env}
+    # 2 — a browser's cookie DB (desktop only)
     browser = os.getenv("YT_COOKIE_BROWSER", "").strip().lower()
     if browser and browser != "none":
         return {"cookiesfrombrowser": (browser,)}
-    # Fallback: cookies.txt two directories up (project root)
+    # 3 — cookies.txt in the project root
     cookie_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
     if os.path.exists(cookie_file):
         return {"cookiefile": cookie_file}
@@ -538,8 +562,10 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
         return shorts_final + longs_final
 
     except Exception as e:
-        if _is_dpapi_error(e) and not _cookies_broken:
-            # Chrome DPAPI decryption broke — disable cookies and retry once
+        if _is_cookie_error(e) and not _cookies_broken:
+            # Cookie source unusable (DPAPI, or browser cookie DB missing on a
+            # headless server) — disable cookies once and retry without them so
+            # we don't fail every single search.
             _mark_cookies_broken()
             return search_youtube_single(keyword, num_shorts, num_longs, errors, min_height)
         msg = f"YouTube search failed for '{keyword}': {e}"
@@ -780,8 +806,9 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                 except Exception:
                     pass
     except Exception as e:
-        if _is_dpapi_error(e) and not _cookies_broken:
-            # Chrome DPAPI broke cookie reading — disable and retry once without cookies
+        if _is_cookie_error(e) and not _cookies_broken:
+            # Cookie source unusable (DPAPI, or missing browser cookie DB) —
+            # disable cookies and retry once without them.
             _mark_cookies_broken()
             download_video(url, output_path, quality, task_state,
                            max_size_mb=max_size_mb, strict_quality=strict_quality,

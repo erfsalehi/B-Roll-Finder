@@ -4,7 +4,7 @@ from core.director_search import fetch_director_footage, search_youtube_classic
 def test_search_youtube_classic_adapts_results(monkeypatch):
     monkeypatch.setattr(
         "core.director_search.search_youtube_single",
-        lambda keyword, num_shorts, num_longs, errors: [
+        lambda keyword, num_shorts=0, num_longs=3, errors=None, min_height=0: [
             {"title": "Repair clip", "url": "abc123def45", "is_short": False, "duration": 120}
         ],
     )
@@ -23,6 +23,7 @@ def test_search_youtube_classic_adapts_results(monkeypatch):
             "is_short": False,
             "width": None,
             "height": None,
+            "available_resolutions": [],
             "quality": None,
             "file_size": None,
             "matched_query": "engine repair",
@@ -33,7 +34,7 @@ def test_search_youtube_classic_adapts_results(monkeypatch):
 def test_fetch_director_footage_uses_youtube_keywords_for_classic(monkeypatch):
     calls = []
 
-    def fake_search(keyword, num_results, errors):
+    def fake_search(keyword, num_results, errors=None, min_height=0):
         calls.append((keyword, num_results))
         return [{
             "title": keyword,
@@ -58,7 +59,7 @@ def test_fetch_director_footage_uses_youtube_keywords_for_classic(monkeypatch):
         use_pixabay=False,
         use_youtube=True,
         youtube_mode="classic",
-        youtube_num_results=2,
+        youtube_search_num_results=2,
     )
 
     assert sorted(calls) == [("plain youtube query", 2), ("second query", 2)]
@@ -71,8 +72,7 @@ def test_fetch_director_footage_uses_youtube_keywords_for_classic(monkeypatch):
 def test_fetch_director_footage_can_use_api_and_classic_together(monkeypatch):
     monkeypatch.setenv("YOUTUBE_API_KEY", "yt-key")
 
-    def fake_fetch_query(query, source, api_key, num_results, errors):
-        assert source == "youtube"
+    def fake_api(query, api_key, num_results, errors=None, min_height=0):
         return [{
             "title": "api result",
             "url": "https://youtube.test/api",
@@ -80,7 +80,7 @@ def test_fetch_director_footage_can_use_api_and_classic_together(monkeypatch):
             "matched_query": query,
         }]
 
-    def fake_search(keyword, num_results, errors):
+    def fake_search(keyword, num_results, errors=None, min_height=0):
         return [{
             "title": "classic result",
             "url": "https://youtube.test/classic",
@@ -88,7 +88,7 @@ def test_fetch_director_footage_can_use_api_and_classic_together(monkeypatch):
             "matched_query": keyword,
         }]
 
-    monkeypatch.setattr("core.director_search._fetch_query", fake_fetch_query)
+    monkeypatch.setattr("core.director_search.search_youtube_data_api", fake_api)
     monkeypatch.setattr("core.director_search.search_youtube_classic", fake_search)
 
     shots = [{
@@ -104,7 +104,8 @@ def test_fetch_director_footage_can_use_api_and_classic_together(monkeypatch):
         use_pixabay=False,
         use_youtube_api=True,
         use_youtube_search=True,
-        youtube_num_results=2,
+        youtube_api_num_results=2,
+        youtube_search_num_results=2,
     )
 
     assert sorted(r["matched_query"] for r in updated[0]["video_results"]) == [

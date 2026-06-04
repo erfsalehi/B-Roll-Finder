@@ -33,8 +33,18 @@ def test_format_review_shows_counts_qa_errors_and_actions():
     assert "Shots: 12" in out and "clips: 34" in out
     assert "#4 (high) repetitive with #3" in out and "vary the subject" in out
     assert "No clip for shot(s): 7" in out
-    assert "timeout on shot 9" in out
+    # errors are grouped by signature (numbers masked to #)
+    assert "pexels: timeout on shot #" in out
     assert "/download" in out and "/refine" in out
+
+
+def test_format_errors_groups_systemic_failures():
+    # 3000 near-identical YouTube cookie errors should collapse to ONE type line.
+    errors = [f"YouTube search failed for 'query {i}': could not find firefox cookies database"
+              for i in range(3000)]
+    out = "\n".join(tb.format_errors_block(errors))
+    assert "3000 issue(s)" in out and "1 type[s]" in out
+    assert "(×3000)" in out
 
 
 def test_format_details_lists_selected_shots():

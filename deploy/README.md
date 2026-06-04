@@ -33,12 +33,33 @@ docker run -d --name broll-bot --restart unless-stopped \
   -p 8770:8770 \
   -v "$PWD/downloads:/app/downloads" \
   -v "$PWD/.cache:/app/.cache" \
+  -v "$PWD/cookies.txt:/app/cookies.txt:ro" \
   broll-finder
 docker logs -f broll-bot          # live logs
 ```
 
 `-p 8770:8770` exposes the download-link server (enable with `BOT_FILE_SERVER=1`
 and set `BOT_PUBLIC_HOST` in `.env`). Drop it if you don't want HTTP links.
+
+### YouTube cookies on a server (IMPORTANT)
+
+YouTube blocks datacenter IPs ("confirm you're not a bot") and yt-dlp's
+`cookiesfrombrowser` **cannot work in the container** (there is no browser).
+Symptom if misconfigured: every YouTube search fails with *"could not find
+firefox cookies database"*, so the bot silently falls back to Pexels-only and
+many shots get no clip.
+
+Fix:
+1. **Do NOT set `YT_COOKIE_BROWSER`** in the server `.env` (remove it if copied
+   from your laptop).
+2. Export a `cookies.txt` from a browser logged into YouTube (e.g. the
+   "Get cookies.txt" extension, Netscape format), drop it next to `.env`, mount
+   it (`-v "$PWD/cookies.txt:/app/cookies.txt:ro"` as above), and set
+   `YT_COOKIE_FILE=/app/cookies.txt` in `.env`.
+
+Without a valid `cookies.txt` the bot still runs, but YouTube results will be
+unreliable on a datacenter IP (the code now degrades gracefully to no-cookies
+instead of failing every call, but cookies are what actually unblock YouTube).
 
 Bot usage: send a voice/audio file; control everything from chat — `/settings`
 (inline menu: sources, per-source counts, quality, QA on/off, review gate),
