@@ -98,6 +98,27 @@ def _get_cookie_opts() -> dict:
 _sanitized_cookie_cache: dict = {}
 
 
+def _read_cookie_text(path: str) -> str:
+    """Decode a cookies file regardless of how it was saved. Browser exports
+    edited/re-saved on Windows are often UTF-16 (PowerShell Out-File / Notepad
+    default) or carry a BOM — both make yt-dlp reject the file or read zero
+    cookies. Detect the encoding from the BOM (or a NUL-byte heuristic for
+    BOM-less UTF-16) and return clean text."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw[:3] == b"\xef\xbb\xbf":
+        return raw[3:].decode("utf-8", "replace")
+    if raw[:2] == b"\xff\xfe":
+        return raw[2:].decode("utf-16-le", "replace")
+    if raw[:2] == b"\xfe\xff":
+        return raw[2:].decode("utf-16-be", "replace")
+    # BOM-less UTF-16: ASCII text has a NUL beside every character.
+    if raw.count(b"\x00") > len(raw) // 4:
+        le_nuls = raw[1::2].count(0)   # NUL in high byte → little-endian
+        return raw.decode("utf-16-le" if le_nuls >= len(raw) // 4 else "utf-16-be", "replace")
+    return raw.decode("utf-8", "replace")
+
+
 def _sanitized_cookie_file(path: str) -> str:
     """Return a path to a yt-dlp-clean copy of ``path``.
 
@@ -115,8 +136,7 @@ def _sanitized_cookie_file(path: str) -> str:
     if cached and cached[0] == mtime:
         return cached[1]
     try:
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:  # -sig strips BOM
-            lines = fh.read().splitlines()
+        lines = _read_cookie_text(path).splitlines()
         first = next((ln for ln in lines if ln.strip()), "")
         if not (first.startswith("# Netscape HTTP Cookie File")
                 or first.startswith("# HTTP Cookie File")):

@@ -694,8 +694,14 @@ def handle_cookies_upload(chat_id, file_id: str, name: str) -> None:
         from yt_dlp.cookies import YoutubeDLCookieJar
         jar = YoutubeDLCookieJar(clean)
         jar.load()
-        send_message(chat_id, f"✅ Cookies saved & loaded ({len(jar)} cookies). "
-                              "YouTube will use them now. /status to confirm.")
+        n = len(jar)
+        if n == 0:
+            send_message(chat_id, "⚠️ Saved, but 0 cookies parsed — the file is "
+                                  "empty or not a real Netscape cookies.txt. Re-export "
+                                  "with a 'Get cookies.txt' extension and resend.")
+        else:
+            send_message(chat_id, f"✅ Cookies saved & loaded ({n} cookies). "
+                                  "YouTube will use them now. /status to confirm.")
     except Exception as e:
         send_message(chat_id, f"⚠️ Saved, but this doesn't look like a valid "
                               f"Netscape cookies.txt: {str(e)[:120]}\n"

@@ -160,6 +160,22 @@ def test_sanitize_cookie_strips_bom(tmp_path, monkeypatch):
     assert data.startswith(b"# Netscape HTTP Cookie File")   # header intact
 
 
+def test_sanitize_handles_utf16(tmp_path, monkeypatch):
+    """UTF-16 (PowerShell/Notepad default) is decoded to clean UTF-8 with the
+    real cookie lines intact — not nulls that yt-dlp would skip."""
+    import core.youtube as y
+    monkeypatch.setattr(y, "_cookies_search_root", lambda: str(tmp_path))
+    (tmp_path / ".cache").mkdir()
+    content = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tk\tv\n"
+    src = tmp_path / "src.txt"
+    src.write_bytes(content.encode("utf-16"))   # UTF-16 LE + BOM
+    out = y._sanitized_cookie_file(str(src))
+    data = open(out, encoding="utf-8").read()
+    assert data.startswith("# Netscape HTTP Cookie File")
+    assert ".youtube.com\tTRUE" in data          # real tab-separated line survived
+    assert "\x00" not in data                     # UTF-16 NUL bytes gone
+
+
 def test_cookie_autodetects_folder_and_beats_browser(tmp_path, monkeypatch):
     """A cookies/*.txt is found without YT_COOKIE_FILE, and wins over a leftover
     YT_COOKIE_BROWSER — exactly the 'put cookies.txt in a cookies/ folder' setup."""
