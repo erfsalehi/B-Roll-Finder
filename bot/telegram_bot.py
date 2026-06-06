@@ -37,6 +37,7 @@ import requests
 from bot import settings as bot_settings
 from bot import fileserver
 from bot import logsetup
+from bot import healthserver
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -1052,6 +1053,10 @@ def main() -> None:
 
     # Capture stdout/stderr to .cache/bot.log so /logs can export them.
     logsetup.install_file_logging()
+
+    # Always-on /health endpoint so orchestrators (Coolify/Docker) can verify the
+    # bot is alive and swap containers cleanly — preventing the double-poller 409.
+    healthserver.start_health_server()
 
     if not _token():
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get one from @BotFather).")

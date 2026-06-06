@@ -228,6 +228,23 @@ def test_status_idle_when_nothing():
     assert "Idle" in out
 
 
+def test_health_server_responds_200(monkeypatch):
+    import urllib.request
+    from bot import healthserver
+    monkeypatch.setenv("BOT_HEALTH", "1")
+    port = healthserver.start_health_server(port=0)   # 0 = grab a free port
+    assert port
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as r:
+        assert r.status == 200
+        assert r.read() == b"ok"
+
+
+def test_health_server_disabled(monkeypatch):
+    from bot import healthserver
+    monkeypatch.setenv("BOT_HEALTH", "0")
+    assert healthserver.start_health_server(port=0) is None
+
+
 def test_forcestop_predicate():
     import bot.telegram_bot as tb
     assert tb.is_forcestop_command("/forcestop") and tb.is_forcestop_command("/kill")

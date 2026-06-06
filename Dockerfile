@@ -45,6 +45,12 @@ ENV HOME=/app \
 # the SQLite clip library) across container restarts.
 VOLUME ["/app/downloads", "/app/.cache"]
 
+# Health endpoint (bot/healthserver.py) so Docker/Coolify can verify liveness and
+# do clean single-instance swaps (avoids the two-poller Telegram 409).
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.getenv('BOT_HEALTH_PORT','8000'), timeout=3)" || exit 1
+
 # Optional download-link server (BOT_FILE_SERVER=1). Map it with -p to hand out
 # project-zip links; also used by the Streamlit UI override.
 EXPOSE 8770 8501

@@ -11,6 +11,26 @@ editing machine (scp or a single zip).
 You can deploy either with **Docker** (simplest) or as a **venv + systemd
 service** (sections 1–2). Pick one.
 
+## Coolify (or any PaaS)
+
+The bot exposes a health endpoint at **`GET /health` on port 8000** (200 = alive).
+Use it so the platform can verify the bot and swap containers cleanly:
+
+- **Health check:** path `/health`, port `8000`.
+- **IMPORTANT — single instance only.** A Telegram long-poller must run as ONE
+  container; two instances polling the same token cause `409 Conflict` (and a
+  stale old container can grab jobs with old code). In Coolify, disable
+  zero-downtime / "start new before stopping old" (enable *force stop old
+  container before deploy*) and keep replicas = 1. With the health check set,
+  Coolify can stop the old container reliably.
+- **Persistent storage:** map volumes for **`/app/.cache`** (keeps your uploaded
+  cookies + caches) and **`/app/downloads`** (finished projects). Without a
+  persistent `/app/.cache`, an uploaded cookies.txt is wiped on every redeploy.
+- **Env vars** (`TELEGRAM_BOT_TOKEN`, `PEXELS_API_KEY`, `PEXELS_API_KEY_2`, …) go
+  in Coolify's Environment Variables UI.
+- After deploy, send the bot `/status`; on the host `docker ps` should show
+  exactly one bot container.
+
 ## Option A: Docker (recommended)
 
 A `Dockerfile` at the repo root builds a CPU-only image (ffmpeg included, no
