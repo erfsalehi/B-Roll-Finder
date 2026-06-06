@@ -137,7 +137,15 @@ def _sanitized_cookie_file(path: str) -> str:
         return cached[1]
     try:
         lines = _read_cookie_text(path).splitlines()
-        first = next((ln for ln in lines if ln.strip()), "")
+        # yt-dlp reads the FIRST physical line and rejects the file unless it's
+        # the magic header — so drop any leading blank/whitespace-only lines (a
+        # leading newline in the upload would otherwise survive here) and strip a
+        # stray BOM char before deciding whether to prepend the header.
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        if lines:
+            lines[0] = lines[0].lstrip("﻿")
+        first = lines[0] if lines else ""
         if not (first.startswith("# Netscape HTTP Cookie File")
                 or first.startswith("# HTTP Cookie File")):
             lines = ["# Netscape HTTP Cookie File"] + lines
