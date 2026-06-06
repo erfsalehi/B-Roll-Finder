@@ -201,3 +201,29 @@ def test_redo_and_logs_predicates():
     # /redo is no longer an alias of /refine
     assert not tb.is_refine_command("/redo")
     assert not tb.is_redo_command("/refine")
+
+
+def test_forcestop_predicate():
+    import bot.telegram_bot as tb
+    assert tb.is_forcestop_command("/forcestop") and tb.is_forcestop_command("/kill")
+    assert tb.is_forcestop_command("/fstop@Bot")
+    assert not tb.is_forcestop_command("/cancel")
+    assert not tb.is_cancel_command("/forcestop")
+
+
+def test_fetch_with_retries_aborts_when_cancelled(monkeypatch):
+    """A cancelled fetch returns promptly without doing retry passes."""
+    import core.director_search as ds
+    calls = {"footage": 0}
+
+    def fake_footage(shots, **k):
+        calls["footage"] += 1
+        return shots
+
+    monkeypatch.setattr(ds, "fetch_director_footage", fake_footage)
+    shots = [{"slot_id": 1, "priority": "high", "search_queries": ["x"], "video_results": []}]
+    # Cancelled from the start: one footage call happens, then the retry loop bails
+    # immediately (no sleeps, no extra passes).
+    ds.fetch_with_retries(shots, passes=5, wait_seconds=999, errors=[],
+                          should_cancel=lambda: True)
+    assert calls["footage"] == 1   # initial only; retry passes skipped on cancel

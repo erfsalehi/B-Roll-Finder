@@ -152,7 +152,7 @@ def auto_fetch_plan() -> dict:
 
 def fetch_with_retries(shots: list, plan: dict = None, passes: int = None,
                        wait_seconds: float = None, errors: list = None,
-                       progress_callback=None) -> list:
+                       progress_callback=None, should_cancel=None) -> list:
     """Fetch candidates, then re-fetch shots that came back EMPTY up to ``passes``
     more times (waiting between). On a flaky/rate-limited connection the first
     pass leaves gaps — without this the back half of a long run silently ends up
@@ -174,9 +174,12 @@ def fetch_with_retries(shots: list, plan: dict = None, passes: int = None,
         except (TypeError, ValueError):
             wait_seconds = 8.0
 
-    fetch_director_footage(shots, errors=errors, progress_callback=progress_callback, **plan)
+    fetch_director_footage(shots, errors=errors, progress_callback=progress_callback,
+                           should_cancel=should_cancel, **plan)
 
     for _ in range(max(0, passes)):
+        if should_cancel and should_cancel():
+            break
         empties = [s for s in shots
                    if s.get("priority") != "none" and not s.get("video_results")
                    and (s.get("search_queries") or s.get("youtube_keywords"))]
@@ -184,7 +187,8 @@ def fetch_with_retries(shots: list, plan: dict = None, passes: int = None,
             break
         time.sleep(wait_seconds)
         clear_query_cache()  # so the failed/empty queries re-hit the API
-        fetch_director_footage(shots, errors=errors, retry_only=True, **plan)
+        fetch_director_footage(shots, errors=errors, retry_only=True,
+                               should_cancel=should_cancel, **plan)
     return shots
 
 
@@ -397,6 +401,7 @@ def fetch_director_footage(
     min_height: int = 0,
     pexels_max_queries: int = None,
     pixabay_max_queries: int = None,
+    should_cancel=None,
 ) -> list:
     """
     Stage 2: Fetch video candidates for every shot in parallel.
@@ -458,6 +463,11 @@ def fetch_director_footage(
     inner_workers = min(max_workers, 4)
 
     def _run_shot(shot: dict) -> None:
+        # Cooperative cancel: once requested, queued shots return immediately so
+        # the run winds down within one in-flight shot's fetch time instead of
+        # grinding through all remaining shots.
+        if should_cancel and should_cancel():
+            return
         # Propagate Streamlit session context so st.* calls inside the
         # progress_callback don't warn about missing ScriptRunContext.
         if _st_ctx:

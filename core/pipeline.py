@@ -441,7 +441,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         seed_youtube_keywords(shots)
     except Exception:
         pass
-    fetch_with_retries(shots, errors=errors)  # retries empty shots on flaky links
+    fetch_with_retries(shots, errors=errors, should_cancel=should_cancel)  # cancellable
 
     # Clip Library: add previously-downloaded footage as candidates (free).
     if _flag_default("AUTO_USE_LIBRARY", True):

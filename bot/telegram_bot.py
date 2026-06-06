@@ -708,6 +708,24 @@ def handle_cookies_upload(chat_id, file_id: str, name: str) -> None:
                               "Re-export with a 'Get cookies.txt' extension.")
 
 
+def handle_forcestop(chat_id) -> None:
+    """Hard stop: signal cancel, then exit the process so a wedged worker (stuck
+    in a blocking network call /cancel can't interrupt) is killed for sure. Under
+    Docker --restart / systemd Restart=always the bot comes back idle in seconds;
+    downloaded files and uploaded cookies persist on the mounted volumes."""
+    cancel = _BUSY.get("cancel")
+    if cancel is not None:
+        cancel.set()
+    proj = _BUSY.get("project") or "—"
+    send_message(chat_id, f"🛑 Force-stopping '{proj}' and restarting the bot. "
+                          "Back in a few seconds (downloads & cookies are kept).")
+    # Delay the exit briefly so the message actually flushes to Telegram.
+    def _boom():
+        time.sleep(1.0)
+        os._exit(0)
+    threading.Thread(target=_boom, daemon=True).start()
+
+
 def handle_logs(chat_id) -> None:
     """Send the captured bot log as a .txt document."""
     dest = os.path.join(".cache", f"broll-bot-{time.strftime('%Y%m%d_%H%M%S')}.log")
@@ -731,6 +749,7 @@ _BOT_COMMANDS = [
     ("refine", "Re-pick QA-flagged shots (or /refine 4 9)"),
     ("redo", "Re-fetch shots with no clip (YouTube-first)"),
     ("cancel", "Stop the running job / discard pending"),
+    ("forcestop", "Hard stop + restart the bot"),
     ("zip", "Bundle a finished project (link + attach)"),
     ("cleanup", "Show disk usage / delete a project"),
     ("logs", "Export the bot logs as a file"),
@@ -851,6 +870,10 @@ def is_cancel_command(text: str) -> bool:
     return _command(text) in ("/cancel", "/stop", "/abort")
 
 
+def is_forcestop_command(text: str) -> bool:
+    return _command(text) in ("/forcestop", "/kill", "/forcecancel", "/fstop")
+
+
 def is_zip_command(text: str) -> bool:
     return _command(text) in ("/zip", "/package", "/bundle")
 
@@ -959,7 +982,8 @@ _HELP = (
     "/download — fetch clips for the reviewed project\n"
     "/refine [shots] — re-pick QA-flagged shots (or named ones, e.g. /refine 4 9)\n"
     "/redo — re-fetch shots with no clip (YouTube-first)\n"
-    "/cancel — stop the running job (or discard a pending one)\n"
+    "/cancel — stop the running job (graceful; or discard a pending one)\n"
+    "/forcestop — hard stop + restart the bot (when /cancel won't catch)\n"
     "/zip [name] — bundle a finished project (link + attach)\n"
     "/cleanup [name|all] — list or delete downloaded projects (free disk)\n"
     "/logs — export the bot logs as a file\n"
@@ -1079,13 +1103,17 @@ def main() -> None:
                 cancel = _BUSY.get("cancel")
                 if _BUSY.get("active") and cancel is not None:
                     cancel.set()
-                    send_message(chat_id, f"⏹ Cancelling '{_BUSY.get('project')}' "
-                                          "after the current stage…")
+                    send_message(chat_id, f"⏹ Cancelling '{_BUSY.get('project')}' — it stops at "
+                                          "the next stage/shot. If it won't stop, use /forcestop.")
                 elif _PENDING.get(chat_id):
                     proj = _PENDING.pop(chat_id)["project"]
                     send_message(chat_id, f"⏹ Discarded pending project '{proj}'.")
                 else:
                     send_message(chat_id, "Nothing is running right now.")
+                continue
+
+            if is_forcestop_command(text):
+                handle_forcestop(chat_id)
                 continue
 
             if is_details_command(text):
