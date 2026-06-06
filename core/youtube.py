@@ -88,11 +88,48 @@ def _get_cookie_opts() -> dict:
     # YT_COOKIE_BROWSER in .env can't override a mounted cookies.txt.
     f = _discover_cookie_file()
     if f:
-        return {"cookiefile": f}
+        return {"cookiefile": _sanitized_cookie_file(f)}
     browser = os.getenv("YT_COOKIE_BROWSER", "").strip().lower()
     if browser and browser != "none":
         return {"cookiesfrombrowser": (browser,)}
     return {}
+
+
+_sanitized_cookie_cache: dict = {}
+
+
+def _sanitized_cookie_file(path: str) -> str:
+    """Return a path to a yt-dlp-clean copy of ``path``.
+
+    A UTF-8 BOM at the start makes yt-dlp reject the whole file ("does not look
+    like a Netscape format cookies file") — and Windows editors / PowerShell
+    ``Out-File`` add one silently. We strip the BOM, normalise newlines to LF,
+    and guarantee the Netscape header line, writing the result under .cache.
+    Cached by source mtime so we only rewrite when the cookies change. On any
+    error we fall back to the original path."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return path
+    cached = _sanitized_cookie_cache.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:  # -sig strips BOM
+            lines = fh.read().splitlines()
+        first = next((ln for ln in lines if ln.strip()), "")
+        if not (first.startswith("# Netscape HTTP Cookie File")
+                or first.startswith("# HTTP Cookie File")):
+            lines = ["# Netscape HTTP Cookie File"] + lines
+        out_dir = os.path.join(_cookies_search_root(), ".cache")
+        os.makedirs(out_dir, exist_ok=True)
+        dest = os.path.join(out_dir, "_yt_cookies.txt")
+        with open(dest, "w", encoding="utf-8", newline="\n") as out:
+            out.write("\n".join(lines) + "\n")
+        _sanitized_cookie_cache[path] = (mtime, dest)
+        return dest
+    except Exception:
+        return path
 
 
 def _cookies_search_root() -> str:

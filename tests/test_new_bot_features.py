@@ -118,6 +118,20 @@ def test_cookie_mode_ok_with_file(tmp_path, monkeypatch):
     assert ok is True and "file" in detail
 
 
+def test_sanitize_cookie_strips_bom(tmp_path, monkeypatch):
+    """A UTF-8 BOM makes yt-dlp reject the file; the sanitizer removes it and
+    guarantees the Netscape header."""
+    import core.youtube as y
+    monkeypatch.setattr(y, "_cookies_search_root", lambda: str(tmp_path))
+    src = tmp_path / "cookies.txt"
+    src.write_bytes(b"\xef\xbb\xbf# Netscape HTTP Cookie File\n"
+                    b".youtube.com\tTRUE\t/\tTRUE\t0\tk\tv\n")
+    out = y._sanitized_cookie_file(str(src))
+    data = open(out, "rb").read()
+    assert not data.startswith(b"\xef\xbb\xbf")              # BOM stripped
+    assert data.startswith(b"# Netscape HTTP Cookie File")   # header intact
+
+
 def test_cookie_autodetects_folder_and_beats_browser(tmp_path, monkeypatch):
     """A cookies/*.txt is found without YT_COOKIE_FILE, and wins over a leftover
     YT_COOKIE_BROWSER — exactly the 'put cookies.txt in a cookies/ folder' setup."""
