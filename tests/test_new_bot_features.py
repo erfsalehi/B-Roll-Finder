@@ -89,17 +89,19 @@ def test_snapshot_logs_none_when_absent(tmp_path, monkeypatch):
 
 # ── YouTube cookie-mode status ────────────────────────────────────────────────
 
-def test_cookie_mode_flags_missing_file(monkeypatch):
+def test_cookie_mode_flags_missing_file(tmp_path, monkeypatch):
     import core.youtube as y
     monkeypatch.setattr(y, "_cookies_broken", False)
+    monkeypatch.setattr(y, "_cookies_search_root", lambda: str(tmp_path))  # empty
     monkeypatch.setenv("YT_COOKIE_FILE", "/nope/cookies.txt")
     ok, detail = y.cookie_mode()
     assert ok is False and "NOT FOUND" in detail
 
 
-def test_cookie_mode_flags_browser_on_server(monkeypatch):
+def test_cookie_mode_flags_browser_on_server(tmp_path, monkeypatch):
     import core.youtube as y
     monkeypatch.setattr(y, "_cookies_broken", False)
+    monkeypatch.setattr(y, "_cookies_search_root", lambda: str(tmp_path))  # empty
     monkeypatch.delenv("YT_COOKIE_FILE", raising=False)
     monkeypatch.setenv("YT_COOKIE_BROWSER", "firefox")
     ok, detail = y.cookie_mode()
@@ -114,6 +116,22 @@ def test_cookie_mode_ok_with_file(tmp_path, monkeypatch):
     monkeypatch.setenv("YT_COOKIE_FILE", str(cookie))
     ok, detail = y.cookie_mode()
     assert ok is True and "file" in detail
+
+
+def test_cookie_autodetects_folder_and_beats_browser(tmp_path, monkeypatch):
+    """A cookies/*.txt is found without YT_COOKIE_FILE, and wins over a leftover
+    YT_COOKIE_BROWSER — exactly the 'put cookies.txt in a cookies/ folder' setup."""
+    import core.youtube as y
+    monkeypatch.setattr(y, "_cookies_broken", False)
+    monkeypatch.delenv("YT_COOKIE_FILE", raising=False)
+    monkeypatch.setenv("YT_COOKIE_BROWSER", "firefox")
+    cdir = tmp_path / "cookies"
+    cdir.mkdir()
+    (cdir / "www.youtube.com_cookies.txt").write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(y, "_cookies_search_root", lambda: str(tmp_path))
+    ok, detail = y.cookie_mode()
+    assert ok is True and "www.youtube.com_cookies.txt" in detail
+    assert "cookiefile" in y._get_cookie_opts()   # file beats the browser env
 
 
 # ── new command predicates ────────────────────────────────────────────────────

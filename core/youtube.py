@@ -84,19 +84,49 @@ def _get_cookie_opts() -> dict:
     """
     if _cookies_broken:
         return {}
-    # 1 — explicit cookies file (works headless; survives in a container)
-    cookie_file_env = os.getenv("YT_COOKIE_FILE", "").strip()
-    if cookie_file_env and os.path.exists(cookie_file_env):
-        return {"cookiefile": cookie_file_env}
-    # 2 — a browser's cookie DB (desktop only)
+    # A cookies FILE always wins over a browser source — so a leftover
+    # YT_COOKIE_BROWSER in .env can't override a mounted cookies.txt.
+    f = _discover_cookie_file()
+    if f:
+        return {"cookiefile": f}
     browser = os.getenv("YT_COOKIE_BROWSER", "").strip().lower()
     if browser and browser != "none":
         return {"cookiesfrombrowser": (browser,)}
-    # 3 — cookies.txt in the project root
-    cookie_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
-    if os.path.exists(cookie_file):
-        return {"cookiefile": cookie_file}
     return {}
+
+
+def _cookies_search_root() -> str:
+    """Repo root, where auto-detected cookie files live. Separate function so
+    tests can point it at a temp dir."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _discover_cookie_file() -> str | None:
+    """Locate a cookies.txt without needing an exact env path. Order:
+      1. ``YT_COOKIE_FILE`` (explicit path)
+      2. any ``*.txt`` inside a ``cookies/`` folder at the repo root
+         (prefer a name containing 'cookie'/'youtube')
+      3. ``cookies.txt`` in the repo root
+    Returns the path, or None.
+    """
+    explicit = os.getenv("YT_COOKIE_FILE", "").strip()
+    if explicit and os.path.isfile(explicit):
+        return explicit
+
+    root = _cookies_search_root()
+    cdir = os.path.join(root, "cookies")
+    if os.path.isdir(cdir):
+        txts = [os.path.join(cdir, n) for n in sorted(os.listdir(cdir))
+                if n.lower().endswith(".txt")]
+        if txts:
+            preferred = [p for p in txts
+                         if any(k in os.path.basename(p).lower() for k in ("cookie", "youtube"))]
+            return (preferred or txts)[0]
+
+    root_file = os.path.join(root, "cookies.txt")
+    if os.path.isfile(root_file):
+        return root_file
+    return None
 
 
 def cookie_mode() -> tuple:
@@ -109,21 +139,20 @@ def cookie_mode() -> tuple:
     if _cookies_broken:
         return False, "disabled this session (source failed — see /logs)"
 
+    f = _discover_cookie_file()
+    if f:
+        return True, f"file {f}"
+
+    # An explicit path was set but the file isn't there.
     cfile = os.getenv("YT_COOKIE_FILE", "").strip()
     if cfile:
-        if os.path.exists(cfile):
-            return True, f"file {cfile}"
         return False, f"file {cfile} NOT FOUND — YouTube will bot-block"
 
     browser = os.getenv("YT_COOKIE_BROWSER", "").strip().lower()
     if browser and browser != "none":
         # A browser cookie DB cannot exist in a headless container/server.
-        return False, (f"browser '{browser}' — won't work on a server; "
-                       "set YT_COOKIE_FILE to a mounted cookies.txt")
-
-    root_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
-    if os.path.exists(root_file):
-        return True, f"file {root_file}"
+        return False, (f"browser '{browser}' — won't work on a server; put a "
+                       "cookies.txt in a cookies/ folder or set YT_COOKIE_FILE")
 
     return True, "none (search OK; downloads may bot-block on a datacenter IP)"
 

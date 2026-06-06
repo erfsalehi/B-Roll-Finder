@@ -33,7 +33,7 @@ docker run -d --name broll-bot --restart unless-stopped \
   -p 8770:8770 \
   -v "$PWD/downloads:/app/downloads" \
   -v "$PWD/.cache:/app/.cache" \
-  -v "$PWD/cookies.txt:/app/cookies.txt:ro" \
+  -v "$PWD/cookies:/app/cookies:ro" \
   broll-finder
 docker logs -f broll-bot          # live logs
 ```
@@ -50,16 +50,24 @@ firefox cookies database"*, so the bot silently falls back to Pexels-only and
 many shots get no clip.
 
 Fix:
-1. **Do NOT set `YT_COOKIE_BROWSER`** in the server `.env` (remove it if copied
-   from your laptop).
-2. Export a `cookies.txt` from a browser logged into YouTube (e.g. the
-   "Get cookies.txt" extension, Netscape format), drop it next to `.env`, mount
-   it (`-v "$PWD/cookies.txt:/app/cookies.txt:ro"` as above), and set
-   `YT_COOKIE_FILE=/app/cookies.txt` in `.env`.
+1. Export a cookies file from a browser logged into YouTube (e.g. the
+   "Get cookies.txt" extension, Netscape format).
+2. Put it in a `cookies/` folder next to `.env` (any `*.txt` name works):
+   ```bash
+   mkdir -p cookies && mv www.youtube.com_cookies.txt cookies/
+   ```
+3. Mount that folder into the container (`-v "$PWD/cookies:/app/cookies:ro"`, as
+   in the run command above).
 
-Without a valid `cookies.txt` the bot still runs, but YouTube results will be
-unreliable on a datacenter IP (the code now degrades gracefully to no-cookies
-instead of failing every call, but cookies are what actually unblock YouTube).
+The bot **auto-detects** any `*.txt` under `cookies/` — you do **not** need to
+set `YT_COOKIE_FILE`, and a detected file **overrides** any stale
+`YT_COOKIE_BROWSER`, so a leftover laptop setting can't break it. (You can still
+set `YT_COOKIE_FILE=/path/to/file` for an explicit path.)
+
+Without a cookies file the bot still runs, but YouTube results will be unreliable
+on a datacenter IP (the code degrades gracefully to no-cookies instead of failing
+every call, but cookies are what actually unblock YouTube). Confirm with
+`/status` → `✅ YouTube cookies: file …`.
 
 Bot usage: send a voice/audio file; control everything from chat — `/settings`
 (inline menu: sources, per-source counts, quality, QA on/off, review gate),
