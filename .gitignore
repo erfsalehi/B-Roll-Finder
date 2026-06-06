@@ -8,9 +8,5 @@ downloads/
 *api.txt
 *.log
 .vscode/
-# YouTube cookies — a login to your account; never commit.
-cookies/
-cookies.txt
-*cookies*.txt
 .idea/
 .claude/
