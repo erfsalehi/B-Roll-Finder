@@ -844,12 +844,30 @@ def check_health(timeout: int = 8) -> list:
     return checks
 
 
-def format_health(checks: list, busy: dict = None) -> str:
+def _fmt_duration(secs: float) -> str:
+    secs = int(max(0, secs))
+    m, s = divmod(secs, 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def format_health(checks: list, busy: dict = None, pending: list = None) -> str:
     lines = ["🟢 Bot online — laptop is up and polling."]
     for name, ok, detail in checks:
         lines.append(f"{'✅' if ok else '❌'} {name}: {detail}")
     if busy and busy.get("active"):
-        lines.append(f"⏳ Busy — processing '{busy.get('project', 'a job')}'. Try again when it's done.")
+        started = busy.get("started")
+        dur = f" for {_fmt_duration(time.time() - started)}" if started else ""
+        lines.append(f"⏳ Busy — processing '{busy.get('project', 'a job')}'{dur}.")
+        lines.append("🛑 Ongoing job — /cancel to stop it gracefully, or /forcestop to force.")
+    elif pending:
+        names = ", ".join(str(p) for p in pending)
+        lines.append(f"📋 Awaiting your review: {names}")
+        lines.append("➡️ Reply /download, /refine, /redo — or /cancel to discard.")
     else:
         lines.append("💤 Idle — ready for a voice file.")
     return "\n".join(lines)
@@ -1002,7 +1020,7 @@ def _job_thread(fn, chat_id, *args) -> None:
     except Exception as e:
         send_message(chat_id, f"❌ Unexpected error: {e}")
     finally:
-        _BUSY.update(active=False, project=None, cancel=None)
+        _BUSY.update(active=False, project=None, cancel=None, started=None)
 
 
 # ── polling loop ────────────────────────────────────────────────────────────────
@@ -1092,7 +1110,9 @@ def main() -> None:
 
             if is_status_command(text):
                 send_message(chat_id, "🔎 Checking…")
-                send_message(chat_id, format_health(check_health(), _BUSY))
+                send_message(chat_id, format_health(
+                    check_health(), _BUSY,
+                    pending=[v.get("project") for v in _PENDING.values()]))
                 continue
 
             if is_settings_command(text):
@@ -1153,7 +1173,7 @@ def main() -> None:
                     send_message(chat_id, "Nothing to act on — send a voice file first.")
                     continue
                 _BUSY.update(active=True, project=_PENDING[chat_id]["project"],
-                             cancel=threading.Event())
+                             cancel=threading.Event(), started=time.time())
                 if is_download_command(text):
                     threading.Thread(target=_job_thread, args=(_run_download, chat_id),
                                      daemon=True).start()
@@ -1182,7 +1202,7 @@ def main() -> None:
                 # can answer /status and /cancel mid-job.
                 _BUSY.update(active=True,
                              project=project_name_from(name, time.strftime("video_%Y%m%d_%H%M%S")),
-                             cancel=threading.Event())
+                             cancel=threading.Event(), started=time.time())
                 threading.Thread(target=_job_thread, args=(handle_audio, chat_id, file_id, name),
                                  daemon=True).start()
             elif text:

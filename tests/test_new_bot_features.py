@@ -203,6 +203,31 @@ def test_redo_and_logs_predicates():
     assert not tb.is_redo_command("/refine")
 
 
+def test_status_shows_ongoing_job_with_stop_hint():
+    import time
+    import bot.telegram_bot as tb
+    checks = [("Groq key", True, "set")]
+    out = tb.format_health(checks, busy={"active": True, "project": "vid",
+                                         "started": time.time() - 65})
+    assert "Busy" in out and "vid" in out
+    assert "/cancel" in out and "/forcestop" in out      # how to stop it
+    assert "1m" in out                                     # elapsed shown
+
+
+def test_status_shows_pending_review():
+    import bot.telegram_bot as tb
+    out = tb.format_health([("Groq key", True, "set")], busy={"active": False},
+                           pending=["proj_a"])
+    assert "Awaiting your review: proj_a" in out
+    assert "/download" in out
+
+
+def test_status_idle_when_nothing():
+    import bot.telegram_bot as tb
+    out = tb.format_health([("Groq key", True, "set")], busy={"active": False}, pending=[])
+    assert "Idle" in out
+
+
 def test_forcestop_predicate():
     import bot.telegram_bot as tb
     assert tb.is_forcestop_command("/forcestop") and tb.is_forcestop_command("/kill")
