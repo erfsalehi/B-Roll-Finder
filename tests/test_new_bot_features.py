@@ -118,6 +118,34 @@ def test_cookie_mode_ok_with_file(tmp_path, monkeypatch):
     assert ok is True and "file" in detail
 
 
+def test_extract_cookies_doc():
+    import bot.telegram_bot as tb
+    # named with 'cookies'
+    fid, n = tb.extract_cookies_doc({"document": {"file_id": "C1",
+                                                  "file_name": "www.youtube.com_cookies.txt"}})
+    assert fid == "C1"
+    # any .txt with a /cookies caption
+    fid2, _ = tb.extract_cookies_doc({"document": {"file_id": "C2", "file_name": "export.txt"},
+                                      "caption": "/cookies"})
+    assert fid2 == "C2"
+    # a plain non-cookie .txt with no caption is NOT treated as cookies
+    assert tb.extract_cookies_doc({"document": {"file_id": "x", "file_name": "notes.txt"}}) == (None, None)
+    # non-txt ignored
+    assert tb.extract_cookies_doc({"document": {"file_id": "x", "file_name": "cookies.pdf"}}) == (None, None)
+
+
+def test_uploaded_cookie_is_discovered_first(tmp_path, monkeypatch):
+    import core.youtube as y
+    monkeypatch.setattr(y, "_cookies_search_root", lambda: str(tmp_path))
+    monkeypatch.delenv("YT_COOKIE_FILE", raising=False)
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    up = cache / "cookies.txt"
+    up.write_text("# Netscape HTTP Cookie File\n")
+    assert y._discover_cookie_file() == str(up)
+    assert y.uploaded_cookie_path() == str(up)
+
+
 def test_sanitize_cookie_strips_bom(tmp_path, monkeypatch):
     """A UTF-8 BOM makes yt-dlp reject the file; the sanitizer removes it and
     guarantees the Netscape header."""

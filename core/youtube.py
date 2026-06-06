@@ -138,14 +138,32 @@ def _cookies_search_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def uploaded_cookie_path() -> str:
+    """Where a cookies.txt sent to the Telegram bot is stored — under .cache so
+    it persists across restarts (that dir is a mounted volume) without a rebuild."""
+    return os.path.join(_cookies_search_root(), ".cache", "cookies.txt")
+
+
+def reset_cookies_state() -> None:
+    """Re-enable cookies after a fresh upload (clears the broken flag + cache)."""
+    global _cookies_broken
+    _cookies_broken = False
+    _sanitized_cookie_cache.clear()
+
+
 def _discover_cookie_file() -> str | None:
     """Locate a cookies.txt without needing an exact env path. Order:
-      1. ``YT_COOKIE_FILE`` (explicit path)
-      2. any ``*.txt`` inside a ``cookies/`` folder at the repo root
+      1. a file uploaded to the bot (``.cache/cookies.txt``) — most recent intent
+      2. ``YT_COOKIE_FILE`` (explicit path)
+      3. any ``*.txt`` inside a ``cookies/`` folder at the repo root
          (prefer a name containing 'cookie'/'youtube')
-      3. ``cookies.txt`` in the repo root
+      4. ``cookies.txt`` in the repo root
     Returns the path, or None.
     """
+    uploaded = uploaded_cookie_path()
+    if os.path.isfile(uploaded):
+        return uploaded
+
     explicit = os.getenv("YT_COOKIE_FILE", "").strip()
     if explicit and os.path.isfile(explicit):
         return explicit

@@ -113,6 +113,24 @@ def extract_audio(message: dict):
     return None, None
 
 
+def extract_cookies_doc(message: dict):
+    """Return ``(file_id, name)`` for a YouTube cookies upload — a ``.txt``
+    document whose name contains 'cookie', or any ``.txt`` sent with a /cookies
+    (or 'cookie') caption — else ``(None, None)``."""
+    if not isinstance(message, dict):
+        return None, None
+    doc = message.get("document")
+    if not doc:
+        return None, None
+    name = (doc.get("file_name") or "").lower()
+    caption = (message.get("caption") or "").lower().strip()
+    if not name.endswith(".txt"):
+        return None, None
+    if "cookie" in name or "cookie" in caption or caption.startswith("/cookies"):
+        return doc["file_id"], doc.get("file_name") or "cookies.txt"
+    return None, None
+
+
 def project_name_from(suggested_name: str, fallback: str = "") -> str:
     base = os.path.splitext(os.path.basename(suggested_name or ""))[0].strip()
     return (base or fallback or "voice")[:50]
@@ -266,6 +284,10 @@ def is_help_command(text: str) -> bool:
 
 def is_logs_command(text: str) -> bool:
     return _command(text) in ("/logs", "/log")
+
+
+def is_cookies_command(text: str) -> bool:
+    return _command(text) in ("/cookies", "/cookie")
 
 
 def is_cleanup_command(text: str) -> bool:
@@ -646,6 +668,40 @@ def _run_redo(chat_id) -> None:
 
 # ── log export + command registration ────────────────────────────────────────
 
+_COOKIES_HELP = (
+    "🍪 To give me YouTube cookies, send the cookies.txt file as a document "
+    "(Netscape format — export with a 'Get cookies.txt' browser extension while "
+    "logged into YouTube). I'll save it and use it right away — no redeploy.\n"
+    "Tip: name it with 'cookies' or add the caption /cookies."
+)
+
+
+def handle_cookies_upload(chat_id, file_id: str, name: str) -> None:
+    """Save an uploaded cookies.txt to the persistent .cache and start using it."""
+    from core.youtube import (uploaded_cookie_path, reset_cookies_state,
+                              _sanitized_cookie_file)
+    dest = uploaded_cookie_path()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    try:
+        download_telegram_file(file_id, dest)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't save cookies: {e}")
+        return
+    reset_cookies_state()   # re-enable cookies for this session
+    # Validate by sanitizing (strips BOM) + loading.
+    try:
+        clean = _sanitized_cookie_file(dest)
+        from yt_dlp.cookies import YoutubeDLCookieJar
+        jar = YoutubeDLCookieJar(clean)
+        jar.load()
+        send_message(chat_id, f"✅ Cookies saved & loaded ({len(jar)} cookies). "
+                              "YouTube will use them now. /status to confirm.")
+    except Exception as e:
+        send_message(chat_id, f"⚠️ Saved, but this doesn't look like a valid "
+                              f"Netscape cookies.txt: {str(e)[:120]}\n"
+                              "Re-export with a 'Get cookies.txt' extension.")
+
+
 def handle_logs(chat_id) -> None:
     """Send the captured bot log as a .txt document."""
     dest = os.path.join(".cache", f"broll-bot-{time.strftime('%Y%m%d_%H%M%S')}.log")
@@ -672,6 +728,7 @@ _BOT_COMMANDS = [
     ("zip", "Bundle a finished project (link + attach)"),
     ("cleanup", "Show disk usage / delete a project"),
     ("logs", "Export the bot logs as a file"),
+    ("cookies", "How to upload YouTube cookies.txt"),
     ("help", "Show the command list"),
 ]
 
@@ -899,7 +956,8 @@ _HELP = (
     "/cancel — stop the running job (or discard a pending one)\n"
     "/zip [name] — bundle a finished project (link + attach)\n"
     "/cleanup [name|all] — list or delete downloaded projects (free disk)\n"
-    "/logs — export the bot logs as a file"
+    "/logs — export the bot logs as a file\n"
+    "/cookies — how to give me YouTube cookies (or just send cookies.txt)"
 )
 
 
@@ -1040,6 +1098,16 @@ def main() -> None:
 
             if is_logs_command(text):
                 handle_logs(chat_id)
+                continue
+
+            if is_cookies_command(text):
+                send_message(chat_id, _COOKIES_HELP)
+                continue
+
+            # A cookies.txt document upload — save & use it (before audio routing).
+            cfid, cname = extract_cookies_doc(msg)
+            if cfid:
+                handle_cookies_upload(chat_id, cfid, cname)
                 continue
 
             # Review-gate actions: need a pending project and a free worker.
