@@ -1,0 +1,3 @@
+# Cookies files must stay byte-exact (no CRLF conversion) so yt-dlp parses them.
+cookies/** -text
+*cookies*.txt -text

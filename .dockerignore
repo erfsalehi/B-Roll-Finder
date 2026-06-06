@@ -8,10 +8,9 @@ Dockerfile
 .env
 .env.*
 !.env.example
-# YouTube cookies — mount at runtime (-v), never bake into the image layer.
-cookies/
-cookies.txt
-*cookies*.txt
+# NOTE: cookies/ is intentionally NOT excluded — it's baked into the image so the
+# bot has YouTube cookies on deploy (private repo). Drop this in if you'd rather
+# mount cookies at runtime than ship them in the image layer.
 
 # Local runtime state — recreated in the container / on volumes.
 venv/
