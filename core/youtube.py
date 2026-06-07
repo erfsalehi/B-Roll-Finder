@@ -438,7 +438,12 @@ def _fetch_full_info(url: str) -> dict:
                 # though 1080p actually exists. tv_simply gives us a
                 # working fallback even on machines with no JS runtime
                 # installed.
-                'player_client': ['tv_simply', 'default', 'tv', 'mweb'],
+                # Trimmed to the two highest-yield clients (was 4) to cut the
+                # per-candidate round-trips during the fetch phase; 'tv_simply'
+                # already returns challenge-free high-res DASH and 'default'
+                # covers the rest, so the extra 'tv'/'mweb' probes added latency
+                # for little additional format coverage.
+                'player_client': ['tv_simply', 'default'],
             },
         },
         # DASH is where the high-res entries live — explicit True even

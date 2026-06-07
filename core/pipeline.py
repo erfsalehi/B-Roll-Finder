@@ -441,7 +441,15 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         seed_youtube_keywords(shots)
     except Exception:
         pass
-    fetch_with_retries(shots, errors=errors, should_cancel=should_cancel)  # cancellable
+
+    def _fetch_progress(frac):
+        # Re-emit step 5 with a live percentage so the bot/UI can update the
+        # "Fetching candidates" line in place instead of leaving it static for
+        # the whole (often longest) phase.
+        _p(5, f"Fetching candidates · {int(max(0.0, min(1.0, frac)) * 100)}%")
+
+    fetch_with_retries(shots, errors=errors, should_cancel=should_cancel,
+                       progress_callback=_fetch_progress)  # cancellable
 
     # Clip Library: add previously-downloaded footage as candidates (free).
     if _flag_default("AUTO_USE_LIBRARY", True):

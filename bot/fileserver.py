@@ -49,10 +49,16 @@ def verify_token(relpath: str, expiry: int, token: str) -> bool:
     return hmac.compare_digest(sign_token(relpath, expiry), token or "")
 
 
-def build_link(abs_path: str, host: str, port: int = DEFAULT_PORT,
-               ttl: int = DEFAULT_TTL, scheme: str = "http") -> str | None:
+def build_link(abs_path: str, host: str = None, port: int = DEFAULT_PORT,
+               ttl: int = DEFAULT_TTL, scheme: str = "http",
+               base: str = None) -> str | None:
     """Build a signed download URL for a file under downloads/. None if the file
-    is outside the served root."""
+    is outside the served root.
+
+    When ``base`` is given (e.g. ``https://broll.tovo.club`` from
+    ``public_base_url()``) the link is built against that external base with no
+    explicit port — for when the file server sits behind a TLS reverse proxy
+    (Traefik/Coolify). Otherwise it falls back to ``scheme://host:port``."""
     rel = os.path.relpath(os.path.abspath(abs_path), DOWNLOADS_ROOT)
     if rel.startswith("..") or os.path.isabs(rel):
         return None
@@ -61,7 +67,17 @@ def build_link(abs_path: str, host: str, port: int = DEFAULT_PORT,
     token = sign_token(rel, expiry)
     q = urllib.parse.urlencode({"e": expiry, "t": token})
     enc = urllib.parse.quote(rel)
+    base = (base or "").rstrip("/")
+    if base:
+        return f"{base}/d/{enc}?{q}"
     return f"{scheme}://{host}:{port}/d/{enc}?{q}"
+
+
+def public_base_url() -> str:
+    """External base URL (``scheme://host[:port]``) for download links when the
+    file server is fronted by a reverse proxy / TLS domain. Set
+    ``BOT_PUBLIC_URL`` to e.g. ``https://broll.tovo.club``. Empty when unset."""
+    return os.getenv("BOT_PUBLIC_URL", "").strip().rstrip("/")
 
 
 def public_host() -> str:

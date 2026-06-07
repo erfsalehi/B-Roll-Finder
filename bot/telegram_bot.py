@@ -408,7 +408,11 @@ def deliver_project(chat_id, project: str) -> None:
 
     port = _FILESERVER.get("port")
     if port:
-        link = fileserver.build_link(abs_path, fileserver.public_host(), port)
+        # Prefer a TLS domain (BOT_PUBLIC_URL → https://host/d/...) when set, so
+        # links work through Traefik/Coolify; else fall back to raw host:port.
+        base = fileserver.public_base_url()
+        link = (fileserver.build_link(abs_path, base=base) if base
+                else fileserver.build_link(abs_path, fileserver.public_host(), port))
         if link:
             lines.append(f"🔗 {link}\n(link expires in 24h)")
     lines.append(f"scp USER@SERVER:'{abs_path}' .")
@@ -439,11 +443,28 @@ def format_summary(proj: str, result: dict) -> str:
 
 def _progress_logger(chat_id, proj, msg_id):
     """App-style running step log: appends each stage (✅ done, ⏳ current) to a
-    single edited message."""
+    single edited message. A repeated call with the same ``step`` is treated as
+    a sub-progress update (e.g. 'Fetching candidates · 60%') and rewrites the
+    current line in place rather than appending a new one. In-place updates are
+    throttled so frequent ticks don't trip Telegram's edit rate limit."""
     steps: list = []
+    state = {"step": None, "last_edit": 0.0}
 
     def _cb(step, total, label):
-        steps.append(label)
+        new_stage = step != state["step"]
+        if new_stage or not steps:
+            steps.append(label)
+            state["step"] = step
+        else:
+            steps[-1] = label   # same stage → live sub-progress, replace line
+
+        # Always render a new stage (and a final 100%); throttle the rest so a
+        # busy phase doesn't spam editMessage and hit HTTP 429.
+        now = time.time()
+        if not new_stage and "100%" not in label and now - state["last_edit"] < 3.0:
+            return
+        state["last_edit"] = now
+
         lines = [f"🎬 {proj}  ({step}/{total})"]
         for i, lab in enumerate(steps):
             lines.append(f"{'⏳' if i == len(steps) - 1 else '✅'} {lab}")

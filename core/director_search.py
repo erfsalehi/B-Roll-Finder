@@ -170,9 +170,9 @@ def fetch_with_retries(shots: list, plan: dict = None, passes: int = None,
         passes = _env_int("AUTO_FETCH_PASSES", 2)
     if wait_seconds is None:
         try:
-            wait_seconds = float(os.getenv("AUTO_FETCH_WAIT", "8"))
+            wait_seconds = float(os.getenv("AUTO_FETCH_WAIT", "4"))
         except (TypeError, ValueError):
-            wait_seconds = 8.0
+            wait_seconds = 4.0
 
     fetch_director_footage(shots, errors=errors, progress_callback=progress_callback,
                            should_cancel=should_cancel, **plan)
@@ -498,13 +498,13 @@ def fetch_director_footage(
                 completed[0] += 1
                 progress_callback(completed[0] / progress_total)
 
-    # Outer parallelism: shots concurrently. Capped low (4) because each
-    # shot itself runs `inner_workers` query jobs, and YouTube-classic
-    # queries can each spawn a yt-dlp metadata pool of up to 6 — the
-    # multiplication previously produced 200+ concurrent network threads
-    # which exhausted sockets and triggered rate-limits faster than the
-    # actual fetches could complete.
-    outer_workers = min(len(work_shots), max_workers, 4)
+    # Outer parallelism: shots concurrently. Capped at 6 — each shot itself
+    # runs `inner_workers` query jobs, and YouTube-classic queries can each
+    # spawn a yt-dlp metadata pool, so the multiplication can produce a lot of
+    # concurrent network threads. 6 is a balance: faster than the old cap of 4
+    # while staying clear of the socket-exhaustion / rate-limit cliff (helped
+    # further by authenticated cookies and the trimmed player-client list).
+    outer_workers = min(len(work_shots), max_workers, 6)
     if work_shots:
         with concurrent.futures.ThreadPoolExecutor(max_workers=outer_workers) as executor:
             futures = {executor.submit(_run_shot, shot): shot for shot in work_shots}
