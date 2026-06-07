@@ -1061,6 +1061,20 @@ def main() -> None:
     if not _token():
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get one from @BotFather).")
 
+    # Single-poller guard. Telegram allows only ONE getUpdates poller per token;
+    # a second machine polling the same token causes a perpetual 409 Conflict and
+    # lets a stale instance steal jobs (e.g. re-introducing old cookie errors).
+    # Polling is therefore opt-in: only the host with BOT_POLLING_ENABLED=1 runs
+    # the loop. Other machines can be cloned/updated and run the Streamlit UI or
+    # one-off tasks without ever colliding with the designated bot host.
+    if os.getenv("BOT_POLLING_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+        raise SystemExit(
+            "Bot polling is disabled on this host (BOT_POLLING_ENABLED is not set).\n"
+            "Set BOT_POLLING_ENABLED=1 in the environment of the ONE machine that "
+            "should run the bot (e.g. the Coolify server). This guard prevents the "
+            "Telegram 409 Conflict caused by two machines polling the same token."
+        )
+
     # Register the command list so Telegram shows a '/' suggestion menu.
     register_commands()
 
