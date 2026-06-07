@@ -38,7 +38,7 @@ def _call_groq_json(client: Groq, system_prompt: str, block: str,
         max_tokens=max_tokens,
         response_format={"type": "json_object"}
     )
-    return json.loads(response.choices[0].message.content)
+    return _loads_llm_json(response.choices[0].message.content)
 
 
 def _call_openrouter_json(system_prompt: str, user_content: str,
@@ -76,7 +76,7 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
             try:
                 resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
                 resp.raise_for_status()
-                return json.loads(resp.json()["choices"][0]["message"]["content"])
+                return _loads_llm_json(resp.json()["choices"][0]["message"]["content"])
             except Exception as e:
                 last_error = e
                 status_code = getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
@@ -244,6 +244,24 @@ def _deepseek_request(system_prompt: str, user_content: str,
                 served = j.get("provider")  # OpenRouter names the upstream that answered
                 content = j["choices"][0]["message"]["content"]
                 if content and content.strip():
+                    # In JSON mode, a non-empty but unparseable body (truncated
+                    # output, stray prose, code fences) is as useless as an empty
+                    # one — validate here so we exclude this provider and retry on
+                    # another, instead of letting the caller's parse throw with no
+                    # fallback (the "NOT falling back (paid-only mode)" failure).
+                    if json_mode:
+                        try:
+                            _loads_llm_json(content)
+                        except json.JSONDecodeError as je:
+                            last_error = je
+                            if served and served not in ignored_providers:
+                                ignored_providers.append(served)
+                            if not is_last:
+                                print(f"DeepSeek unparseable JSON from provider "
+                                      f"'{served}'. Excluding it, retrying in {delay}s…")
+                                time.sleep(delay)
+                                continue
+                            break  # exhausted retries for this key → next key
                     return content
                 # 200 with EMPTY content — OpenRouter treats this as success and
                 # won't auto-switch, so exclude this provider and retry on another.
@@ -285,12 +303,38 @@ def _deepseek_request(system_prompt: str, user_content: str,
     raise RuntimeError("DeepSeek request failed with no error captured.")
 
 
+def _loads_llm_json(text: str):
+    """Parse JSON from an LLM response, tolerating the usual wrappers that make a
+    bare ``json.loads`` throw: markdown ```code fences``` and leading/trailing
+    prose around the object. Falls back to extracting the outermost ``{...}`` or
+    ``[...]`` span. Raises ``json.JSONDecodeError`` if nothing parses (so callers
+    / the request loop can treat it as a transient bad response and retry)."""
+    if not text or not text.strip():
+        raise json.JSONDecodeError("empty response", text or "", 0)
+    s = text.strip()
+    m = re.match(r"^```[a-zA-Z0-9]*\s*(.*?)\s*```$", s, re.DOTALL)
+    if m:
+        s = m.group(1).strip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        i, j = s.find(open_ch), s.rfind(close_ch)
+        if 0 <= i < j:
+            try:
+                return json.loads(s[i:j + 1])
+            except json.JSONDecodeError:
+                continue
+    return json.loads(s)   # re-raise the original JSONDecodeError
+
+
 def _call_deepseek_json(system_prompt: str, user_content: str,
                         temperature: float = 0.7, max_tokens: int = 2000,
                         tier: str = "fast") -> dict:
     model, reasoning = _deepseek_tier(tier)
-    return json.loads(_deepseek_request(system_prompt, user_content,
-                                        temperature, max_tokens, True, model, reasoning))
+    return _loads_llm_json(_deepseek_request(system_prompt, user_content,
+                                             temperature, max_tokens, True, model, reasoning))
 
 
 def _call_deepseek_str(system_prompt: str, user_content: str,

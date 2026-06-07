@@ -9,7 +9,7 @@ def _xml_attr(value) -> str:
 
 
 def _get_premiere_safe_pathurl(filepath: str) -> str:
-    """
+    r"""
     Formats paths to prevent Premiere's Windows \\C:\ network drive bug.
     Forces the file://localhost/C:/... format.
     """
