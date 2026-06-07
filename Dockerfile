@@ -7,8 +7,21 @@ FROM python:3.12-slim
 # ffmpeg + ffprobe: clip normalization, scene/frame extraction, audio downsample.
 # ca-certificates: HTTPS to the stock / Groq / Telegram APIs and model downloads.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Deno: yt-dlp needs a JS runtime to solve YouTube's nsig / n-parameter
+# challenge. Without it, current YouTube extraction returns only storyboard
+# images (180p/90p/…) and every real format probe/download fails with
+# "Requested format is not available". nodejs alone is no longer enough for the
+# JS interpreter yt-dlp uses, so install Deno and put it on PATH (yt-dlp
+# auto-detects it). `deno --version` fails the build if the download is broken.
+RUN curl -fsSL -o /tmp/deno.zip \
+        https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip \
+    && unzip -o /tmp/deno.zip -d /usr/local/bin \
+    && rm /tmp/deno.zip \
+    && chmod +x /usr/local/bin/deno \
+    && deno --version
 
 WORKDIR /app
 

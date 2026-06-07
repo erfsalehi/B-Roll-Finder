@@ -55,7 +55,16 @@ def _fetch_query(query: str, source: str, api_key: str, num_results: int,
             # api_key is ignored — yt-dlp doesn't need one. Routing through
             # _fetch_query lets multiple shots that share a query (e.g.
             # "car engine") hit the cache instead of duplicating the search.
-            results = search_youtube_classic(query, num_results, errors=errors, min_height=min_height)
+            #
+            # min_height is intentionally forced to 0 here: yt-dlp's per-video
+            # height probe is unreliable for YouTube (without a Deno/JS runtime
+            # the n-challenge isn't solved, so even 1080p videos report 180p),
+            # which would drop EVERY candidate. Quality is enforced two reliable
+            # ways instead — the YouTube Data API HD/SD filter
+            # (filter_youtube_sd_candidates, needs YOUTUBE_API_KEY) and the
+            # download-time "best up to 1080p" format cap. Skipping the probe
+            # also avoids a slow per-candidate full-info fetch.
+            results = search_youtube_classic(query, num_results, errors=errors, min_height=0)
         for r in results:
             r['matched_query'] = query
     finally:

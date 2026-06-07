@@ -349,10 +349,14 @@ def _extract_info_with_backoff(ydl_opts: dict, target: str,
 
 _YT_EXTRACTOR_ARGS = {
     'youtube': {
-        # YouTube (2025+) broke the 'web' client without a JS runtime and
-        # rate-limited 'android'. Prefer clients that still return full
-        # format lists without a JS runtime.
-        'player_client': ['android_vr', 'tv_simply', 'tv_embedded', 'web', 'mweb'],
+        # Client choice is critical on a cookie'd server. yt-dlp SKIPS the
+        # cookie-incompatible clients (android_vr, tv_simply) when a cookiefile
+        # is set, and the 'web'/'mweb' clients only expose 360p unless you
+        # supply a GVS PO token. The 'tv', 'web_safari', and 'web_embedded'
+        # clients DO accept cookies and return the full HD/4K format list with
+        # no PO token — so they're the ones that actually work here. (Deno is
+        # still required to solve the nsig challenge so the URLs are downloadable.)
+        'player_client': ['tv', 'web_safari', 'web_embedded'],
     }
 }
 
@@ -428,22 +432,14 @@ def _fetch_full_info(url: str) -> dict:
         # we can read formats from the other clients' responses.
         'extractor_args': {
             'youtube': {
-                # 'tv_simply' is listed first because YouTube ships its
-                # high-res DASH URLs to that client **without** the
-                # n-parameter JS challenge that protects the URLs every
-                # other client receives. Without a working JS runtime
-                # (Deno / Node / phantomjs), n-challenge solving fails
-                # silently and every challenge-protected format is
-                # dropped — which is why probes return 320x180 even
-                # though 1080p actually exists. tv_simply gives us a
-                # working fallback even on machines with no JS runtime
-                # installed.
-                # Trimmed to the two highest-yield clients (was 4) to cut the
-                # per-candidate round-trips during the fetch phase; 'tv_simply'
-                # already returns challenge-free high-res DASH and 'default'
-                # covers the rest, so the extra 'tv'/'mweb' probes added latency
-                # for little additional format coverage.
-                'player_client': ['tv_simply', 'default'],
+                # Cookie-compatible, HD-capable, PO-token-free clients. The old
+                # 'tv_simply'/'android_vr' set is skipped by yt-dlp when cookies
+                # are present, and 'web'/'mweb' cap at 360p without a GVS PO
+                # token — both leave only storyboard/low-res, so probes reported
+                # 320x180 even for 1080p videos. 'tv' returns the full HD/4K
+                # format list with cookies; 'web_safari' is a fallback. (Deno is
+                # still required so the nsig-protected URLs are downloadable.)
+                'player_client': ['tv', 'web_safari'],
             },
         },
         # DASH is where the high-res entries live — explicit True even
@@ -942,13 +938,12 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         },
         'extractor_args': {
             'youtube': {
-                # YouTube (2025+) broke the 'web' client without a JS runtime
-                # (needs Deno/Node for PO tokens) and rate-limited 'android'.
-                # 'android_vr' and 'tv_simply' still return full format lists
-                # without JS, so they go first. 'tv_embedded' / 'web' are
-                # kept as last-resort fallbacks in case those two are blocked
-                # for a given video.
-                'player_client': ['android_vr', 'tv_simply', 'tv_embedded', 'web', 'mweb'],
+                # Must match the search/probe clients: with a cookiefile set,
+                # yt-dlp skips android_vr/tv_simply, and web/mweb only expose
+                # 360p without a GVS PO token. 'tv'/'web_safari'/'web_embedded'
+                # accept cookies and return the full HD/4K list with no PO token
+                # (Deno solves the nsig challenge so the URLs download).
+                'player_client': ['tv', 'web_safari', 'web_embedded'],
             }
         },
         # Premiere Pro compatibility: ensure standard MP4 container
