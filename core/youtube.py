@@ -7,6 +7,8 @@ import threading
 import time
 import random
 import glob
+import shutil
+import tempfile
 
 
 # ── In-process metadata cache ────────────────────────────────────────────────
@@ -88,7 +90,14 @@ def _get_cookie_opts() -> dict:
     # YT_COOKIE_BROWSER in .env can't override a mounted cookies.txt.
     f = _discover_cookie_file()
     if f:
-        return {"cookiefile": _sanitized_cookie_file(f)}
+        sanitized = _sanitized_cookie_file(f)
+        # yt-dlp saves the cookie jar back to its cookiefile on close. Fetches run
+        # in parallel, so handing them one shared file makes the writebacks race
+        # and corrupt its header. Give each call a private throwaway copy instead.
+        try:
+            return {"cookiefile": _private_cookie_copy(sanitized)}
+        except Exception:
+            return {"cookiefile": sanitized}
     browser = os.getenv("YT_COOKIE_BROWSER", "").strip().lower()
     if browser and browser != "none":
         return {"cookiesfrombrowser": (browser,)}
@@ -133,7 +142,10 @@ def _sanitized_cookie_file(path: str) -> str:
     except OSError:
         return path
     cached = _sanitized_cookie_cache.get(path)
-    if cached and cached[0] == mtime:
+    if cached and cached[0] == mtime and _looks_like_netscape(cached[1]):
+        # Self-heal: only trust the cache if the file still has a valid header.
+        # Something external (e.g. a yt-dlp cookie-jar writeback) could have
+        # corrupted it; if so, fall through and regenerate from the source.
         return cached[1]
     try:
         lines = _read_cookie_text(path).splitlines()
@@ -158,6 +170,43 @@ def _sanitized_cookie_file(path: str) -> str:
         return dest
     except Exception:
         return path
+
+
+def _looks_like_netscape(path: str) -> bool:
+    """True if ``path``'s first physical line is the Netscape cookie magic header
+    yt-dlp requires. Used to detect a cookie file corrupted after we wrote it."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            first = fh.readline()
+    except OSError:
+        return False
+    return first.startswith("# Netscape HTTP Cookie File") or first.startswith("# HTTP Cookie File")
+
+
+def _private_cookie_copy(sanitized: str) -> str:
+    """Return a private throwaway copy of the sanitized cookie file.
+
+    yt-dlp writes the cookie jar back to its ``cookiefile`` when each YoutubeDL
+    closes. Deep fetches and searches run in parallel, so pointing them all at
+    one shared file makes those writebacks race — truncating/rewriting it at the
+    same time and corrupting the header, after which every later fetch fails with
+    "does not look like a Netscape format cookies file". Handing each call its
+    own copy isolates the writeback so the canonical file stays clean."""
+    jar_dir = os.path.join(_cookies_search_root(), ".cache", "_cookiejars")
+    os.makedirs(jar_dir, exist_ok=True)
+    # Opportunistically prune copies older than an hour so the dir can't grow
+    # unbounded across long-running sessions.
+    cutoff = time.time() - 3600
+    for old in glob.glob(os.path.join(jar_dir, "jar_*.txt")):
+        try:
+            if os.path.getmtime(old) < cutoff:
+                os.remove(old)
+        except OSError:
+            pass
+    fd, dest = tempfile.mkstemp(prefix="jar_", suffix=".txt", dir=jar_dir)
+    os.close(fd)
+    shutil.copyfile(sanitized, dest)
+    return dest
 
 
 def _cookies_search_root() -> str:
