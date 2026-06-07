@@ -125,21 +125,61 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         size = os.path.getsize(abs_path)
-        self.send_response(200)
+
+        # Honour a Range request so big files (multi-GB project zips) are
+        # resumable — a dropped connection can continue instead of restarting
+        # from zero. Browsers/download managers send "Range: bytes=start-end".
+        start, end = 0, size - 1
+        rng = self.headers.get("Range")
+        is_partial = False
+        if rng and rng.strip().lower().startswith("bytes="):
+            try:
+                spec = rng.split("=", 1)[1].split(",", 1)[0].strip()
+                s, _, e = spec.partition("-")
+                if s:
+                    start = int(s)
+                    end = int(e) if e else size - 1
+                else:  # suffix range: bytes=-N → last N bytes
+                    start = max(0, size - int(e))
+                    end = size - 1
+                if start > end or start >= size:
+                    self.send_response(416)  # Range Not Satisfiable
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.end_headers()
+                    return
+                is_partial = True
+            except (ValueError, IndexError):
+                start, end = 0, size - 1
+                is_partial = False
+
+        length = end - start + 1
+        self.send_response(206 if is_partial else 200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if is_partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Content-Disposition",
                          f'attachment; filename="{os.path.basename(abs_path)}"')
         self.end_headers()
+        if self.command == "HEAD":
+            return
+        remaining = length
         with open(abs_path, "rb") as f:
-            while True:
-                chunk = f.read(1 << 16)
+            f.seek(start)
+            while remaining > 0:
+                chunk = f.read(min(1 << 16, remaining))
                 if not chunk:
                     break
                 try:
                     self.wfile.write(chunk)
                 except (BrokenPipeError, ConnectionResetError):
                     break
+                remaining -= len(chunk)
+
+    def do_HEAD(self):
+        # Lets download managers probe size / Accept-Ranges before fetching.
+        self.do_GET()
 
 
 def start_server(port: int = None) -> int | None:
