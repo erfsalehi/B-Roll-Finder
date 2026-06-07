@@ -132,6 +132,22 @@ def extract_cookies_doc(message: dict):
     return None, None
 
 
+def extract_library_doc(message: dict):
+    """Return ``(file_id, name)`` for a Clip Library upload — a ``.db`` document,
+    a file named like ``clip_library``, or any document sent with a ``/library``
+    caption — else ``(None, None)``."""
+    if not isinstance(message, dict):
+        return None, None
+    doc = message.get("document")
+    if not doc:
+        return None, None
+    name = (doc.get("file_name") or "").lower()
+    caption = (message.get("caption") or "").lower().strip()
+    if name.endswith(".db") or "clip_library" in name or caption.startswith("/library"):
+        return doc["file_id"], doc.get("file_name") or "clip_library.db"
+    return None, None
+
+
 def project_name_from(suggested_name: str, fallback: str = "") -> str:
     base = os.path.splitext(os.path.basename(suggested_name or ""))[0].strip()
     return (base or fallback or "voice")[:50]
@@ -730,6 +746,34 @@ def handle_cookies_upload(chat_id, file_id: str, name: str) -> None:
                               "Re-export with a 'Get cookies.txt' extension.")
 
 
+def handle_library_upload(chat_id, file_id: str, name: str) -> None:
+    """Merge an uploaded clip_library.db into the server's Clip Library so the
+    bot reuses previously-collected footage as candidates."""
+    import tempfile
+    from core.clip_library import merge_library_db
+    tmp = os.path.join(tempfile.gettempdir(), "uploaded_clip_library.db")
+    try:
+        download_telegram_file(file_id, tmp)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't download the library DB: {e}")
+        return
+    res = merge_library_db(tmp, http_only=True)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    if res.get("error"):
+        send_message(chat_id, f"❌ {res['error']}")
+        return
+    send_message(
+        chat_id,
+        f"✅ Clip Library merged ({res['total_src']} clips in file):\n"
+        f"• added: {res['added']}\n"
+        f"• already had: {res['skipped_dupe']}\n"
+        f"• skipped local-only (not re-downloadable): {res['skipped_local']}\n"
+        "Imported clips are re-downloaded from their source URL when selected.")
+
+
 def handle_forcestop(chat_id) -> None:
     """Hard stop: signal cancel, then exit the process so a wedged worker (stuck
     in a blocking network call /cancel can't interrupt) is killed for sure. Under
@@ -1202,6 +1246,12 @@ def main() -> None:
             cfid, cname = extract_cookies_doc(msg)
             if cfid:
                 handle_cookies_upload(chat_id, cfid, cname)
+                continue
+
+            # A clip_library.db upload — merge it into the server's library.
+            lfid, lname = extract_library_doc(msg)
+            if lfid:
+                handle_library_upload(chat_id, lfid, lname)
                 continue
 
             # Review-gate actions: need a pending project and a free worker.

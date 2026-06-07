@@ -165,6 +165,78 @@ def store_clip(
         return False
 
 
+def _row_get(r, key, default=None):
+    """Safe column access for an sqlite3.Row from a possibly-older schema."""
+    return r[key] if key in r.keys() else default
+
+
+def merge_library_db(src_path: str, http_only: bool = True) -> dict:
+    """Merge clips from another ``clip_library.db`` into this one.
+
+    Inserts rows whose ``clip_url`` isn't already present (dedup by URL) and
+    copies the stored embedding so they're immediately searchable — no
+    re-embedding needed. When ``http_only`` is set (default), clips whose URL
+    isn't an http(s) link are skipped: those are local-file ('reimport') entries
+    that can't be re-downloaded on a different host and would otherwise be
+    selected and fail. ``local_path`` is intentionally dropped on import (the
+    path is invalid here; the pipeline re-downloads from the URL). Returns counts.
+    """
+    init_db()
+    try:
+        src = sqlite3.connect(src_path)
+        src.row_factory = sqlite3.Row
+    except Exception as e:
+        return {"error": f"can't open uploaded DB: {e}"}
+    try:
+        rows = src.execute("SELECT * FROM clips").fetchall()
+    except Exception as e:
+        src.close()
+        return {"error": f"not a clip library DB: {e}"}
+
+    added = skipped_local = skipped_dupe = 0
+    now = datetime.utcnow().isoformat()
+    with _conn() as c:
+        existing = {r[0] for r in c.execute("SELECT clip_url FROM clips")}
+        for r in rows:
+            url = _row_get(r, "clip_url", "") or ""
+            if not url:
+                continue
+            if http_only and not str(url).startswith("http"):
+                skipped_local += 1
+                continue
+            if url in existing:
+                skipped_dupe += 1
+                continue
+            c.execute(
+                """INSERT INTO clips
+                     (project, shot_description, slot_index, keywords, search_query,
+                      source, clip_url, clip_title, duration, thumbnail_url,
+                      local_path, embedding, usage_count, last_used_at, created_at)
+                   VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?)""",
+                (
+                    _row_get(r, "project", "imported"),
+                    _row_get(r, "shot_description", ""),
+                    _row_get(r, "slot_index", 0) or 0,
+                    _row_get(r, "keywords", "[]"),
+                    _row_get(r, "search_query", ""),
+                    _row_get(r, "source", "unknown"),
+                    url,
+                    _row_get(r, "clip_title", ""),
+                    float(_row_get(r, "duration", 0) or 0),
+                    _row_get(r, "thumbnail_url", ""),
+                    "",  # drop local_path — invalid on this host; force URL re-download
+                    _row_get(r, "embedding", None),
+                    _row_get(r, "usage_count", 1) or 1,
+                    now, now,
+                ),
+            )
+            existing.add(url)
+            added += 1
+    src.close()
+    return {"added": added, "skipped_local": skipped_local,
+            "skipped_dupe": skipped_dupe, "total_src": len(rows)}
+
+
 # ── Read / Search ────────────────────────────────────────────────────────────
 
 def search_library(

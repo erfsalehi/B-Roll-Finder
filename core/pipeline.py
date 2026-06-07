@@ -126,6 +126,21 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                 os.path.exists(out_path) and os.path.getsize(out_path) > 0
             ):
                 ok += 1
+                # Record the downloaded clip in the Clip Library so the server
+                # accumulates reusable, semantically-searchable footage over time
+                # (the bot pipeline previously only read the library, never wrote
+                # to it). Dedupes by URL; best-effort so it can't fail a download.
+                try:
+                    from core.clip_library import store_clip
+                    store_clip(
+                        (shot.get("shot_intent") or shot.get("shot_description")
+                         or res.get("matched_query") or "").strip(),
+                        {**res, "local_path": out_path},
+                        project=project_name,
+                        search_query=res.get("matched_query", ""),
+                    )
+                except Exception as e:
+                    errors.append(f"clip_library store ({fn}): {e}")
             else:
                 failed += 1
                 errors.append(f"{fn}: {task_state.get('error_msg', 'unknown error')}")
