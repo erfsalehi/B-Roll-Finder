@@ -308,6 +308,23 @@ def _is_youtube(c: dict) -> bool:
     return (c.get("source") or c.get("original_source") or "").lower() == "youtube"
 
 
+def _is_pexels(c: dict) -> bool:
+    return (c.get("source") or c.get("original_source") or "").lower() == "pexels"
+
+
+def _pexels_ident(c: dict):
+    """Canonical id for a Pexels clip (the video page, stable across file links),
+    used to avoid downloading the same Pexels video twice across shots."""
+    return c.get("page_url") or c.get("url") or _asset_ident(c)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def prioritize_youtube(shots: list, ratio: float = None) -> list:
     """Make YouTube the lead pick for ~``ratio`` of shots (default 0.7).
 
@@ -406,9 +423,17 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
     min_clips = max(1, min_clips)
     max_clips = max(min_clips, max_clips)
 
+    # Source-quota selection: at least N Pexels clips per shot plus a YouTube
+    # count that scales with shot length (~1 every `yt_seconds`). Pexels picks are
+    # de-duplicated across the WHOLE project so the same stock clip is never
+    # downloaded twice.
+    min_pexels = max(0, _env_int("AUTO_SELECT_MIN_PEXELS", 2))
+    yt_seconds = _env_float("AUTO_SELECT_YT_SECONDS", 4.5)
+
     # Each window entry is the set of clip identifiers picked for one shot, so the
     # look-back spans whole shots (not individual clips) even when shots bind many.
     recent_shots = deque(maxlen=lookback)
+    used_pexels: set = set()   # cross-shot Pexels de-dup (never re-download a clip)
 
     def _recent_ids() -> set:
         out = set()
@@ -420,10 +445,13 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         if shot.get("priority") == "none" or shot.get("skipped"):
             continue
         # Respect any pick the editor (or a previous run) made — but feed it into
-        # the variety window so later auto-picks avoid repeating it.
+        # the variety window (and the Pexels de-dup set) so later picks don't repeat it.
         existing = shot.get("selected_results")
         if existing:
             recent_shots.append({_asset_ident(c) for c in existing})
+            for c in existing:
+                if _is_pexels(c):
+                    used_pexels.add(_pexels_ident(c))
             continue
         if start_slot_id is not None and shot.get("slot_id", 0) < start_slot_id:
             continue
@@ -434,19 +462,52 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         non_irrelevant = [c for c in candidates if not c.get("irrelevant")]
         pool = non_irrelevant or candidates
 
-        want = _auto_pick_count(shot, seconds_per_clip, min_clips, max_clips)
+        # YouTube count scales with duration; clamp to the overall max so a long
+        # shot can't bind an absurd number of clips.
+        try:
+            dur = float(shot.get("duration_needed_sec") or 0)
+        except (TypeError, ValueError):
+            dur = 0.0
+        want_youtube = max(1, math.ceil(dur / yt_seconds)) if yt_seconds > 0 else 1
+        want_youtube = min(want_youtube, max_clips)
+
         recent = _recent_ids()
         chosen, chosen_ids = [], set()
-        for _ in range(want):
-            avoid = recent | chosen_ids
-            cand = next((c for c in pool if _asset_ident(c) not in avoid), None)
-            if cand is None:
-                break  # no more distinct/fresh candidates for this shot
-            chosen.append(cand)
-            chosen_ids.add(_asset_ident(cand))
+
+        def _take(pred, n, dedup_pexels=False):
+            for c in pool:
+                if len([x for x in chosen if pred(x)]) >= n:
+                    break
+                ident = _asset_ident(c)
+                if ident in chosen_ids or ident in recent or not pred(c):
+                    continue
+                if dedup_pexels and _pexels_ident(c) in used_pexels:
+                    continue
+                chosen.append(c)
+                chosen_ids.add(ident)
+                if dedup_pexels:
+                    used_pexels.add(_pexels_ident(c))
+
+        _take(_is_pexels, min_pexels, dedup_pexels=True)   # ≥2 distinct Pexels
+        _take(_is_youtube, want_youtube)                   # YouTube by duration
+
+        # Top up from anything left (variety-aware) so we still meet a sensible
+        # floor when a source ran short — never leave the slot empty.
+        floor = max(min_clips, min_pexels + 1)
+        if len(chosen) < floor:
+            for c in pool:
+                if len(chosen) >= floor:
+                    break
+                ident = _asset_ident(c)
+                if ident in chosen_ids or ident in recent:
+                    continue
+                chosen.append(c)
+                chosen_ids.add(ident)
         if not chosen:  # graceful: never leave the slot empty
             chosen = [pool[0]]
             chosen_ids = {_asset_ident(pool[0])}
+            if _is_pexels(pool[0]):
+                used_pexels.add(_pexels_ident(pool[0]))
 
         shot["selected_results"] = chosen
         shot["auto_selected"] = True

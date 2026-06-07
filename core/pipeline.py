@@ -72,6 +72,53 @@ def drop_shorts(shots: list) -> int:
     return removed
 
 
+# Candidates longer than this (e.g. full films / 24-7 livestreams) are never
+# good B-roll and waste the download cap — drop them before ranking.
+MAX_CLIP_SECONDS = float(os.getenv("MAX_CLIP_SECONDS", "10000") or 10000)
+
+
+def drop_long_videos(shots: list, max_seconds: float = MAX_CLIP_SECONDS) -> int:
+    """Remove candidates whose duration exceeds ``max_seconds`` (in place).
+    Candidates with an unknown duration are kept (we can't judge them)."""
+    removed = 0
+    for s in shots:
+        cands = s.get("video_results") or []
+        kept = []
+        for c in cands:
+            try:
+                dur = float(c.get("duration") or 0)
+            except (TypeError, ValueError):
+                dur = 0.0
+            if dur and dur > max_seconds:
+                removed += 1
+            else:
+                kept.append(c)
+        s["video_results"] = kept
+    return removed
+
+
+def drop_vertical(shots: list) -> int:
+    """Keep only horizontal (landscape) candidates — drop portrait clips whose
+    height exceeds width (in place). Candidates with unknown dimensions are kept
+    (we can't judge them)."""
+    removed = 0
+    for s in shots:
+        cands = s.get("video_results") or []
+        kept = []
+        for c in cands:
+            try:
+                w = int(c.get("width") or 0)
+                h = int(c.get("height") or 0)
+            except (TypeError, ValueError):
+                w = h = 0
+            if w and h and h > w:   # portrait/vertical
+                removed += 1
+            else:
+                kept.append(c)
+        s["video_results"] = kept
+    return removed
+
+
 def _check_cancel(should_cancel) -> None:
     if should_cancel and should_cancel():
         raise PipelineCancelled("Cancelled by user.")
@@ -485,8 +532,10 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         except Exception as e:
             errors.append(f"hd_filter: {e}")
 
-    # 6b — Drop YouTube Shorts: never allowed in selections.
+    # 6b — Candidate filters: no Shorts, no >max-duration clips, landscape only.
     drop_shorts(shots)
+    drop_long_videos(shots)
+    drop_vertical(shots)
 
     # 7 — Rank
     _p(7, "Ranking candidates")

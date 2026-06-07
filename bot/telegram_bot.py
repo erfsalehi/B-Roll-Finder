@@ -62,6 +62,10 @@ _FILESERVER = {"port": None}
 # Last completed project name, so /zip knows what to bundle by default.
 _LAST = {"project": None}
 
+# Audio waiting on the user's "clear disk?" answer before the job starts.
+# chat_id → {"file_id", "name"}.
+_PENDING_START: dict = {}
+
 
 # ── config ────────────────────────────────────────────────────────────────────
 
@@ -250,6 +254,29 @@ def handle_settings_callback(cb: dict) -> None:
     chat_id = (msg.get("chat") or {}).get("id")
     message_id = msg.get("message_id")
     cb_id = cb.get("id")
+
+    # #6 — answer to the "clear disk before starting?" prompt.
+    if data.startswith("diskclear:"):
+        choice = data.split(":", 1)[1]
+        pend = _PENDING_START.pop(chat_id, None)
+        if not pend:
+            edit_message(chat_id, message_id, "↪️ That start prompt expired — resend the audio file.")
+            answer_callback(cb_id, "Expired")
+            return
+        if _BUSY.get("active") or _PENDING.get(chat_id):
+            edit_message(chat_id, message_id, "⏳ A job is already running or awaiting review.")
+            answer_callback(cb_id, "Busy")
+            return
+        if choice == "yes":
+            n, freed = _clear_all_projects()
+            edit_message(chat_id, message_id,
+                         f"🧹 Cleared {n} project(s), freed {_human_size(freed)}. Starting…")
+            answer_callback(cb_id, "Disk cleared")
+        else:
+            edit_message(chat_id, message_id, "▶️ Keeping existing projects. Starting…")
+            answer_callback(cb_id, "Starting")
+        _start_audio_job(chat_id, pend["file_id"], pend["name"])
+        return
 
     if data == "settings:close":
         edit_message(chat_id, message_id, "⚙️ Settings saved.")
@@ -1089,6 +1116,50 @@ def _job_thread(fn, chat_id, *args) -> None:
         _BUSY.update(active=False, project=None, cancel=None, started=None)
 
 
+def build_diskclear_keyboard() -> dict:
+    """Inline Yes/No for the pre-job 'clear disk?' prompt (#6)."""
+    return {"inline_keyboard": [[
+        {"text": "🧹 Clear & start", "callback_data": "diskclear:yes"},
+        {"text": "▶️ Keep & start",  "callback_data": "diskclear:no"},
+    ]]}
+
+
+def _clear_all_projects() -> tuple:
+    """Delete every downloaded project folder and every top-level .zip under
+    downloads/. Keeps .cache (Clip Library DB, cookies). Returns
+    ``(project_count, bytes_freed)``."""
+    import shutil as _shutil
+    root = os.path.abspath("downloads")
+    usage = _project_disk_usage()
+    freed = sum(b for _, b in usage)
+    for name, _b in usage:
+        _shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+    try:
+        for fn in os.listdir(root):
+            if fn.lower().endswith(".zip"):
+                fp = os.path.join(root, fn)
+                try:
+                    freed += os.path.getsize(fp)
+                except OSError:
+                    pass
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return len(usage), freed
+
+
+def _start_audio_job(chat_id, file_id: str, name: str) -> None:
+    """Claim the busy slot and run the pipeline for an uploaded audio file."""
+    _BUSY.update(active=True,
+                 project=project_name_from(name, time.strftime("video_%Y%m%d_%H%M%S")),
+                 cancel=threading.Event(), started=time.time())
+    threading.Thread(target=_job_thread, args=(handle_audio, chat_id, file_id, name),
+                     daemon=True).start()
+
+
 # ── polling loop ────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1287,14 +1358,17 @@ def main() -> None:
                     send_message(chat_id, f"📋 '{_PENDING[chat_id]['project']}' is awaiting review. "
                                           "Reply /download, /refine, or /cancel first.")
                     continue
-                # Claim the slot in THIS thread (avoids a race with a second file),
-                # then run the job in the background so the loop keeps polling and
-                # can answer /status and /cancel mid-job.
-                _BUSY.update(active=True,
-                             project=project_name_from(name, time.strftime("video_%Y%m%d_%H%M%S")),
-                             cancel=threading.Event(), started=time.time())
-                threading.Thread(target=_job_thread, args=(handle_audio, chat_id, file_id, name),
-                                 daemon=True).start()
+                # #6 — before starting, ask whether to clear previously downloaded
+                # projects from the server. The job starts from the button handler
+                # (_start_audio_job) once the user answers.
+                _PENDING_START[chat_id] = {"file_id": file_id, "name": name}
+                send_message(
+                    chat_id,
+                    f"🎬 Ready to start '{project_name_from(name, 'voice')}'.\n"
+                    "🧹 Clear previously downloaded projects from the server first?\n"
+                    "(frees disk; keeps your Clip Library & cookies)",
+                    reply_markup=build_diskclear_keyboard(),
+                )
             elif text:
                 send_message(chat_id, _help_text())
 
