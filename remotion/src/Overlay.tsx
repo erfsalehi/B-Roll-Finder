@@ -62,6 +62,17 @@ export const DEFAULT_PROPS: OverlayProps = {
 
 const FONT = `${MONTSERRAT}, "Arial Black", "Helvetica Neue", Arial, sans-serif`;
 
+// Title/action-safe margins for the 1920×1080 canvas (~6%), so edge-anchored
+// overlays (e.g. the lower third) never hug the frame border in a 1080p edit.
+const SAFE_X = 120;
+const SAFE_Y = 120;
+
+// A dark scrim behind text so white copy stays readable over ANY footage these
+// alpha overlays get composited onto.
+const SCRIM = 'rgba(8,8,10,0.58)';
+// Layered drop shadow for text sitting directly on footage (no box behind it).
+const TEXT_SHADOW = '0 4px 10px rgba(0,0,0,0.85), 0 2px 30px rgba(0,0,0,0.6)';
+
 export const Overlay: React.FC<OverlayProps> = (props) => {
   const {text, anim, sfx, color, accent} = props;
   const frame = useCurrentFrame();
@@ -97,17 +108,21 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
             opacity,
             transform: `translateY(${slide}px)`,
             textAlign: 'center',
-            maxWidth: '80%',
+            maxWidth: '78%',
+            background: SCRIM,
+            padding: '36px 56px',
+            borderRadius: 24,
+            boxShadow: '0 24px 70px rgba(0,0,0,0.45)',
           }}
         >
           <div
             style={{
               fontFamily: FONT,
               fontWeight: 900,
-              fontSize: 110,
-              lineHeight: 1.05,
+              fontSize: 104,
+              lineHeight: 1.06,
               color,
-              textShadow: '0 8px 30px rgba(0,0,0,0.55)',
+              textShadow: TEXT_SHADOW,
               letterSpacing: -1,
             }}
           >
@@ -166,24 +181,30 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
 
   // ── lower_third: bar sliding in from bottom-left ─────────────────────────
   if (anim === 'lower_third') {
-    const x = interpolate(enter, [0, 1], [-700, 80]);
+    // Slide in from off-screen left and rest at the safe-area margin (never at
+    // the very edge of the frame).
+    const x = interpolate(enter, [0, 1], [-700, 0]);
     return (
       <AbsoluteFill>
         {Sfx}
         <div
           style={{
             position: 'absolute',
-            bottom: 140,
-            left: 0,
+            bottom: SAFE_Y,
+            left: SAFE_X,
+            maxWidth: 1920 - 2 * SAFE_X,
             opacity,
             transform: `translateX(${x}px)`,
-            background: 'rgba(10,10,12,0.85)',
+            background: 'rgba(10,10,12,0.88)',
             borderLeft: `10px solid ${accent}`,
+            borderRadius: 6,
             padding: '24px 44px',
+            boxShadow: '0 18px 50px rgba(0,0,0,0.45)',
           }}
         >
           <span
-            style={{fontFamily: FONT, fontWeight: 800, fontSize: 64, color}}
+            style={{fontFamily: FONT, fontWeight: 800, fontSize: 64, color,
+                    textShadow: TEXT_SHADOW}}
           >
             {text}
           </span>
@@ -207,7 +228,10 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
           fontWeight: 900,
           fontSize: 170,
           color,
-          textShadow: `0 0 40px ${accent}`,
+          // Dark drop shadow for legibility over bright footage + the accent
+          // glow, plus a thin dark outline so the word reads on any background.
+          textShadow: `0 6px 22px rgba(0,0,0,0.8), 0 0 40px ${accent}`,
+          WebkitTextStroke: '2px rgba(0,0,0,0.55)',
           letterSpacing: -2,
         }}
       >

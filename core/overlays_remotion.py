@@ -183,8 +183,15 @@ def _props_for(h: dict, fps: int, color: str, accent: str) -> dict:
     }
 
 
+# Bump when Overlay.tsx visuals change. The render cache is keyed by props, NOT
+# by the component source, so a style change wouldn't otherwise invalidate
+# previously-rendered clips — they'd be reused with the OLD look.
+_STYLE_VERSION = "2"
+
+
 def _cache_key(props: dict) -> str:
-    return hashlib.sha1(json.dumps(props, sort_keys=True).encode("utf-8")).hexdigest()
+    payload = json.dumps(props, sort_keys=True) + "|style=" + _STYLE_VERSION
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 def _render_or_reuse(binary: str, props: dict, out_path: str, timeout: int) -> bool:
