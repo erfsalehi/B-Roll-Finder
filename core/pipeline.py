@@ -73,12 +73,17 @@ def drop_shorts(shots: list) -> int:
 
 
 # Candidates longer than this (e.g. full films / 24-7 livestreams) are never
-# good B-roll and waste the download cap — drop them before ranking.
+# good B-roll and waste the download cap — drop them before ranking. YouTube gets
+# a tighter cap than stock (stock clips are short anyway), since long YouTube
+# videos are usually full uploads rather than clean B-roll.
 MAX_CLIP_SECONDS = float(os.getenv("MAX_CLIP_SECONDS", "10000") or 10000)
+YT_MAX_CLIP_SECONDS = float(os.getenv("YT_MAX_CLIP_SECONDS", "1000") or 1000)
 
 
-def drop_long_videos(shots: list, max_seconds: float = MAX_CLIP_SECONDS) -> int:
-    """Remove candidates whose duration exceeds ``max_seconds`` (in place).
+def drop_long_videos(shots: list, max_seconds: float = MAX_CLIP_SECONDS,
+                     yt_max_seconds: float = YT_MAX_CLIP_SECONDS) -> int:
+    """Remove candidates whose duration exceeds the limit for their source
+    (YouTube → ``yt_max_seconds``, everything else → ``max_seconds``), in place.
     Candidates with an unknown duration are kept (we can't judge them)."""
     removed = 0
     for s in shots:
@@ -89,7 +94,9 @@ def drop_long_videos(shots: list, max_seconds: float = MAX_CLIP_SECONDS) -> int:
                 dur = float(c.get("duration") or 0)
             except (TypeError, ValueError):
                 dur = 0.0
-            if dur and dur > max_seconds:
+            is_yt = (c.get("source") or c.get("original_source") or "").lower() == "youtube"
+            limit = yt_max_seconds if is_yt else max_seconds
+            if dur and dur > limit:
                 removed += 1
             else:
                 kept.append(c)
