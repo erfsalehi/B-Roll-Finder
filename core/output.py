@@ -338,12 +338,24 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     xml.append(f'          <timebase>{timebase}</timebase>')
     xml.append('          <ntsc>TRUE</ntsc>')
     xml.append('        </rate>')
+    # Remember this index so the sequence-level <duration>/<timecode> can be
+    # injected right before <media> once we know the timeline's total length.
+    seq_media_idx = len(xml)
     xml.append('        <media>')
     xml.append('          <video>')
     xml.append('            <format>')
     xml.append('              <samplecharacteristics>')
+    # A <rate> inside the format is what fixes the sequence's editing timebase;
+    # without it Premiere can't build the timeline (clips land in the bin only).
+    xml.append('                <rate>')
+    xml.append(f'                  <timebase>{timebase}</timebase>')
+    xml.append('                  <ntsc>TRUE</ntsc>')
+    xml.append('                </rate>')
     xml.append('                <width>1920</width>')
     xml.append('                <height>1080</height>')
+    xml.append('                <anamorphic>FALSE</anamorphic>')
+    xml.append('                <pixelaspectratio>square</pixelaspectratio>')
+    xml.append('                <fielddominance>none</fielddominance>')
     xml.append('              </samplecharacteristics>')
     xml.append('            </format>')
     xml.append('            <track>')
@@ -352,6 +364,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     next_asset_id = 1
     seen_filenames = set()
     defined_files = set() # To track which files have already been injected
+    max_end_frame = 0      # longest clip end across all tracks → sequence duration
 
     # ── Timeline Math & Placement ──
     for i, shot in enumerate(shots):
@@ -409,6 +422,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             start_frame     = sec_to_frames(clip_start_sec, fps_exact)
             end_frame       = sec_to_frames(clip_end_sec,   fps_exact)
             duration_frames = max(1, end_frame - start_frame)
+            max_end_frame   = max(max_end_frame, end_frame)
 
             # Shared filename logic so the headless downloader and this exporter
             # always agree on the path.
@@ -544,6 +558,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
                 # PNGs are usually 1 frame or infinite, but FCP7 likes a duration.
                 media_dur_frames = sec_to_frames(3600.0, fps_exact)  # 1 hour fallback
 
+            max_end_frame = max(max_end_frame, e_frame)
             file_id = f"file-ov-{idx}"
             clip_id = f"clip-ov-{idx}"
 
@@ -700,7 +715,8 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             s_frame = sec_to_frames(s_sec, fps_exact)
             d_frame = sec_to_frames(sfx_dur_sec, fps_exact)
             e_frame = s_frame + d_frame
-            
+            max_end_frame = max(max_end_frame, e_frame)
+
             file_id = f"file-sfx-{idx}"
             clip_id = f"clip-sfx-{idx}"
             
@@ -753,6 +769,25 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     xml.append('  </project>')
     xml.append('</xmeml>')
 
+    # Inject the sequence-level <duration> + <timecode> right before <media>.
+    # Premiere's FCP7 importer needs a fully-formed sequence (a duration, a start
+    # timecode, and a format rate) to construct the timeline; without them it
+    # parses the <file> defs into the project bin but never places the clips —
+    # the "clips import but the timeline stays empty" symptom.
+    seq_frames = max(1, max_end_frame)
+    xml[seq_media_idx:seq_media_idx] = [
+        f'        <duration>{seq_frames}</duration>',
+        '        <timecode>',
+        '          <rate>',
+        f'            <timebase>{timebase}</timebase>',
+        '            <ntsc>TRUE</ntsc>',
+        '          </rate>',
+        '          <string>00:00:00:00</string>',
+        '          <frame>0</frame>',
+        '          <displayformat>NDF</displayformat>',
+        '        </timecode>',
+    ]
+
     return "\n".join(xml)
 
 
@@ -785,12 +820,20 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
     xml.append(f'          <timebase>{timebase}</timebase>')
     xml.append('          <ntsc>TRUE</ntsc>')
     xml.append('        </rate>')
+    seq_media_idx = len(xml)   # where to inject the sequence <duration>/<timecode>
     xml.append('        <media>')
     xml.append('          <video>')
     xml.append('            <format>')
     xml.append('              <samplecharacteristics>')
+    xml.append('                <rate>')
+    xml.append(f'                  <timebase>{timebase}</timebase>')
+    xml.append('                  <ntsc>TRUE</ntsc>')
+    xml.append('                </rate>')
     xml.append('                <width>1920</width>')
     xml.append('                <height>1080</height>')
+    xml.append('                <anamorphic>FALSE</anamorphic>')
+    xml.append('                <pixelaspectratio>square</pixelaspectratio>')
+    xml.append('                <fielddominance>none</fielddominance>')
     xml.append('              </samplecharacteristics>')
     xml.append('            </format>')
     xml.append('            <track>')
@@ -798,6 +841,7 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
     xml.append('              <locked>FALSE</locked>')
 
     emitted = 0
+    max_end_frame = 0
     for idx, ov in enumerate(overlays or []):
         ov_path = ov.get("filepath")
         if not ov_path or not os.path.exists(ov_path):
@@ -828,6 +872,7 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
         else:
             media_dur_frames = sec_to_frames(3600.0, fps_exact)
 
+        max_end_frame = max(max_end_frame, e_frame)
         file_id = f"file-ov-{idx}"
         clip_id = f"clip-ov-{idx}"
 
@@ -929,5 +974,22 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
     xml.append('    </children>')
     xml.append('  </project>')
     xml.append('</xmeml>')
+
+    # Same sequence-level fix as generate_fcpxml: a fully-formed sequence
+    # (duration + timecode) so Premiere builds the overlay timeline instead of
+    # dropping the clips into the bin only.
+    seq_frames = max(1, max_end_frame)
+    xml[seq_media_idx:seq_media_idx] = [
+        f'        <duration>{seq_frames}</duration>',
+        '        <timecode>',
+        '          <rate>',
+        f'            <timebase>{timebase}</timebase>',
+        '            <ntsc>TRUE</ntsc>',
+        '          </rate>',
+        '          <string>00:00:00:00</string>',
+        '          <frame>0</frame>',
+        '          <displayformat>NDF</displayformat>',
+        '        </timecode>',
+    ]
 
     return "\n".join(xml)
