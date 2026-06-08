@@ -168,7 +168,11 @@ def _pick_sfx_variant(base: str, text: str) -> str:
 
 
 def _props_for(h: dict, fps: int, color: str, accent: str) -> dict:
-    dur = max(2.0, min(6.0, float(h["end"]) - float(h["start"])))
+    # Match the overlay's on-screen length to exactly how long the line is spoken
+    # — the fade in/out happens *within* this window (see Overlay.tsx), so the
+    # text is fully up while the voice says it. Tiny floor only so a degenerate
+    # zero-length highlight still renders to at least one frame.
+    dur = max(0.4, float(h["end"]) - float(h["start"]))
     # Pick a (deterministic) variant of the requested SFX, e.g. swoosh→swoosh2.
     sfx = _pick_sfx_variant(h.get("sfx", "none"), h.get("text", ""))
     return {
@@ -232,12 +236,59 @@ def _render_or_reuse(binary: str, props: dict, out_path: str, timeout: int) -> b
                 pass
 
 
+def _slug(text: str, max_len: int = 40) -> str:
+    """Filesystem-safe, lowercase, dash-joined slug of a sentence."""
+    cleaned = "".join(c if (c.isalnum() or c in " -_") else " " for c in (text or ""))
+    return "-".join(cleaned.split()).lower()[:max_len].strip("-") or "overlay"
+
+
+def _shot_for_time(t: float, shots: list):
+    """slot_id of the shot whose voiceover spans time ``t`` — else the nearest
+    preceding shot, else the first shot. None when no shots are available
+    (overlay-only mode). Lets each overlay be named for the shot it sits over."""
+    if not shots:
+        return None
+    preceding = None
+    first = None
+    for s in shots:
+        try:
+            st = float(s.get("timestamp", 0))
+            en = float(s.get("end_timestamp", st))
+        except (TypeError, ValueError):
+            continue
+        if first is None:
+            first = s.get("slot_id")
+        if st <= t < en or (en <= st and abs(st - t) < 1e-6):
+            return s.get("slot_id")
+        if st <= t:
+            preceding = s.get("slot_id")
+    return preceding if preceding is not None else first
+
+
+def _overlay_basename(idx: int, h: dict, shots: list, seen: set) -> str:
+    """Descriptive, unique ``.mov`` name: shot number + the sentence, so the
+    clips can be placed by hand if the XML import misbehaves (e.g.
+    ``shot03_our-revenue-tripled.mov``). Falls back to ``ovNN`` when there are no
+    shots to map against (overlay-only mode)."""
+    sid = _shot_for_time(float(h.get("start", 0)), shots)
+    prefix = f"shot{int(sid):02d}" if sid is not None else f"ov{idx + 1:02d}"
+    base = f"{prefix}_{_slug(h.get('text', ''))}"
+    name = f"{base}.mov"
+    n = 1
+    while name in seen:                 # guard against two overlays slugging alike
+        n += 1
+        name = f"{base}_{n}.mov"
+    seen.add(name)
+    return name
+
+
 def render_overlay_clips(highlights: list, out_dir: str, fps: int = 30,
                          color: str = "#FFFFFF", accent: str = "#FFD400",
-                         timeout: int = 240) -> list:
+                         timeout: int = 240, shots: list = None) -> list:
     """Render each highlight to a transparent ProRes 4444 .mov, reusing cached
     renders and rendering several at once. Returns overlay dicts (``filepath``
-    set) for the ones that succeeded, in timeline order."""
+    set) for the ones that succeeded, in timeline order. ``shots`` (optional) is
+    used only to name each clip after the shot it overlays."""
     binary = _remotion_bin()
     if not binary:
         print("[overlays] remotion deps not installed (run `npm install` in "
@@ -249,10 +300,16 @@ def render_overlay_clips(highlights: list, out_dir: str, fps: int = 30,
     except (TypeError, ValueError):
         workers = 2
 
+    # Precompute unique filenames sequentially (the dedupe ``seen`` set isn't
+    # thread-safe) before rendering in parallel.
+    seen_names: set = set()
+    names = [_overlay_basename(idx, h, shots, seen_names)
+             for idx, h in enumerate(highlights)]
+
     def _one(idx_h):
         idx, h = idx_h
         props = _props_for(h, fps, color, accent)
-        out_path = os.path.join(out_dir, f"overlay_{idx:03d}.mov")
+        out_path = os.path.join(out_dir, names[idx])
         if not _render_or_reuse(binary, props, out_path, timeout):
             return None
         return (idx, {
@@ -271,9 +328,10 @@ def render_overlay_clips(highlights: list, out_dir: str, fps: int = 30,
 
 
 def build_overlays(out_dir: str, segments: list = None, script_text: str = "",
-                   groq_key: str = None, fps: int = 30) -> list:
-    """Extract highlights then render them. Returns FCPXML-ready overlay dicts."""
+                   groq_key: str = None, fps: int = 30, shots: list = None) -> list:
+    """Extract highlights then render them. Returns FCPXML-ready overlay dicts.
+    ``shots`` (optional) names each clip after the shot it overlays."""
     highlights = extract_overlay_highlights(segments, script_text, groq_key)
     if not highlights:
         return []
-    return render_overlay_clips(highlights, out_dir, fps=fps)
+    return render_overlay_clips(highlights, out_dir, fps=fps, shots=shots)

@@ -666,15 +666,17 @@ def _sfx_list_from_overlays(overlays: list) -> list:
 
 
 def build_text_overlays(project_name: str, segments: list, groq_key: str,
-                        fps: int = 30) -> tuple:
+                        fps: int = 30, shots: list = None) -> tuple:
     """Extract + render animated text overlays for a project. Returns
     ``(overlays, sfx_list)`` ready for write_fcpxml. Best-effort: returns
-    ``([], [])`` if disabled, unavailable, or nothing qualifies."""
+    ``([], [])`` if disabled, unavailable, or nothing qualifies. ``shots``
+    (optional) names each overlay clip after the shot it overlays."""
     try:
         from core.overlays_remotion import build_overlays
         ov_dir = os.path.join(os.path.abspath("downloads"),
                               _safe_for_fs(project_name, 50), "overlays")
-        overlays = build_overlays(ov_dir, segments=segments, groq_key=groq_key, fps=fps)
+        overlays = build_overlays(ov_dir, segments=segments, groq_key=groq_key,
+                                  fps=fps, shots=shots)
         return overlays, _sfx_list_from_overlays(overlays)
     except Exception as e:
         print(f"[overlays] build failed: {e}")
@@ -871,7 +873,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # so the review-gate path (finalize_project after /download) reuses them.
     if _flag_default("ENABLE_TEXT_OVERLAYS", False):
         _p(9, "Rendering text overlays")
-        state.overlays, state.sfx_list = build_text_overlays(project_name, segments, key)
+        state.overlays, state.sfx_list = build_text_overlays(
+            project_name, segments, key, shots=shots)
 
     # 10 — Download (optional) — capped at 1080p.
     if download:
