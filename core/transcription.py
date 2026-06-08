@@ -43,7 +43,17 @@ def transcribe_audio(file_path: str, api_key: str) -> list[dict]:
                 'end': seg['end'],
                 'text': seg['text'].strip()
             })
-            
+
+        # Record audio length for per-job Whisper cost accounting (best-effort).
+        try:
+            from core import usage
+            dur = getattr(transcription, 'duration', None)
+            if dur is None and segments:
+                dur = segments[-1]['end']
+            usage.record_transcription("groq", "whisper-large-v3", dur or 0.0)
+        except Exception:
+            pass
+
         return segments
         
     except Exception as e:

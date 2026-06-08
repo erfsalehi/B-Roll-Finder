@@ -42,6 +42,7 @@ class PipelineState:
     overlays: list = field(default_factory=list)
     sfx_list: list = field(default_factory=list)
     attempts: dict = field(default_factory=dict)
+    cost: dict = field(default_factory=dict)
     download: dict = None
     xml_path: str = None
 
@@ -69,6 +70,7 @@ class PipelineState:
             "validation": self.validation,
             "errors": self.errors,
             "attempts": self.attempts,
+            "cost": self.cost,
             "overlays": self.overlays,
             "sfx_list": self.sfx_list,
             "download": self.download,
@@ -724,6 +726,11 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     total = 11 if download else 10
     errors = []
 
+    # Start this job's API cost accounting from zero (the bot runs one job at a
+    # time, so the tracker is global but job-scoped).
+    from core import usage as _usage
+    _usage.reset()
+
     def _p(step, label):
         _check_cancel(should_cancel)   # cooperative cancel at every stage boundary
         if progress_callback:
@@ -886,6 +893,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # Final — FCPXML
     _p(total, "Writing Premiere XML")
     state.xml_path = write_fcpxml(shots, project_name, state.overlays, state.sfx_list)
+    state.cost = _usage.summary()   # per-job API token/cost breakdown
     return state.to_result()
 
 

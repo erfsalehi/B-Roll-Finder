@@ -494,6 +494,36 @@ def deliver_project(chat_id, project: str) -> None:
 
 # ── job ────────────────────────────────────────────────────────────────────────
 
+def _fmt_tokens(n: int) -> str:
+    """Compact token count: 1234 → '1.2k', 48230 → '48k', 950 → '950'."""
+    n = int(n or 0)
+    if n >= 1000:
+        return f"{n / 1000:.1f}k".replace(".0k", "k")
+    return str(n)
+
+
+def format_cost_line(result: dict):
+    """One-line API usage/cost estimate for the summary, or None if nothing was
+    tracked. Shows a $ estimate when priced, else token counts only."""
+    c = result.get("cost") or {}
+    by = c.get("by_provider") or {}
+    if not by:
+        return None
+    parts = []
+    for prov, p in sorted(by.items()):
+        tok = (p.get("prompt_tokens", 0) or 0) + (p.get("completion_tokens", 0) or 0)
+        if tok:
+            parts.append(f"{prov} {_fmt_tokens(tok)}")
+        elif p.get("audio_seconds"):
+            parts.append(f"{prov} {p['audio_seconds']:.0f}s")
+    detail = ", ".join(parts)
+    total_tok = c.get("total_tokens", 0)
+    if c.get("priced"):
+        return (f"💸 API ~${c.get('total_usd', 0):.4f} (est.)"
+                f"  ·  {_fmt_tokens(total_tok)} tokens  ·  {detail}")
+    return f"🔢 API: {_fmt_tokens(total_tok)} tokens  ·  {detail}"
+
+
 def format_summary(proj: str, result: dict) -> str:
     dl = result.get("download") or {}
     qa = result.get("qa") or {}
@@ -506,6 +536,9 @@ def format_summary(proj: str, result: dict) -> str:
         lines.append(f"Downloaded: {dl.get('ok', 0)} ok, {dl.get('failed', 0)} failed, {dl.get('skipped', 0)} cached")
     verdict = qa.get("overall") or "—"
     lines.append(f"QA: {verdict}" + (f"  ⚠️ {n_issues} flag(s)" if n_issues else ""))
+    cost_line = format_cost_line(result)
+    if cost_line:
+        lines.append(cost_line)
     if dl.get("dir"):
         lines.append(f"📁 {dl['dir']}")
     return "\n".join(lines)

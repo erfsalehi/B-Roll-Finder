@@ -10,6 +10,23 @@ GROQ_MODEL       = "llama-3.3-70b-versatile"
 OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 OPENROUTER_BASE  = "https://openrouter.ai/api/v1/chat/completions"
 
+
+def _record_api_usage(provider: str, model: str, u) -> None:
+    """Report one call's token usage to the per-job cost tracker. ``u`` is either
+    a Groq usage object (attributes) or an OpenRouter/DeepSeek dict. Best-effort —
+    cost accounting must never break an API call."""
+    if not u:
+        return
+    try:
+        from core import usage
+        if isinstance(u, dict):
+            pt, ct = u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
+        else:
+            pt, ct = getattr(u, "prompt_tokens", 0), getattr(u, "completion_tokens", 0)
+        usage.record_llm(provider, model, pt, ct)
+    except Exception:
+        pass
+
 def load_prompt() -> str:
     prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'visual_keywords.txt')
     with open(prompt_path, 'r', encoding='utf-8') as f:
@@ -38,6 +55,7 @@ def _call_groq_json(client: Groq, system_prompt: str, block: str,
         max_tokens=max_tokens,
         response_format={"type": "json_object"}
     )
+    _record_api_usage("groq", GROQ_MODEL, getattr(response, "usage", None))
     return _loads_llm_json(response.choices[0].message.content)
 
 
@@ -76,7 +94,9 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
             try:
                 resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
                 resp.raise_for_status()
-                return _loads_llm_json(resp.json()["choices"][0]["message"]["content"])
+                j = resp.json()
+                _record_api_usage("openrouter", OPENROUTER_MODEL, j.get("usage"))
+                return _loads_llm_json(j["choices"][0]["message"]["content"])
             except Exception as e:
                 last_error = e
                 status_code = getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
@@ -262,6 +282,7 @@ def _deepseek_request(system_prompt: str, user_content: str,
                                 time.sleep(delay)
                                 continue
                             break  # exhausted retries for this key → next key
+                    _record_api_usage("deepseek", model, j.get("usage"))
                     return content
                 # 200 with EMPTY content — OpenRouter treats this as success and
                 # won't auto-switch, so exclude this provider and retry on another.
@@ -432,6 +453,7 @@ def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        _record_api_usage("groq", GROQ_MODEL, getattr(response, "usage", None))
         return response.choices[0].message.content.strip()
 
     if not active_keys:
@@ -476,7 +498,9 @@ def _call_llm_str(client: Groq, system_prompt: str, user_content: str,
         try:
             resp = requests.post(OPENROUTER_BASE, headers=headers, json=payload, timeout=60)
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
+            j = resp.json()
+            _record_api_usage("openrouter", OPENROUTER_MODEL, j.get("usage"))
+            return j["choices"][0]["message"]["content"].strip()
         except Exception as e2:
             status_code = getattr(e2.response, "status_code", 0) if hasattr(e2, "response") else 0
             if status_code == 429 or status_code >= 500 or status_code in (401, 403):
