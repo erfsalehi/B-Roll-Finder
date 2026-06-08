@@ -1200,17 +1200,15 @@ def _job_thread(fn, chat_id, *args) -> None:
 def build_start_keyboard(overlay_only: bool = False) -> dict:
     """Pre-job prompt: pick the mode (Full vs text-overlay-only) AND whether to
     clear the disk first. callback_data = start:<mode>:<disk>. When
-    ``overlay_only`` is set (the /overlay command) only the overlay rows show."""
+    ``overlay_only`` is set (the /overlay command) only the overlay rows show.
+
+    One button per row so the labels stay fully readable on narrow screens."""
     rows = []
     if not overlay_only:
-        rows.append([
-            {"text": "🎬 Full · clear disk", "callback_data": "start:full:clear"},
-            {"text": "🎬 Full · keep",       "callback_data": "start:full:keep"},
-        ])
-    rows.append([
-        {"text": "🅰️ Overlays only · clear", "callback_data": "start:overlay:clear"},
-        {"text": "🅰️ Overlays only · keep",  "callback_data": "start:overlay:keep"},
-    ])
+        rows.append([{"text": "🎬 Full · clear disk", "callback_data": "start:full:clear"}])
+        rows.append([{"text": "🎬 Full · keep",       "callback_data": "start:full:keep"}])
+    rows.append([{"text": "🅰️ Overlays only · clear", "callback_data": "start:overlay:clear"}])
+    rows.append([{"text": "🅰️ Overlays only · keep",  "callback_data": "start:overlay:keep"}])
     return {"inline_keyboard": rows}
 
 
