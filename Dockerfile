@@ -43,12 +43,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # nodejs-bin bundles the `node` binary inside its package dir but only registers
 # a PATH entry point on Windows — on Linux it lands at
 # .../site-packages/nodejs/bin/node, off PATH. yt-dlp's EJS JS-challenge solver
-# needs `node` discoverable or it drops high-res YouTube formats, so symlink it
-# (and npm/npx) into /usr/local/bin. `node --version` fails the build if broken.
+# and the local remotion CLI (node_modules/.bin/remotion, whose shebang is
+# `env node`) both need `node` discoverable, so symlink just the real `node`
+# binary into /usr/local/bin. npm/npx are deliberately NOT symlinked: in
+# nodejs-bin they're JS CLI scripts whose target lacks the exec bit, so a symlink
+# yields "npm: Permission denied" (exit 127). The build invokes npm via the
+# cross-platform `python -m nodejs.npm` entrypoint instead (next step), which
+# resolves node itself. `node --version` fails the build early if broken.
 RUN NODE_BIN="$(python -c 'import os,nodejs;print(os.path.join(os.path.dirname(nodejs.__file__),"bin"))')" \
     && ln -sf "$NODE_BIN/node" /usr/local/bin/node \
-    && ln -sf "$NODE_BIN/npm"  /usr/local/bin/npm \
-    && ln -sf "$NODE_BIN/npx"  /usr/local/bin/npx \
     && node --version
 
 # Remotion overlay renderer: install the Node project's deps and pre-fetch the
@@ -56,8 +59,8 @@ RUN NODE_BIN="$(python -c 'import os,nodejs;print(os.path.join(os.path.dirname(n
 # package.json) so it caches across Python/code-only changes. Browser pre-fetch
 # is best-effort — if it fails at build, Remotion fetches it on first render.
 COPY remotion/package.json ./remotion/package.json
-RUN cd remotion && npm install --no-audit --no-fund \
-    && (npx remotion browser ensure || echo "[build] chrome pre-fetch deferred to first render")
+RUN cd remotion && python -m nodejs.npm install --no-audit --no-fund \
+    && (./node_modules/.bin/remotion browser ensure || echo "[build] chrome pre-fetch deferred to first render")
 
 # Application code (.dockerignore keeps secrets, caches, and downloads out).
 COPY . .
