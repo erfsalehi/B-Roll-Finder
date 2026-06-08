@@ -100,19 +100,22 @@ def extract_overlay_highlights(segments: list = None, script_text: str = "",
             "end": end,
             "emphasis": h.get("emphasis") or "normal",
         })
-    # Drop time-overlaps and crowding: keep overlays at least OVERLAY_MIN_GAP_SEC
-    # apart (start-to-start) so the screen never feels busy.
+    # Cull true time-overlaps always; apply the anti-crowding gap to PROSE only.
+    # Numbers/stats/money are the priority — three stats in a row should all stay
+    # on screen, so they're exempt from the spacing rule (kept unless they truly
+    # overlap another overlay in time).
     try:
-        min_gap = float(os.getenv("OVERLAY_MIN_GAP_SEC", "6"))
+        min_gap = float(os.getenv("OVERLAY_MIN_GAP_SEC", "3"))
     except (TypeError, ValueError):
-        min_gap = 6.0
+        min_gap = 3.0
+    keep_close = {"stat", "number", "money"}
     out.sort(key=lambda o: o["start"])
     deduped, last_end, last_start = [], -1.0, -1e9
     for o in out:
-        if o["start"] < last_end:                  # time overlap
+        if o["start"] < last_end:                  # true time overlap → drop
             continue
-        if o["start"] - last_start < min_gap:      # too close to the previous one
-            continue
+        if o.get("type") not in keep_close and o["start"] - last_start < min_gap:
+            continue                               # crowding rule: prose only
         deduped.append(o)
         last_end, last_start = o["end"], o["start"]
     return deduped
@@ -186,7 +189,7 @@ def _props_for(h: dict, fps: int, color: str, accent: str) -> dict:
 # Bump when Overlay.tsx visuals change. The render cache is keyed by props, NOT
 # by the component source, so a style change wouldn't otherwise invalidate
 # previously-rendered clips — they'd be reused with the OLD look.
-_STYLE_VERSION = "2"
+_STYLE_VERSION = "3"
 
 
 def _cache_key(props: dict) -> str:
@@ -345,4 +348,10 @@ def build_overlays(out_dir: str, segments: list = None, script_text: str = "",
     highlights = extract_overlay_highlights(segments, script_text, groq_key)
     if not highlights:
         return []
-    return render_overlay_clips(highlights, out_dir, fps=fps, shots=shots)
+    # Punchy, non-pale defaults; tunable without a code change. A vivid yellow
+    # text with a dark outline (added in Overlay.tsx) reads far better than pale
+    # white over footage.
+    color = os.getenv("OVERLAY_TEXT_COLOR", "#FFD60A").strip() or "#FFD60A"
+    accent = os.getenv("OVERLAY_ACCENT_COLOR", "#FFD400").strip() or "#FFD400"
+    return render_overlay_clips(highlights, out_dir, fps=fps,
+                                color=color, accent=accent, shots=shots)

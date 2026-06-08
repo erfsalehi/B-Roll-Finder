@@ -72,6 +72,14 @@ const SAFE_Y = 120;
 const SCRIM = 'rgba(8,8,10,0.58)';
 // Layered drop shadow for text sitting directly on footage (no box behind it).
 const TEXT_SHADOW = '0 4px 10px rgba(0,0,0,0.85), 0 2px 30px rgba(0,0,0,0.6)';
+// Bold dark outline ("border") so the vivid yellow copy pops on any footage.
+// paintOrder:'stroke' renders the outline BEHIND the fill so it doesn't eat the
+// letterforms — a clean thick border rather than a thinned glyph.
+const TEXT_STROKE = '3px rgba(0,0,0,0.9)';
+const STROKED: React.CSSProperties = {
+  WebkitTextStroke: TEXT_STROKE,
+  paintOrder: 'stroke',
+};
 
 export const Overlay: React.FC<OverlayProps> = (props) => {
   const {text, anim, sfx, color, accent} = props;
@@ -124,6 +132,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
               color,
               textShadow: TEXT_SHADOW,
               letterSpacing: -1,
+              ...STROKED,
             }}
           >
             {text}
@@ -204,7 +213,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
         >
           <span
             style={{fontFamily: FONT, fontWeight: 800, fontSize: 64, color,
-                    textShadow: TEXT_SHADOW}}
+                    textShadow: TEXT_SHADOW, ...STROKED}}
           >
             {text}
           </span>
@@ -229,10 +238,10 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
           fontSize: 170,
           color,
           // Dark drop shadow for legibility over bright footage + the accent
-          // glow, plus a thin dark outline so the word reads on any background.
+          // glow, plus the bold dark outline so the word reads on any background.
           textShadow: `0 6px 22px rgba(0,0,0,0.8), 0 0 40px ${accent}`,
-          WebkitTextStroke: '2px rgba(0,0,0,0.55)',
           letterSpacing: -2,
+          ...STROKED,
         }}
       >
         {text}
