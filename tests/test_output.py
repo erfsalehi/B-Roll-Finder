@@ -48,3 +48,14 @@ def test_fcpxml_sequence_is_fully_formed_so_premiere_builds_timeline():
     # The format block (before the first <track>) must carry an editing rate.
     fmt = xml.split("<format>")[1].split("</format>")[0]
     assert "<rate>" in fmt and "<pixelaspectratio>" in fmt
+
+
+def test_pathurl_is_url_encoded():
+    """A raw space in the path (e.g. a project under '.../B-Roll Finder/...')
+    makes the file URI malformed and hangs Premiere on 'locating'. The pathurl
+    must percent-encode spaces while keeping the scheme and drive colon."""
+    from core.output import _get_premiere_safe_pathurl
+    u = _get_premiere_safe_pathurl("C:/Users/x/B-Roll Finder/downloads/demo/a clip.mp4")
+    assert " " not in u
+    assert "%20" in u
+    assert u.startswith("file://localhost/C:/")

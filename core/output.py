@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import quote
 from xml.sax.saxutils import escape
 from core.ffmpeg_utils import get_video_metadata
 
@@ -12,16 +13,22 @@ def _get_premiere_safe_pathurl(filepath: str) -> str:
     r"""
     Formats paths to prevent Premiere's Windows \\C:\ network drive bug.
     Forces the file://localhost/C:/... format.
+
+    Percent-encodes the path (Apple FCP XML spec: a space MUST be ``%20``, etc.).
+    An unencoded space — e.g. a project under ``.../B-Roll Finder/...`` — yields a
+    malformed file URI that makes Premiere HANG on "locating" the media and fall
+    back to a manual relink, which aborts timeline construction. ``/`` and ``:``
+    (the drive-letter colon) are kept literal.
     """
     abs_path = os.path.abspath(filepath)
     # Convert backslashes to forward slashes for XML URIs
     forward_slash_path = abs_path.replace('\\', '/')
-    
+
     # Ensure it starts with a slash before the drive letter
     if not forward_slash_path.startswith('/'):
         forward_slash_path = '/' + forward_slash_path
-        
-    return f"file://localhost{forward_slash_path}"
+
+    return f"file://localhost{quote(forward_slash_path, safe='/:')}"
 
 
 def sec_to_frames(seconds: float, fps: float = 23.976) -> int:
@@ -334,13 +341,16 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     # ── Sequence Setup ──
     xml.append('      <sequence id="b-roll-seq">')
     xml.append('        <name>B-Roll Sequence</name>')
+    # <duration> belongs here (after <name>, before <rate>) per the xmeml DTD —
+    # injected once the timeline's total length is known. Wrong order makes
+    # Premiere reject the sequence and import media to the bin only.
+    seq_dur_idx = len(xml)
     xml.append('        <rate>')
     xml.append(f'          <timebase>{timebase}</timebase>')
     xml.append('          <ntsc>TRUE</ntsc>')
     xml.append('        </rate>')
-    # Remember this index so the sequence-level <duration>/<timecode> can be
-    # injected right before <media> once we know the timeline's total length.
-    seq_media_idx = len(xml)
+    # <timecode> belongs after <rate>, before <media>.
+    seq_tc_idx = len(xml)
     xml.append('        <media>')
     xml.append('          <video>')
     xml.append('            <format>')
@@ -487,6 +497,13 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
                 xml.append('                  <media>')
                 xml.append('                    <video>')
                 xml.append(f'                      <duration>{asset_info["media_dur_frames"]}</duration>')
+                xml.append('                      <samplecharacteristics>')
+                xml.append('                        <width>1920</width>')
+                xml.append('                        <height>1080</height>')
+                xml.append('                        <anamorphic>FALSE</anamorphic>')
+                xml.append('                        <pixelaspectratio>square</pixelaspectratio>')
+                xml.append('                        <fielddominance>none</fielddominance>')
+                xml.append('                      </samplecharacteristics>')
                 xml.append('                    </video>')
                 xml.append('                  </media>')
                 xml.append('                </file>')
@@ -769,14 +786,22 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     xml.append('  </project>')
     xml.append('</xmeml>')
 
-    # Inject the sequence-level <duration> + <timecode> right before <media>.
-    # Premiere's FCP7 importer needs a fully-formed sequence (a duration, a start
-    # timecode, and a format rate) to construct the timeline; without them it
-    # parses the <file> defs into the project bin but never places the clips —
-    # the "clips import but the timeline stays empty" symptom.
+    # Inject the sequence-level <duration> (after <name>) and <timecode> (after
+    # <rate>) in canonical xmeml order. Premiere's FCP7 importer needs a fully
+    # formed sequence (duration, start timecode, format rate) to construct the
+    # timeline; missing or mis-ordered, it parses the <file> defs into the bin
+    # but never places the clips — the "clips import but timeline stays empty"
+    # symptom. Insert at the higher index first so the lower index stays valid.
     seq_frames = max(1, max_end_frame)
-    xml[seq_media_idx:seq_media_idx] = [
-        f'        <duration>{seq_frames}</duration>',
+    xml[seq_tc_idx:seq_tc_idx] = _seq_timecode_lines(timebase)
+    xml[seq_dur_idx:seq_dur_idx] = [f'        <duration>{seq_frames}</duration>']
+
+    return "\n".join(xml)
+
+
+def _seq_timecode_lines(timebase: int) -> list:
+    """The sequence <timecode> block (start at 00:00:00:00)."""
+    return [
         '        <timecode>',
         '          <rate>',
         f'            <timebase>{timebase}</timebase>',
@@ -787,8 +812,6 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
         '          <displayformat>NDF</displayformat>',
         '        </timecode>',
     ]
-
-    return "\n".join(xml)
 
 
 def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
@@ -816,11 +839,12 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
     xml.append('    <children>')
     xml.append('      <sequence id="b-roll-overlays-seq">')
     xml.append(f'        <name>{_xml_attr(project_name)} — Overlays</name>')
+    seq_dur_idx = len(xml)     # <duration> after <name>, before <rate>
     xml.append('        <rate>')
     xml.append(f'          <timebase>{timebase}</timebase>')
     xml.append('          <ntsc>TRUE</ntsc>')
     xml.append('        </rate>')
-    seq_media_idx = len(xml)   # where to inject the sequence <duration>/<timecode>
+    seq_tc_idx = len(xml)      # <timecode> after <rate>, before <media>
     xml.append('        <media>')
     xml.append('          <video>')
     xml.append('            <format>')
@@ -975,21 +999,11 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
     xml.append('  </project>')
     xml.append('</xmeml>')
 
-    # Same sequence-level fix as generate_fcpxml: a fully-formed sequence
-    # (duration + timecode) so Premiere builds the overlay timeline instead of
-    # dropping the clips into the bin only.
+    # Same sequence-level fix as generate_fcpxml, in canonical xmeml order:
+    # <duration> after <name>, <timecode> after <rate>. Insert the higher index
+    # first so the lower one stays valid.
     seq_frames = max(1, max_end_frame)
-    xml[seq_media_idx:seq_media_idx] = [
-        f'        <duration>{seq_frames}</duration>',
-        '        <timecode>',
-        '          <rate>',
-        f'            <timebase>{timebase}</timebase>',
-        '            <ntsc>TRUE</ntsc>',
-        '          </rate>',
-        '          <string>00:00:00:00</string>',
-        '          <frame>0</frame>',
-        '          <displayformat>NDF</displayformat>',
-        '        </timecode>',
-    ]
+    xml[seq_tc_idx:seq_tc_idx] = _seq_timecode_lines(timebase)
+    xml[seq_dur_idx:seq_dur_idx] = [f'        <duration>{seq_frames}</duration>']
 
     return "\n".join(xml)

@@ -266,12 +266,16 @@ def _shot_for_time(t: float, shots: list):
 
 
 def _overlay_basename(idx: int, h: dict, shots: list, seen: set) -> str:
-    """Descriptive, unique ``.mov`` name: shot number + the sentence, so the
-    clips can be placed by hand if the XML import misbehaves (e.g.
-    ``shot03_our-revenue-tripled.mov``). Falls back to ``ovNN`` when there are no
-    shots to map against (overlay-only mode)."""
-    sid = _shot_for_time(float(h.get("start", 0)), shots)
-    prefix = f"shot{int(sid):02d}" if sid is not None else f"ov{idx + 1:02d}"
+    """Descriptive, unique ``.mov`` name so a clip can be placed by hand if the
+    XML import misbehaves. Encodes the shot number it overlays + the start
+    timecode + the sentence, e.g. ``shot03_00m12s_our-revenue-tripled.mov``. In
+    overlay-only mode (no shots) the shot token is dropped:
+    ``00m12s_our-revenue-tripled.mov`` — the timecode still says exactly where it
+    goes."""
+    start = float(h.get("start", 0) or 0)
+    tc = f"{int(start) // 60:02d}m{int(start) % 60:02d}s"
+    sid = _shot_for_time(start, shots)
+    prefix = f"shot{int(sid):02d}_{tc}" if sid is not None else tc
     base = f"{prefix}_{_slug(h.get('text', ''))}"
     name = f"{base}.mov"
     n = 1
