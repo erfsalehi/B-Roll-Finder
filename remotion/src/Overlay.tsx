@@ -8,6 +8,27 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from 'remotion';
+import {loadFont} from '@remotion/google-fonts/Montserrat';
+
+const {fontFamily: MONTSERRAT} = loadFont();
+
+// Replace the first numeric token in `text` with `target * progress`, preserving
+// currency symbols, %, commas, decimals, and surrounding words. Drives the
+// count-up on stat / money / number overlays.
+function countUp(text: string, progress: number): string {
+  const m = text.match(/[\d,]+(?:\.\d+)?/);
+  if (!m || m.index === undefined) return text;
+  const numStr = m[0];
+  const target = parseFloat(numStr.replace(/,/g, ''));
+  if (!isFinite(target)) return text;
+  const decimals = (numStr.split('.')[1] || '').length;
+  const val = target * Math.max(0, Math.min(1, progress));
+  const formatted = val.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+  return text.slice(0, m.index) + formatted + text.slice(m.index + numStr.length);
+}
 
 export type OverlayType =
   | 'title'
@@ -39,8 +60,7 @@ export const DEFAULT_PROPS: OverlayProps = {
   accent: '#FFD400',
 };
 
-const FONT =
-  '"Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif';
+const FONT = `${MONTSERRAT}, "Arial Black", "Helvetica Neue", Arial, sans-serif`;
 
 export const Overlay: React.FC<OverlayProps> = (props) => {
   const {text, anim, sfx, color, accent} = props;
@@ -137,7 +157,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
               letterSpacing: -2,
             }}
           >
-            {text}
+            {countUp(text, enter)}
           </span>
         </div>
       </AbsoluteFill>

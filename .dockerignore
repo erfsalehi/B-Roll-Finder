@@ -22,6 +22,12 @@ __pycache__/
 **/__pycache__/
 *.pyc
 
+# Node / Remotion build artifacts — deps are installed inside the image.
+node_modules/
+**/node_modules/
+remotion/out/
+remotion/.remotion/
+
 # Dev-only / docs — not needed at runtime.
 tests/
 scratch/

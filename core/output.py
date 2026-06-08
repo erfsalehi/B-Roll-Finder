@@ -529,8 +529,20 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             e_frame = sec_to_frames(e_sec, fps_exact)
             d_frame = max(1, e_frame - s_frame)
 
-            # Media duration (PNGs are usually 1 frame or infinite, but FCP7 likes a duration)
-            media_dur_frames = sec_to_frames(3600.0, fps_exact) # 1 hour fallback for stills
+            # An animated overlay is a real video file (Remotion alpha ProRes);
+            # a classic overlay is a still PNG. A still can claim an "infinite"
+            # media duration, but a movie must declare its actual length and the
+            # timeline segment can't run past it.
+            is_video = bool(ov.get("is_video")) or ov_path.lower().endswith(
+                (".mov", ".mp4", ".webm", ".mkv"))
+            if is_video:
+                clip_dur_sec = _get_media_duration(ov_path, fallback_duration=(e_sec - s_sec))
+                media_dur_frames = max(1, sec_to_frames(clip_dur_sec, fps_exact))
+                d_frame = min(d_frame, media_dur_frames)
+                e_frame = s_frame + d_frame
+            else:
+                # PNGs are usually 1 frame or infinite, but FCP7 likes a duration.
+                media_dur_frames = sec_to_frames(3600.0, fps_exact)  # 1 hour fallback
 
             file_id = f"file-ov-{idx}"
             clip_id = f"clip-ov-{idx}"
@@ -805,7 +817,16 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
         e_frame = sec_to_frames(e_sec, fps_exact)
         d_frame = max(1, e_frame - s_frame)
 
-        media_dur_frames = sec_to_frames(3600.0, fps_exact)
+        # Animated overlays are real video files (alpha ProRes); stills are PNGs.
+        is_video = bool(ov.get("is_video")) or ov_path.lower().endswith(
+            (".mov", ".mp4", ".webm", ".mkv"))
+        if is_video:
+            clip_dur_sec = _get_media_duration(ov_path, fallback_duration=(e_sec - s_sec))
+            media_dur_frames = max(1, sec_to_frames(clip_dur_sec, fps_exact))
+            d_frame = min(d_frame, media_dur_frames)
+            e_frame = s_frame + d_frame
+        else:
+            media_dur_frames = sec_to_frames(3600.0, fps_exact)
 
         file_id = f"file-ov-{idx}"
         clip_id = f"clip-ov-{idx}"

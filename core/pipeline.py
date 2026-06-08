@@ -10,12 +10,70 @@ selected clips and writes the Premiere FCPXML into the project folder.
 """
 
 import os
+from dataclasses import dataclass, field
 
 from core.output import clip_base_dir, clip_filename, generate_fcpxml, _safe_for_fs
 
 
 class PipelineCancelled(Exception):
     """Raised when a caller's ``should_cancel()`` asks the run to stop."""
+
+
+@dataclass
+class PipelineState:
+    """Centralized, serializable state for one headless run — the single object
+    the stages populate, instead of a scatter of loose locals and a hand-built
+    result dict. ``shots`` is still the mutable list the leaf functions
+    (fetch/rank/select/refine) operate on in place; this just gathers the run's
+    bookkeeping (topic, QA, validation, errors, and the self-healing attempt
+    counters) in one documented place.
+
+    ``attempts`` records how hard the self-healing loops worked: ``fill`` shots
+    rescued, ``refine`` flagged shots re-picked, ``enforce_rounds`` boundary
+    re-pick rounds, and ``dropped`` clips removed as a last resort. ``to_result``
+    renders the plain dict the bot/tests already consume (keys unchanged, plus
+    ``validation`` and ``attempts``)."""
+    project_name: str = "auto"
+    topic: str = ""
+    shots: list = field(default_factory=list)
+    qa: dict = field(default_factory=dict)
+    validation: dict = field(default_factory=dict)
+    errors: list = field(default_factory=list)
+    overlays: list = field(default_factory=list)
+    sfx_list: list = field(default_factory=list)
+    attempts: dict = field(default_factory=dict)
+    download: dict = None
+    xml_path: str = None
+
+    @property
+    def n_shots(self) -> int:
+        return len(self.shots)
+
+    @property
+    def n_selected(self) -> int:
+        return sum(1 for s in self.shots if s.get("selected_results"))
+
+    @property
+    def n_clips(self) -> int:
+        return sum(len(s.get("selected_results") or []) for s in self.shots)
+
+    def to_result(self) -> dict:
+        return {
+            "project_name": self.project_name,
+            "topic": self.topic,
+            "shots": self.shots,
+            "n_shots": self.n_shots,
+            "n_selected": self.n_selected,
+            "n_clips": self.n_clips,
+            "qa": self.qa,
+            "validation": self.validation,
+            "errors": self.errors,
+            "attempts": self.attempts,
+            "overlays": self.overlays,
+            "sfx_list": self.sfx_list,
+            "download": self.download,
+            "xml_path": self.xml_path,
+        }
 
 
 def _flag(name: str) -> bool:
@@ -124,6 +182,112 @@ def drop_vertical(shots: list) -> int:
                 kept.append(c)
         s["video_results"] = kept
     return removed
+
+
+# Minimum acceptable height for a clip that lands in the final XML. We only
+# *reject* a clip whose height we actually know and that falls below this; clips
+# with unknown dimensions are tolerated (same policy as the candidate filters
+# above), since many direct stock MP4s carry no width/height metadata.
+MIN_CLIP_HEIGHT = int(os.getenv("MIN_CLIP_HEIGHT", "720") or 720)
+
+
+def _clip_violations(c: dict, *, min_height: int = None,
+                     max_seconds: float = MAX_CLIP_SECONDS,
+                     yt_max_seconds: float = YT_MAX_CLIP_SECONDS) -> list:
+    """Return the hard-boundary violations for a single *selected* clip (empty
+    list == passes). Mirrors the candidate-filter policy: a dimension or duration
+    we don't actually know is never treated as a violation."""
+    if min_height is None:
+        min_height = MIN_CLIP_HEIGHT
+    reasons = []
+    if not c.get("url"):
+        reasons.append("no download URL")
+    if _is_short(c):
+        reasons.append("YouTube Short")
+    is_yt = (c.get("source") or c.get("original_source") or "").lower() == "youtube"
+    try:
+        dur = float(c.get("duration") or 0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    limit = yt_max_seconds if is_yt else max_seconds
+    if dur and dur > limit:
+        reasons.append(f"duration {dur:.0f}s > {limit:.0f}s cap")
+    try:
+        w = int(c.get("width") or 0)
+        h = int(c.get("height") or 0)
+    except (TypeError, ValueError):
+        w = h = 0
+    if w and h and h > w:
+        reasons.append("vertical/portrait")
+    if h and h < min_height:
+        reasons.append(f"height {h}p < {min_height}p min")
+    return reasons
+
+
+def validate_timeline(shots: list, min_height: int = None) -> dict:
+    """Final boundary check over every *selected* clip that would be written to
+    the FCPXML. Pure — no mutation. Returns::
+
+        {"ok": bool, "checked": int, "failures": [
+            {"slot_id", "clip_index", "reasons": [...], "title", "url"} ]}
+
+    A shot's selection passes only when every clip in it passes."""
+    failures = []
+    checked = 0
+    for s in shots:
+        if s.get("priority") == "none":
+            continue
+        for idx, c in enumerate(s.get("selected_results") or []):
+            checked += 1
+            reasons = _clip_violations(c, min_height=min_height)
+            if reasons:
+                failures.append({
+                    "slot_id": s.get("slot_id"),
+                    "clip_index": idx,
+                    "reasons": reasons,
+                    "title": c.get("title", ""),
+                    "url": c.get("url", ""),
+                })
+    return {"ok": not failures, "checked": checked, "failures": failures}
+
+
+def _drop_failing_clips(shots: list, report: dict) -> int:
+    """Remove every clip flagged in ``report`` from its shot's selection (in
+    place). Filters each shot in one pass so clip indices stay valid. Returns the
+    number of clips dropped."""
+    bad = {(f["slot_id"], f["clip_index"]) for f in report.get("failures", [])}
+    dropped = 0
+    for s in shots:
+        sel = s.get("selected_results") or []
+        if not sel:
+            continue
+        kept = [c for i, c in enumerate(sel) if (s.get("slot_id"), i) not in bad]
+        if len(kept) != len(sel):
+            dropped += len(sel) - len(kept)
+            if kept:
+                s["selected_results"] = kept
+            else:
+                s.pop("selected_results", None)
+                s.pop("auto_selected", None)
+    return dropped
+
+
+def _failures_to_qa(failures: list) -> dict:
+    """Turn :func:`validate_timeline` failures into a QA-style issue dict that
+    :func:`refine_flagged_shots` understands, so each failing slot gets re-picked."""
+    by_slot: dict = {}
+    for f in failures:
+        if f.get("slot_id") is None:
+            continue
+        by_slot.setdefault(f["slot_id"], []).extend(f.get("reasons") or [])
+    issues = [{
+        "slot_id": sid,
+        "severity": "high",
+        "problem": f"Selected clip violates output boundaries: {'; '.join(rs)}.",
+        "suggestion": ("Find a horizontal clip at or above the minimum resolution, "
+                       "not a Short, and within the duration cap."),
+    } for sid, rs in by_slot.items()]
+    return {"overall": "Boundary validation", "issues": issues}
 
 
 def _check_cancel(should_cancel) -> None:
@@ -398,10 +562,65 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     return sum(1 for s in targets if s.get("selected_results"))
 
 
-def write_fcpxml(shots: list, project_name: str) -> str:
+def enforce_timeline(shots: list, groq_key: str = None, video_topic: str = "",
+                     errors: list = None, progress=None, min_height: int = None,
+                     max_rounds: int = 3) -> dict:
+    """Guarantee every selected clip passes the output boundaries before the XML
+    is compiled.
+
+    Loops up to ``max_rounds``: validate → route just the failing slots back
+    through :func:`refine_flagged_shots` (regenerate query → refetch → rerank →
+    reselect), keeping every passing shot untouched → re-validate. Any clip still
+    failing after the last round is *dropped* from its selection as a last resort
+    so the XML can never reference it. Returns the final
+    :func:`validate_timeline` report plus ``rounds`` and ``dropped`` counts."""
+    if errors is None:
+        errors = []
+    rounds = 0
+    report = validate_timeline(shots, min_height=min_height)
+    while not report["ok"] and rounds < max_rounds:
+        rounds += 1
+        failing = {f["slot_id"] for f in report["failures"] if f["slot_id"] is not None}
+        if not failing:
+            break
+        if progress:
+            progress(f"Validation round {rounds}: re-picking {len(failing)} shot(s) "
+                     "that failed the output boundaries…")
+        try:
+            refine_flagged_shots(shots, _failures_to_qa(report["failures"]),
+                                 groq_key=groq_key, video_topic=video_topic,
+                                 errors=errors, only_slots=failing)
+        except Exception as e:
+            errors.append(f"enforce round {rounds}: {e}")
+            break
+        report = validate_timeline(shots, min_height=min_height)
+
+    dropped = 0
+    if not report["ok"]:
+        for f in report["failures"]:
+            errors.append(f"slot {f['slot_id']}: dropped clip ({', '.join(f['reasons'])})")
+        dropped = _drop_failing_clips(shots, report)
+        report = validate_timeline(shots, min_height=min_height)
+    report["rounds"] = rounds
+    report["dropped"] = dropped
+    return report
+
+
+def write_fcpxml(shots: list, project_name: str, overlays: list = None,
+                 sfx_list: list = None) -> str:
     """Render the Premiere FCPXML for ``shots`` and write it to the project dir.
-    Returns the absolute XML path."""
-    xml = generate_fcpxml(shots, project_name=project_name)
+    ``overlays`` (animated text clips) land on the overlay track and ``sfx_list``
+    (their sound effects) on the SFX audio track. Returns the absolute XML path.
+
+    Hard guarantee: any selected clip that fails the output boundaries is dropped
+    here before rendering. :func:`enforce_timeline` (run earlier with an LLM key)
+    tries to *recover* such shots; this is the final, key-free safety net so a
+    broken clip can never slip into the XML, whichever path called us."""
+    report = validate_timeline(shots)
+    if not report["ok"]:
+        _drop_failing_clips(shots, report)
+    xml = generate_fcpxml(shots, project_name=project_name,
+                          overlays=overlays or None, sfx_list=sfx_list or None)
     proj = _safe_for_fs(project_name, 50)
     xml_path = os.path.join(os.path.abspath("downloads"), proj, f"{proj}.xml")
     os.makedirs(os.path.dirname(xml_path), exist_ok=True)
@@ -411,13 +630,55 @@ def write_fcpxml(shots: list, project_name: str) -> str:
 
 
 def finalize_project(shots: list, project_name: str, quality: str = "1080",
-                     should_cancel=None, progress=None) -> dict:
+                     should_cancel=None, progress=None,
+                     overlays: list = None, sfx_list: list = None,
+                     groq_key: str = None, video_topic: str = "",
+                     errors: list = None) -> dict:
     """Download the selected clips and (re)write the FCPXML — the back half of the
     pipeline, split out so the bot's review gate can run it after the user
-    approves (or after a /refine). Returns ``{download, xml_path}``."""
+    approves (or after a /refine). Re-runs boundary enforcement first, since a
+    /refine may have changed the selection. Returns ``{download, xml_path,
+    validation}``."""
+    validation = enforce_timeline(shots, groq_key=groq_key or os.getenv("GROQ_API_KEY"),
+                                  video_topic=video_topic, errors=errors)
     dl = download_selected_clips(shots, project_name, quality=cap_quality(quality),
                                  progress=progress, should_cancel=should_cancel)
-    return {"download": dl, "xml_path": write_fcpxml(shots, project_name)}
+    return {"download": dl,
+            "xml_path": write_fcpxml(shots, project_name, overlays, sfx_list),
+            "validation": validation}
+
+
+def _sfx_list_from_overlays(overlays: list) -> list:
+    """Map rendered overlays to SFX-track entries (the swoosh/ding plays at each
+    overlay's start). Points at the shared SFX files under remotion/public/sfx/."""
+    if not overlays:
+        return []
+    from core.overlays_remotion import _REMOTION_DIR
+    out = []
+    for ov in overlays:
+        sfx = ov.get("sfx")
+        if not sfx or sfx == "none":
+            continue
+        sfx_path = os.path.join(_REMOTION_DIR, "public", "sfx", f"{sfx}.mp3")
+        if os.path.exists(sfx_path):
+            out.append({"filepath": sfx_path, "start_sec": float(ov.get("start_sec", 0))})
+    return out
+
+
+def build_text_overlays(project_name: str, segments: list, groq_key: str,
+                        fps: int = 30) -> tuple:
+    """Extract + render animated text overlays for a project. Returns
+    ``(overlays, sfx_list)`` ready for write_fcpxml. Best-effort: returns
+    ``([], [])`` if disabled, unavailable, or nothing qualifies."""
+    try:
+        from core.overlays_remotion import build_overlays
+        ov_dir = os.path.join(os.path.abspath("downloads"),
+                              _safe_for_fs(project_name, 50), "overlays")
+        overlays = build_overlays(ov_dir, segments=segments, groq_key=groq_key, fps=fps)
+        return overlays, _sfx_list_from_overlays(overlays)
+    except Exception as e:
+        print(f"[overlays] build failed: {e}")
+        return [], []
 
 
 def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: str = "auto",
@@ -558,55 +819,107 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     _p(8, "Auto-selecting clips")
     auto_select_top_candidates(shots)
 
+    # Central run state — everything below records into it, and it renders the
+    # result dict at the end (same keys callers already use, plus validation +
+    # attempts telemetry for the self-healing loops).
+    state = PipelineState(project_name=project_name, topic=topic, shots=shots,
+                          errors=errors)
+
     # 8b — Rescue any shots still empty (failed fetch / bad block). auto_fill
     # (default on) runs the aggressive multi-pass fill so nearly every shot ends
     # with a clip; otherwise a single lighter repair pass.
     if auto_fill:
         _p(8, "Filling empty shots")
-        fill_empty_shots(shots, groq_key=key, video_topic=topic, errors=errors,
-                         progress=lambda lbl: _p(8, lbl))
+        state.attempts["fill"] = fill_empty_shots(
+            shots, groq_key=key, video_topic=topic, errors=errors,
+            progress=lambda lbl: _p(8, lbl))
     else:
         _p(8, "Repairing empty shots")
-        repair_empty_shots(shots, groq_key=key, video_topic=topic, errors=errors)
+        state.attempts["repair"] = repair_empty_shots(
+            shots, groq_key=key, video_topic=topic, errors=errors)
 
     # 9 — QA review (optional)
     if run_qa:
         _p(9, "Final QA review")
-        qa = review_timeline(shots, api_key=key, video_topic=topic)
+        state.qa = review_timeline(shots, api_key=key, video_topic=topic)
         # 9b — auto-refine flagged shots, then re-review so the report reflects
         # the fixes. Off by default; the bot turns it on per-job.
-        if auto_refine and qa.get("issues"):
-            _p(9, f"Refining {len(qa['issues'])} flagged shot(s)")
-            n_ref = refine_flagged_shots(shots, qa, groq_key=key, video_topic=topic,
+        if auto_refine and state.qa.get("issues"):
+            _p(9, f"Refining {len(state.qa['issues'])} flagged shot(s)")
+            n_ref = refine_flagged_shots(shots, state.qa, groq_key=key, video_topic=topic,
                                          errors=errors)
+            state.attempts["refine"] = n_ref
             if n_ref:
                 _p(9, "Re-reviewing refined timeline")
-                qa = review_timeline(shots, api_key=key, video_topic=topic)
-                qa["refined"] = n_ref
+                state.qa = review_timeline(shots, api_key=key, video_topic=topic)
+                state.qa["refined"] = n_ref
     else:
-        qa = {"overall": "QA review skipped.", "issues": []}
+        state.qa = {"overall": "QA review skipped.", "issues": []}
 
-    result = {
-        "project_name": project_name,
-        "topic": topic,
-        "shots": shots,
-        "n_shots": len(shots),
-        "n_selected": sum(1 for s in shots if s.get("selected_results")),
-        "n_clips": sum(len(s.get("selected_results") or []) for s in shots),
-        "qa": qa,
-        "errors": errors,
-        "download": None,
-        "xml_path": None,
-    }
+    # 9c — Boundary enforcement: guarantee every selected clip passes the output
+    # quality/duration/orientation boundaries before we download or compile the
+    # XML. Failing shots are re-picked (up to 3 rounds), keeping the passing ones
+    # untouched; anything still bad is dropped so the FCPXML is never broken.
+    _p(9, "Validating output boundaries")
+    state.validation = enforce_timeline(shots, groq_key=key, video_topic=topic,
+                                        errors=errors, progress=lambda lbl: _p(9, lbl))
+    state.attempts["enforce_rounds"] = state.validation.get("rounds", 0)
+    state.attempts["dropped"] = state.validation.get("dropped", 0)
+
+    # 9d — Animated text overlays (Remotion) — opt-in via ENABLE_TEXT_OVERLAYS.
+    # Built from the transcript so timing matches the voice. Stored on the result
+    # so the review-gate path (finalize_project after /download) reuses them.
+    if _flag_default("ENABLE_TEXT_OVERLAYS", False):
+        _p(9, "Rendering text overlays")
+        state.overlays, state.sfx_list = build_text_overlays(project_name, segments, key)
 
     # 10 — Download (optional) — capped at 1080p.
     if download:
         _p(10, "Downloading clips")
-        result["download"] = download_selected_clips(shots, project_name,
-                                                     quality=cap_quality(quality),
-                                                     should_cancel=should_cancel)
+        state.download = download_selected_clips(shots, project_name,
+                                                 quality=cap_quality(quality),
+                                                 should_cancel=should_cancel)
 
     # Final — FCPXML
     _p(total, "Writing Premiere XML")
-    result["xml_path"] = write_fcpxml(shots, project_name)
-    return result
+    state.xml_path = write_fcpxml(shots, project_name, state.overlays, state.sfx_list)
+    return state.to_result()
+
+
+def run_overlays_only(audio_path: str, groq_key: str = None, project_name: str = "auto",
+                      progress_callback=None, should_cancel=None, fps: int = 30) -> dict:
+    """Lightweight path: transcribe → extract & render animated text overlays →
+    write an overlays-only FCPXML. No footage fetch/rank/download. Returns
+    ``{project_name, n_overlays, overlays, xml_path, errors}``."""
+    from core.transcription import transcribe_audio
+    from core.output import generate_overlays_fcpxml
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    errors: list = []
+    total = 3
+
+    def _p(step, label):
+        _check_cancel(should_cancel)
+        if progress_callback:
+            try:
+                progress_callback(step, total, label)
+            except Exception:
+                pass
+
+    _p(1, "Transcribing voiceover")
+    segments = transcribe_audio(audio_path, key)
+    if not segments:
+        raise RuntimeError("Transcription returned nothing — bad audio or missing GROQ key.")
+
+    _p(2, "Rendering text overlays")
+    overlays, sfx_list = build_text_overlays(project_name, segments, key, fps=fps)
+
+    _p(3, "Writing Premiere XML")
+    proj = _safe_for_fs(project_name, 50)
+    xml_path = os.path.join(os.path.abspath("downloads"), proj, f"{proj}_overlays.xml")
+    os.makedirs(os.path.dirname(xml_path), exist_ok=True)
+    with open(xml_path, "w", encoding="utf-8") as f:
+        f.write(generate_overlays_fcpxml(overlays, project_name=project_name))
+
+    return {"project_name": project_name, "n_overlays": len(overlays),
+            "overlays": overlays, "xml_path": xml_path, "errors": errors}

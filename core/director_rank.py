@@ -391,27 +391,31 @@ def _env_int(name: str, default: int) -> int:
 def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
                                seconds_per_clip=None, min_clips=None,
                                max_clips=None) -> list:
-    """Phase-3 auto-selection: bind the best ranked clips per shot, scaled by
-    duration, with a deterministic look-back variety guard.
+    """Phase-3 auto-selection: bind the best ranked clips per shot using
+    source quotas, with a deterministic look-back variety guard.
 
     Decoupled post-processing for ``ENABLE_AUTO_SELECTION``. For every shot with
     no manual pick, set ``selected_results`` to its best candidates (the ranker
-    already sorted them best→worst) and mark it ``auto_selected``. Two rules:
+    already sorted them best→worst) and mark it ``auto_selected``. Rules:
 
-    * **Count scales with duration** — ``ceil(duration / seconds_per_clip)``,
-      clamped to ``[min_clips, max_clips]`` and to the number of distinct
-      candidates available. output.py then spreads them across the shot, so a 30s
-      shot gets ~6 clips (one every 5s) while a short shot still gets ``min_clips``
-      (≥2) as alternatives. Picks within a shot are always distinct.
+    * **Source quotas** — take at least ``min_pexels`` (2) distinct Pexels clips
+      plus a YouTube count that scales with shot length: ``ceil(duration /
+      yt_seconds)`` (~1 every 4.5s), clamped to ``max_clips``. Pexels picks are
+      de-duplicated across the WHOLE project (by video-page id) so the same stock
+      clip is never selected/downloaded twice.
+    * **Floor top-up** — if a source ran short, fill from anything left until the
+      shot has ``max(min_clips, min_pexels + 1)`` clips, so a slot is never left
+      empty or under-filled. Picks within a shot are always distinct.
     * **Cross-shot variety** — a clip used within the last ``lookback`` bound
       shots (manual picks included) is skipped in favour of the next alternative,
       so the same visual never appears back-to-back. If no fresh alternative
       exists the duplicate is allowed (a slot is never left empty).
 
     Defaults come from AUTO_SELECT_SECONDS_PER_CLIP (5), AUTO_SELECT_MIN_CLIPS
-    (2), AUTO_SELECT_MAX_CLIPS (8), AUTO_SELECT_LOOKBACK (3). Never overwrites an
-    existing selection (idempotent, safe to re-run). ``start_slot_id`` restricts
-    NEW auto-picks to shots at/after that number.
+    (2), AUTO_SELECT_MAX_CLIPS (8), AUTO_SELECT_LOOKBACK (3), AUTO_SELECT_MIN_PEXELS
+    (2), AUTO_SELECT_YT_SECONDS (4.5). Never overwrites an existing selection
+    (idempotent, safe to re-run). ``start_slot_id`` restricts NEW auto-picks to
+    shots at/after that number.
     """
     from collections import deque
 

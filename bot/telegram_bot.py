@@ -38,6 +38,7 @@ from bot import settings as bot_settings
 from bot import fileserver
 from bot import logsetup
 from bot import healthserver
+from bot import pending_store
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -52,8 +53,18 @@ _TG_UPLOAD_LIMIT = 50 * 1024 * 1024
 _BUSY = {"active": False, "project": None, "cancel": None}
 
 # Projects paused at the review gate, keyed by chat_id: holds the selected shots
-# + QA so /download, /refine, /details can act on them between messages.
+# + QA so /download, /refine, /details can act on them between messages. Mirrored
+# to disk (see pending_store) so a restart / forcestop recovers them.
 _PENDING: dict = {}
+
+
+def _persist_pending() -> None:
+    """Snapshot ``_PENDING`` to disk after every mutation. Best-effort — a
+    persistence failure must never break the bot, so we swallow exceptions."""
+    try:
+        pending_store.save_pending(_PENDING)
+    except Exception as e:
+        print(f"[bot] couldn't persist review-gate state: {e}")
 
 # File server port (set in main() when BOT_FILE_SERVER is enabled), used to build
 # download links.
@@ -65,6 +76,9 @@ _LAST = {"project": None}
 # Audio waiting on the user's "clear disk?" answer before the job starts.
 # chat_id → {"file_id", "name"}.
 _PENDING_START: dict = {}
+
+# Chats that ran /overlay — their NEXT upload is offered as text-overlay-only.
+_OVERLAY_NEXT: set = set()
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -255,27 +269,36 @@ def handle_settings_callback(cb: dict) -> None:
     message_id = msg.get("message_id")
     cb_id = cb.get("id")
 
-    # #6 — answer to the "clear disk before starting?" prompt.
-    if data.startswith("diskclear:"):
-        choice = data.split(":", 1)[1]
+    # Answer to the upload prompt: "start:<mode>:<disk>" where mode is
+    # full|overlay and disk is clear|keep (#6 disk-clear + the Full vs
+    # text-overlay-only mode choice).
+    if data.startswith("start:"):
+        try:
+            _, mode, disk = data.split(":")
+        except ValueError:
+            answer_callback(cb_id, "Bad option")
+            return
         pend = _PENDING_START.pop(chat_id, None)
         if not pend:
             edit_message(chat_id, message_id, "↪️ That start prompt expired — resend the audio file.")
             answer_callback(cb_id, "Expired")
             return
         if _BUSY.get("active") or _PENDING.get(chat_id):
+            _PENDING_START[chat_id] = pend  # restore so they can retry later
             edit_message(chat_id, message_id, "⏳ A job is already running or awaiting review.")
             answer_callback(cb_id, "Busy")
             return
-        if choice == "yes":
+        note = ""
+        if disk == "clear":
             n, freed = _clear_all_projects()
-            edit_message(chat_id, message_id,
-                         f"🧹 Cleared {n} project(s), freed {_human_size(freed)}. Starting…")
-            answer_callback(cb_id, "Disk cleared")
+            note = f"🧹 Cleared {n} project(s), freed {_human_size(freed)}. "
+        label = "Text-overlay only" if mode == "overlay" else "Full process"
+        edit_message(chat_id, message_id, f"{note}▶️ {label} — starting…")
+        answer_callback(cb_id, "Starting")
+        if mode == "overlay":
+            _start_job(handle_overlay_only, chat_id, pend["file_id"], pend["name"])
         else:
-            edit_message(chat_id, message_id, "▶️ Keeping existing projects. Starting…")
-            answer_callback(cb_id, "Starting")
-        _start_audio_job(chat_id, pend["file_id"], pend["name"])
+            _start_job(handle_audio, chat_id, pend["file_id"], pend["name"])
         return
 
     if data == "settings:close":
@@ -304,6 +327,10 @@ def handle_settings_callback(cb: dict) -> None:
 
 def is_settings_command(text: str) -> bool:
     return _command(text) in ("/settings", "/options", "/config")
+
+
+def is_overlay_command(text: str) -> bool:
+    return _command(text) in ("/overlay", "/overlays", "/textonly")
 
 
 def is_download_command(text: str) -> bool:
@@ -597,10 +624,56 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
             "qa": result.get("qa") or {}, "topic": result.get("topic", ""),
             "errors": result.get("errors") or [], "result": result, "settings": settings,
         }
+        _persist_pending()
         send_message(chat_id, format_review(proj, result))
         send_shots_srt(chat_id, proj, result.get("shots") or [])
     else:
         _deliver_completed(chat_id, proj, result)
+    return result
+
+
+def handle_overlay_only(chat_id, file_id: str, suggested_name: str) -> dict:
+    """Text-overlay-only path: transcribe → render animated overlays (Remotion,
+    alpha ProRes + baked SFX) → deliver the clips + an overlays-only FCPXML.
+    Skips all footage fetch/download, so it's fast and small."""
+    from core.pipeline import run_overlays_only, PipelineCancelled
+
+    proj = project_name_from(suggested_name, time.strftime("overlay_%Y%m%d_%H%M%S"))
+    ext = os.path.splitext(suggested_name or "")[1].lower() or ".mp3"
+    audio_path = os.path.join(".cache", f"bot_{proj}{ext}")
+
+    status = send_message(chat_id, f"🅰️ Overlays-only for '{proj}'. Downloading audio…")
+    msg_id = status.get("message_id")
+    try:
+        download_telegram_file(file_id, audio_path)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't fetch the audio: {e}")
+        return {}
+
+    progress = _progress_logger(chat_id, proj, msg_id)
+    try:
+        with bot_settings.apply_env(bot_settings.get_settings(chat_id)):
+            result = run_overlays_only(audio_path, project_name=proj,
+                                       progress_callback=progress,
+                                       should_cancel=_should_cancel())
+    except PipelineCancelled:
+        send_message(chat_id, f"⏹ Cancelled '{proj}'.")
+        return {}
+    except Exception as e:
+        send_message(chat_id, f"❌ Overlay pass failed for '{proj}': {e}")
+        return {}
+
+    n = result.get("n_overlays", 0)
+    edit_message(chat_id, msg_id, f"🅰️ {proj} — ✅ {n} overlay clip(s) rendered")
+    _LAST["project"] = proj
+    if n == 0:
+        send_message(chat_id, "No overlay-worthy moments were found (or the overlay "
+                              "renderer isn't installed on the server yet).")
+        return result
+    xml_path = result.get("xml_path")
+    if xml_path and os.path.exists(xml_path):
+        send_document(chat_id, xml_path, caption=f"{proj} — overlays FCPXML")
+    deliver_project(chat_id, proj)
     return result
 
 
@@ -622,7 +695,11 @@ def _run_download(chat_id) -> None:
     try:
         with bot_settings.apply_env(settings):
             fin = finalize_project(pend["shots"], proj, quality=str(settings.get("quality", 1080)),
-                                   should_cancel=_should_cancel(), progress=_p)
+                                   should_cancel=_should_cancel(), progress=_p,
+                                   overlays=result.get("overlays"),
+                                   sfx_list=result.get("sfx_list"),
+                                   video_topic=pend.get("topic", ""),
+                                   errors=pend.get("errors"))
     except PipelineCancelled:
         send_message(chat_id, f"⏹ Cancelled '{proj}'.")
         return
@@ -632,6 +709,7 @@ def _run_download(chat_id) -> None:
     result["download"] = fin["download"]
     result["xml_path"] = fin["xml_path"]
     _PENDING.pop(chat_id, None)
+    _persist_pending()
     _deliver_completed(chat_id, proj, result)
 
 
@@ -678,6 +756,7 @@ def _run_refine(chat_id, only_slots=None) -> None:
         new_qa["refined"] = n
     result["qa"] = new_qa
     pend["qa"] = new_qa
+    _persist_pending()   # selection changed — re-snapshot so a restart keeps it
     edit_message(chat_id, msg_id, f"🛠 {proj} — refined {n} shot(s).")
     send_message(chat_id, format_review(proj, result))
 
@@ -725,6 +804,7 @@ def _run_redo(chat_id) -> None:
     result["n_clips"] = sum(len(s.get("selected_results") or []) for s in shots)
     result["qa"] = new_qa
     pend["qa"] = new_qa
+    _persist_pending()   # selection changed — re-snapshot so a restart keeps it
     still = sum(1 for s in shots
                 if s.get("priority") != "none" and not s.get("selected_results"))
     edit_message(chat_id, msg_id, f"♻️ {proj} — filled {n} shot(s); {still} still empty.")
@@ -1087,7 +1167,8 @@ def handle_cleanup(chat_id, text: str) -> None:
 
 _HELP = (
     "🎬 Send a voice message or audio file and I'll build the B-roll project.\n"
-    "/settings — choose sources, counts, quality, QA, review gate\n"
+    "/settings — choose sources, counts, quality, QA, review gate, text overlays\n"
+    "/overlay — next voice file → animated text-overlays only (no footage)\n"
     "/status — am I online & ready\n"
     "/details — per-shot breakdown of the project awaiting review\n"
     "/download — fetch clips for the reviewed project\n"
@@ -1116,12 +1197,21 @@ def _job_thread(fn, chat_id, *args) -> None:
         _BUSY.update(active=False, project=None, cancel=None, started=None)
 
 
-def build_diskclear_keyboard() -> dict:
-    """Inline Yes/No for the pre-job 'clear disk?' prompt (#6)."""
-    return {"inline_keyboard": [[
-        {"text": "🧹 Clear & start", "callback_data": "diskclear:yes"},
-        {"text": "▶️ Keep & start",  "callback_data": "diskclear:no"},
-    ]]}
+def build_start_keyboard(overlay_only: bool = False) -> dict:
+    """Pre-job prompt: pick the mode (Full vs text-overlay-only) AND whether to
+    clear the disk first. callback_data = start:<mode>:<disk>. When
+    ``overlay_only`` is set (the /overlay command) only the overlay rows show."""
+    rows = []
+    if not overlay_only:
+        rows.append([
+            {"text": "🎬 Full · clear disk", "callback_data": "start:full:clear"},
+            {"text": "🎬 Full · keep",       "callback_data": "start:full:keep"},
+        ])
+    rows.append([
+        {"text": "🅰️ Overlays only · clear", "callback_data": "start:overlay:clear"},
+        {"text": "🅰️ Overlays only · keep",  "callback_data": "start:overlay:keep"},
+    ])
+    return {"inline_keyboard": rows}
 
 
 def _clear_all_projects() -> tuple:
@@ -1151,12 +1241,13 @@ def _clear_all_projects() -> tuple:
     return len(usage), freed
 
 
-def _start_audio_job(chat_id, file_id: str, name: str) -> None:
-    """Claim the busy slot and run the pipeline for an uploaded audio file."""
+def _start_job(fn, chat_id, file_id: str, name: str) -> None:
+    """Claim the busy slot and run ``fn`` (handle_audio or handle_overlay_only)
+    for an uploaded audio file, in a background thread."""
     _BUSY.update(active=True,
                  project=project_name_from(name, time.strftime("video_%Y%m%d_%H%M%S")),
                  cancel=threading.Event(), started=time.time())
-    threading.Thread(target=_job_thread, args=(handle_audio, chat_id, file_id, name),
+    threading.Thread(target=_job_thread, args=(fn, chat_id, file_id, name),
                      daemon=True).start()
 
 
@@ -1218,6 +1309,20 @@ def main() -> None:
     if os.getenv("BOT_FILE_SERVER", "").strip().lower() in ("1", "true", "yes", "on"):
         _FILESERVER["port"] = fileserver.start_server()
 
+    # Recover any projects that were paused at the review gate when the bot last
+    # stopped, so /download and /refine still work after a restart / forcestop.
+    restored = pending_store.load_pending()
+    if restored:
+        _PENDING.update(restored)
+        print(f"[bot] restored {len(restored)} project(s) awaiting review.")
+        for cid, pend in restored.items():
+            try:
+                send_message(cid, f"♻️ Restored '{pend.get('project', '?')}' — it's still "
+                                  "awaiting your review. /download to proceed, /refine to fix, "
+                                  "or /cancel to discard.")
+            except Exception:
+                pass
+
     allowed = allowed_user_ids()
     if not allowed:
         print("WARNING: TELEGRAM_ALLOWED_USERS is empty — every message will be ignored "
@@ -1274,6 +1379,12 @@ def main() -> None:
                 send_settings(chat_id)
                 continue
 
+            if is_overlay_command(text):
+                _OVERLAY_NEXT.add(chat_id)
+                send_message(chat_id, "🅰️ Next voice file → text-overlay only "
+                                      "(animated overlays + SFX, no footage). Send it now.")
+                continue
+
             if is_cancel_command(text):
                 cancel = _BUSY.get("cancel")
                 if _BUSY.get("active") and cancel is not None:
@@ -1282,6 +1393,7 @@ def main() -> None:
                                           "the next stage/shot. If it won't stop, use /forcestop.")
                 elif _PENDING.get(chat_id):
                     proj = _PENDING.pop(chat_id)["project"]
+                    _persist_pending()
                     send_message(chat_id, f"⏹ Discarded pending project '{proj}'.")
                 else:
                     send_message(chat_id, "Nothing is running right now.")
@@ -1358,16 +1470,18 @@ def main() -> None:
                     send_message(chat_id, f"📋 '{_PENDING[chat_id]['project']}' is awaiting review. "
                                           "Reply /download, /refine, or /cancel first.")
                     continue
-                # #6 — before starting, ask whether to clear previously downloaded
-                # projects from the server. The job starts from the button handler
-                # (_start_audio_job) once the user answers.
+                # Ask the mode (full vs text-overlay-only) and whether to clear
+                # disk first. The job starts from the button handler once the user
+                # answers. /overlay pre-restricts the prompt to overlay-only.
+                overlay_only = chat_id in _OVERLAY_NEXT
+                _OVERLAY_NEXT.discard(chat_id)
                 _PENDING_START[chat_id] = {"file_id": file_id, "name": name}
                 send_message(
                     chat_id,
-                    f"🎬 Ready to start '{project_name_from(name, 'voice')}'.\n"
-                    "🧹 Clear previously downloaded projects from the server first?\n"
-                    "(frees disk; keeps your Clip Library & cookies)",
-                    reply_markup=build_diskclear_keyboard(),
+                    f"🎬 Ready: '{project_name_from(name, 'voice')}'.\n"
+                    "Pick a mode — and whether to clear old projects first "
+                    "(frees disk; keeps Clip Library & cookies):",
+                    reply_markup=build_start_keyboard(overlay_only=overlay_only),
                 )
             elif text:
                 send_message(chat_id, _help_text())

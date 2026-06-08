@@ -6,8 +6,15 @@ FROM python:3.12-slim
 
 # ffmpeg + ffprobe: clip normalization, scene/frame extraction, audio downsample.
 # ca-certificates: HTTPS to the stock / Groq / Telegram APIs and model downloads.
+# The lib*/fonts-* set are the system libraries Remotion's headless Chrome needs
+# to render the animated text overlays.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl unzip \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg ca-certificates curl unzip \
+        libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+        libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+        libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 libxshmfence1 \
+        fonts-liberation fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Deno: yt-dlp needs a JS runtime to solve YouTube's nsig / n-parameter
@@ -43,6 +50,14 @@ RUN NODE_BIN="$(python -c 'import os,nodejs;print(os.path.join(os.path.dirname(n
     && ln -sf "$NODE_BIN/npm"  /usr/local/bin/npm \
     && ln -sf "$NODE_BIN/npx"  /usr/local/bin/npx \
     && node --version
+
+# Remotion overlay renderer: install the Node project's deps and pre-fetch the
+# headless Chrome it renders with. Done before `COPY . .` (and keyed on just
+# package.json) so it caches across Python/code-only changes. Browser pre-fetch
+# is best-effort — if it fails at build, Remotion fetches it on first render.
+COPY remotion/package.json ./remotion/package.json
+RUN cd remotion && npm install --no-audit --no-fund \
+    && (npx remotion browser ensure || echo "[build] chrome pre-fetch deferred to first render")
 
 # Application code (.dockerignore keeps secrets, caches, and downloads out).
 COPY . .

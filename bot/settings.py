@@ -33,6 +33,7 @@ OPTIONS = [
     {"key": "auto_refine", "label": "Auto-refine flagged", "type": "bool"},
     {"key": "auto_fill",   "label": "Auto-fill empty shots", "type": "bool"},
     {"key": "review_gate", "label": "Pause to review", "type": "bool"},
+    {"key": "overlays",    "label": "Text overlays",  "type": "bool",   "env": "ENABLE_TEXT_OVERLAYS"},
 ]
 
 _OPT_BY_KEY = {o["key"]: o for o in OPTIONS}
@@ -47,6 +48,7 @@ DEFAULTS = {
     "auto_refine": True,
     "auto_fill": True,
     "review_gate": True,
+    "overlays": False,
 }
 
 
