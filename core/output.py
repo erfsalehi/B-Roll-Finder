@@ -31,6 +31,33 @@ def _get_premiere_safe_pathurl(filepath: str) -> str:
     return f"file://localhost{quote(forward_slash_path, safe='/:')}"
 
 
+def _relative_pathurl(filepath: str, xml_dir: str) -> str:
+    r"""Media path expressed *relative to the XML file's own folder*, for a
+    portable bundle.
+
+    The exporter runs on the server, so an absolute pathurl bakes in the
+    container path (``/app/downloads/...``) — which exists on no editing
+    machine, forcing Premiere to relink on every import. Worse, on Windows a
+    ``file://localhost/app/...`` URI (no drive letter) is read as the UNC share
+    ``\\localhost\app`` and Premiere stalls trying to reach it (the "hangs
+    forever locating media" symptom on slower boxes).
+
+    A *relative* pathurl (e.g. ``director/clip.mp4``) resolves against the
+    .xml's location instead, so when the zip (XML + its ``director/`` folder) is
+    unzipped anywhere, the media links instantly with no drive-wide search and
+    no phantom network host. Falls back to the absolute ``file://`` form only if
+    the media sits on a different drive than the XML (Windows ``relpath`` raises
+    ValueError) — no worse than before.
+    """
+    try:
+        rel = os.path.relpath(os.path.abspath(filepath), os.path.abspath(xml_dir))
+    except ValueError:
+        return _get_premiere_safe_pathurl(filepath)
+    # Forward slashes + percent-encoding per the FCP7 pathurl spec; no leading
+    # slash (that would make it absolute) and no file:// host.
+    return quote(rel.replace('\\', '/'), safe='/')
+
+
 def sec_to_frames(seconds: float, fps: float = 23.976) -> int:
     """Converts seconds to exact frame counts for Premiere Pro."""
     return int(round(seconds * fps))
@@ -314,7 +341,8 @@ def zip_project(project_name: str, out_path: str = None) -> dict:
 
 
 def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None,
-                    sfx_list: list = None, time_offset: float = 0.0) -> str:
+                    sfx_list: list = None, time_offset: float = 0.0,
+                    xml_dir: str = None) -> str:
     """
     Generates a bulletproof Legacy FCP 7 XML (<xmeml>) for Premiere Pro.
     Uses exact frame math and implicit gaps to guarantee compatibility.
@@ -323,11 +351,19 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     start so a chunked export can begin at frame 0 instead of inheriting an
     empty gap from the original timeline. Pass ``shots[0]['timestamp']`` when
     splitting into multiple XML parts; pass 0 for a single-file export.
+
+    ``xml_dir`` is the folder the caller will write this XML into. Media
+    ``pathurl``s are emitted *relative* to it (see :func:`_relative_pathurl`) so
+    the exported bundle is portable across machines and Premiere never stalls
+    relinking. Defaults to the project root (parent of the clip folder), which
+    matches where :func:`core.pipeline.write_fcpxml` saves it.
     """
     proj_folder = _safe_for_fs(project_name, 50)
-    # We use absolute paths for the 'pathurl' attribute so Premiere can find them instantly.
     base_dir = clip_base_dir(project_name)
-    
+    # pathurls are written relative to where the .xml lands, so the bundle stays
+    # portable (no baked-in server/container absolute paths).
+    xml_out_dir = os.path.abspath(xml_dir) if xml_dir else os.path.dirname(base_dir)
+
     fps_exact = 23.976
     timebase = 24  # Standard timebase for 23.98 in FCP7 XML
 
@@ -441,7 +477,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             filename = clip_filename(slot_id, footage_num, res.get("matched_query", ""), seen_filenames)
 
             filepath = os.path.join(base_dir, filename)
-            file_uri = _get_premiere_safe_pathurl(filepath)
+            file_uri = _relative_pathurl(filepath, xml_out_dir)
             
             if filename not in asset_map:
                 # Media duration
@@ -541,7 +577,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
                 continue
 
             ov_filename = os.path.basename(ov_path)
-            ov_uri = _get_premiere_safe_pathurl(ov_path)
+            ov_uri = _relative_pathurl(ov_path, xml_out_dir)
 
             s_sec = float(ov.get("start_sec", 0)) - time_offset
             e_sec = float(ov.get("end_sec", s_sec + time_offset + 3)) - time_offset
@@ -720,7 +756,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
                 continue
                 
             sfx_filename = os.path.basename(sfx_path)
-            sfx_uri = _get_premiere_safe_pathurl(sfx_path)
+            sfx_uri = _relative_pathurl(sfx_path, xml_out_dir)
             
             s_sec = float(sfx.get("start_sec", 0)) - time_offset
             if s_sec < 0:
@@ -815,7 +851,7 @@ def _seq_timecode_lines(timebase: int) -> list:
 
 
 def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
-                             time_offset: float = 0.0) -> str:
+                             time_offset: float = 0.0, xml_dir: str = None) -> str:
     """Standalone FCP7 XML containing ONLY the text-overlay PNG track.
 
     Use case: the user wants to tweak overlay text (or fonts/positions) and
@@ -830,6 +866,9 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
     """
     fps_exact = 23.976
     timebase = 24
+    # pathurls relative to where this overlays XML lands (defaults to the project
+    # root, matching core.pipeline's f"{proj}_overlays.xml" location).
+    xml_out_dir = os.path.abspath(xml_dir) if xml_dir else os.path.dirname(clip_base_dir(project_name))
 
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<!DOCTYPE xmeml>')
@@ -872,7 +911,7 @@ def generate_overlays_fcpxml(overlays: list, project_name: str = "default",
             continue
 
         ov_filename = os.path.basename(ov_path)
-        ov_uri = _get_premiere_safe_pathurl(ov_path)
+        ov_uri = _relative_pathurl(ov_path, xml_out_dir)
 
         s_sec = float(ov.get("start_sec", 0)) - time_offset
         e_sec = float(ov.get("end_sec", s_sec + time_offset + 3)) - time_offset

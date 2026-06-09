@@ -621,10 +621,13 @@ def write_fcpxml(shots: list, project_name: str, overlays: list = None,
     report = validate_timeline(shots)
     if not report["ok"]:
         _drop_failing_clips(shots, report)
-    xml = generate_fcpxml(shots, project_name=project_name,
-                          overlays=overlays or None, sfx_list=sfx_list or None)
+    # Resolve the output path first so media pathurls can be written relative to
+    # it (portable bundle — no baked-in absolute/container paths).
     proj = _safe_for_fs(project_name, 50)
     xml_path = os.path.join(os.path.abspath("downloads"), proj, f"{proj}.xml")
+    xml = generate_fcpxml(shots, project_name=project_name,
+                          overlays=overlays or None, sfx_list=sfx_list or None,
+                          xml_dir=os.path.dirname(xml_path))
     os.makedirs(os.path.dirname(xml_path), exist_ok=True)
     with open(xml_path, "w", encoding="utf-8") as f:
         f.write(xml)
@@ -930,7 +933,8 @@ def run_overlays_only(audio_path: str, groq_key: str = None, project_name: str =
     xml_path = os.path.join(os.path.abspath("downloads"), proj, f"{proj}_overlays.xml")
     os.makedirs(os.path.dirname(xml_path), exist_ok=True)
     with open(xml_path, "w", encoding="utf-8") as f:
-        f.write(generate_overlays_fcpxml(overlays, project_name=project_name))
+        f.write(generate_overlays_fcpxml(overlays, project_name=project_name,
+                                         xml_dir=os.path.dirname(xml_path)))
 
     return {"project_name": project_name, "n_overlays": len(overlays),
             "overlays": overlays, "xml_path": xml_path, "errors": errors}

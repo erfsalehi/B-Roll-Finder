@@ -4200,6 +4200,7 @@ elif app_mode == "Director":
                 overlays=chunk_overlays,
                 sfx_list=chunk_sfx,
                 time_offset=chunk_offset,
+                xml_dir=os.path.join("downloads", "director", proj_folder),
             )
             
             fname = "b_roll_sequence.xml" if num_parts == 1 else f"b_roll_sequence_part_{i+1}.xml"
@@ -4235,6 +4236,7 @@ elif app_mode == "Director":
                     st.session_state.text_overlays,
                     project_name=p_name,
                     time_offset=0.0,
+                    xml_dir=os.path.join("downloads", "director", proj_folder),
                 )
                 ov_xml_path = os.path.join("downloads", "director", proj_folder, "b_roll_overlays.xml")
                 os.makedirs(os.path.dirname(ov_xml_path), exist_ok=True)

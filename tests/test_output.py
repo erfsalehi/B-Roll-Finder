@@ -50,6 +50,27 @@ def test_fcpxml_sequence_is_fully_formed_so_premiere_builds_timeline():
     assert "<rate>" in fmt and "<pixelaspectratio>" in fmt
 
 
+def test_clip_pathurls_are_relative_and_portable():
+    """Regression: an absolute pathurl bakes in the generating machine's path
+    (e.g. the server's ``/app/downloads/...``), which exists on no editing box —
+    so Premiere relinks every import, and on Windows reads ``file://localhost/app``
+    as a UNC share and stalls 'locating media' forever. pathurls must be relative
+    to the XML's own folder so the unzipped bundle (XML + director/) self-links."""
+    xml = generate_fcpxml([
+        {"slot_id": 1, "timestamp": 0.0, "end_timestamp": 4.0,
+         "selected_results": [{"url": "https://x/a.mp4", "matched_query": "a"}]},
+    ], project_name="demo")
+
+    pathurls = re.findall(r"<pathurl>([^<]+)</pathurl>", xml)
+    assert pathurls, "expected at least one clip pathurl"
+    for u in pathurls:
+        assert not u.startswith("file://"), f"pathurl must be relative, got {u}"
+        assert not u.startswith("/"), f"pathurl must not be absolute, got {u}"
+        assert "/app/" not in u, f"server/container path leaked into pathurl: {u}"
+        # Clips live in the project's director/ subfolder, beside the XML.
+        assert u.startswith("director/"), f"unexpected relative shape: {u}"
+
+
 def test_pathurl_is_url_encoded():
     """A raw space in the path (e.g. a project under '.../B-Roll Finder/...')
     makes the file URI malformed and hangs Premiere on 'locating'. The pathurl
