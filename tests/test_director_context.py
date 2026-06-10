@@ -110,11 +110,11 @@ def test_auto_select_all_irrelevant_falls_back_to_first():
 
 
 def test_auto_select_scales_clip_count_with_duration():
-    # YouTube count scales with duration (~1 every AUTO_SELECT_YT_SECONDS=4.5s).
+    # YouTube count scales with duration (~1 every AUTO_SELECT_YT_SECONDS=5s).
     shot = _shot(slot_id=1, duration_needed_sec=30.0,
                  video_results=[{"url": f"u{i}", "source": "youtube"} for i in range(10)])
     auto_select_top_candidates([shot])
-    assert len(shot["selected_results"]) == 7   # ceil(30 / 4.5)
+    assert len(shot["selected_results"]) == 6   # ceil(30 / 5)
 
 
 def test_auto_select_short_shot_still_meets_floor():
@@ -134,7 +134,7 @@ def test_auto_select_caps_at_available_distinct_candidates():
 
 
 def test_auto_select_respects_max_clips():
-    # ceil(100 / 4.5) = 23 YouTube clips wanted, but capped at max_clips.
+    # ceil(100 / 5) = 20 YouTube clips wanted, but capped at max_clips.
     shot = _shot(slot_id=1, duration_needed_sec=100.0,
                  video_results=[{"url": f"u{i}", "source": "youtube"} for i in range(20)])
     auto_select_top_candidates([shot], max_clips=8)

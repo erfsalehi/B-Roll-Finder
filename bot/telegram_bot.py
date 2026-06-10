@@ -533,7 +533,13 @@ def format_summary(proj: str, result: dict) -> str:
         f"Shots: {result.get('n_shots', 0)}  ·  with clips: {result.get('n_selected', 0)}  ·  clips: {result.get('n_clips', 0)}",
     ]
     if result.get("download") is not None:
-        lines.append(f"Downloaded: {dl.get('ok', 0)} ok, {dl.get('failed', 0)} failed, {dl.get('skipped', 0)} cached")
+        extra = ""
+        if dl.get("repaired"):
+            extra += f", {dl['repaired']} re-picked"
+        if dl.get("dropped"):
+            extra += f", {dl['dropped']} dropped"
+        lines.append(f"Downloaded: {dl.get('ok', 0)} ok, {dl.get('failed', 0)} failed, "
+                     f"{dl.get('skipped', 0)} cached{extra}")
     verdict = qa.get("overall") or "—"
     lines.append(f"QA: {verdict}" + (f"  ⚠️ {n_issues} flag(s)" if n_issues else ""))
     cost_line = format_cost_line(result)
@@ -1362,13 +1368,30 @@ def main() -> None:
 
     offset = None
     fails = 0
+    last_err = None          # signature of the previous poll error
+    repeat = 0               # how many times in a row it's repeated (suppressed)
     while True:
         try:
             resp = _call("getUpdates", _timeout=60, offset=offset, timeout=50)
             fails = 0
+            if repeat:
+                print(f"[bot] (previous poll error repeated ×{repeat}) — recovered")
+                last_err, repeat = None, 0
         except Exception as e:
             fails += 1
-            print(f"[bot] poll error: {e}")
+            # Collapse a storm of identical errors (e.g. the 409 Conflict from a
+            # second poller) into one line + a periodic ×N tally instead of one
+            # line per second, which used to flood /logs.
+            sig = _err_signature(str(e))
+            if sig == last_err:
+                repeat += 1
+                if repeat % 30 == 0:
+                    print(f"[bot] poll error still repeating ×{repeat}: {e}")
+            else:
+                if repeat:
+                    print(f"[bot] (previous poll error repeated ×{repeat})")
+                print(f"[bot] poll error: {e}")
+                last_err, repeat = sig, 1
             if fails == 3:
                 print("[bot] Repeated connection failures reaching api.telegram.org. "
                       "If Telegram needs your VPN proxy, set BOT_PROXY in .env "

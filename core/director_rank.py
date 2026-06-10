@@ -388,6 +388,32 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def shot_source_quota(shot: dict) -> tuple:
+    """How many Pexels + YouTube clips a shot should bind, by its duration.
+
+    This is the project's selection rule (it replaced the old ~70% YouTube
+    bias): every shot gets at least one YouTube clip plus stock footage.
+
+    * duration < ``AUTO_SELECT_SHORT_SEC`` (4s)  →  1 Pexels + 1 YouTube
+    * duration ≥ that                             →  2 Pexels (fixed) +
+      ``ceil(duration / AUTO_SELECT_YT_SECONDS)`` YouTube (≈ 1 every 5s),
+      e.g. a 6s shot → 2 Pexels + 2 YouTube.
+
+    Returns ``(want_pexels, want_youtube)``. All thresholds are env-tunable
+    (``AUTO_SELECT_SHORT_SEC``, ``AUTO_SELECT_PEXELS_SHORT``,
+    ``AUTO_SELECT_MIN_PEXELS``, ``AUTO_SELECT_YT_SECONDS``)."""
+    try:
+        dur = float(shot.get("duration_needed_sec") or 0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    short_sec = _env_float("AUTO_SELECT_SHORT_SEC", 4.0)
+    if dur < short_sec:
+        return max(0, _env_int("AUTO_SELECT_PEXELS_SHORT", 1)), 1
+    yt_seconds = _env_float("AUTO_SELECT_YT_SECONDS", 5.0)
+    want_yt = max(1, math.ceil(dur / yt_seconds)) if yt_seconds > 0 else 1
+    return max(0, _env_int("AUTO_SELECT_MIN_PEXELS", 2)), want_yt
+
+
 def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
                                seconds_per_clip=None, min_clips=None,
                                max_clips=None) -> list:
@@ -427,12 +453,12 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
     min_clips = max(1, min_clips)
     max_clips = max(min_clips, max_clips)
 
-    # Source-quota selection: at least N Pexels clips per shot plus a YouTube
-    # count that scales with shot length (~1 every `yt_seconds`). Pexels picks are
+    # Source-quota selection: per-shot Pexels + YouTube targets from
+    # shot_source_quota (1 Pexels + 1 YouTube for short shots; 2 Pexels +
+    # ceil(dur/5) YouTube otherwise). Every shot is guaranteed at least one
+    # YouTube clip when a YouTube candidate exists. Pexels picks are
     # de-duplicated across the WHOLE project so the same stock clip is never
     # downloaded twice.
-    min_pexels = max(0, _env_int("AUTO_SELECT_MIN_PEXELS", 2))
-    yt_seconds = _env_float("AUTO_SELECT_YT_SECONDS", 4.5)
 
     # Each window entry is the set of clip identifiers picked for one shot, so the
     # look-back spans whole shots (not individual clips) even when shots bind many.
@@ -466,14 +492,11 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         non_irrelevant = [c for c in candidates if not c.get("irrelevant")]
         pool = non_irrelevant or candidates
 
-        # YouTube count scales with duration; clamp to the overall max so a long
-        # shot can't bind an absurd number of clips.
-        try:
-            dur = float(shot.get("duration_needed_sec") or 0)
-        except (TypeError, ValueError):
-            dur = 0.0
-        want_youtube = max(1, math.ceil(dur / yt_seconds)) if yt_seconds > 0 else 1
+        # Per-shot quota: Pexels + a YouTube count that scales with duration,
+        # clamped to the overall max so a long shot can't bind an absurd number.
+        want_pexels, want_youtube = shot_source_quota(shot)
         want_youtube = min(want_youtube, max_clips)
+        want_pexels = min(want_pexels, max_clips)
 
         recent = _recent_ids()
         chosen, chosen_ids = [], set()
@@ -492,12 +515,25 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
                 if dedup_pexels:
                     used_pexels.add(_pexels_ident(c))
 
-        _take(_is_pexels, min_pexels, dedup_pexels=True)   # ≥2 distinct Pexels
+        # YouTube first so its quota is secured before variety/dedup thins the
+        # pool, then the fixed Pexels count.
         _take(_is_youtube, want_youtube)                   # YouTube by duration
+        _take(_is_pexels, want_pexels, dedup_pexels=True)  # distinct Pexels
+
+        # Hard guarantee: every shot must lead with a YouTube clip when one is
+        # available. If variety/recency filtering skipped the only YouTube option,
+        # force the best-ranked unused YouTube candidate in (ignoring the
+        # cross-shot window — a guaranteed YouTube clip beats perfect variety).
+        if want_youtube > 0 and not any(_is_youtube(c) for c in chosen):
+            yt = next((c for c in pool
+                       if _is_youtube(c) and _asset_ident(c) not in chosen_ids), None)
+            if yt:
+                chosen.insert(0, yt)
+                chosen_ids.add(_asset_ident(yt))
 
         # Top up from anything left (variety-aware) so we still meet a sensible
         # floor when a source ran short — never leave the slot empty.
-        floor = max(min_clips, min_pexels + 1)
+        floor = max(min_clips, want_pexels + 1)
         if len(chosen) < floor:
             for c in pool:
                 if len(chosen) >= floor:

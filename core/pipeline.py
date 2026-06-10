@@ -374,6 +374,19 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
             except Exception:
                 pass
 
+    def _mark_ok(res, path):
+        # Record where a clip actually landed so write_fcpxml references only
+        # files that exist and the repair loop can tell good picks from failures.
+        res["local_path"] = path
+        res["_dl_ok"] = True
+        res.pop("_dl_failed", None)
+        res.pop("_dl_error", None)
+
+    def _mark_failed(res, msg):
+        res["_dl_failed"] = True
+        res["_dl_error"] = str(msg)
+        res.pop("_dl_ok", None)
+
     def _run_group(url):
         if cancelled.is_set() or (should_cancel and should_cancel()):
             cancelled.set()
@@ -385,6 +398,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
         have_file = False
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             have_file = True
+            _mark_ok(res, out_path)
             _tick("skipped")
         else:
             # Cross-session cache: reuse a copy downloaded for an earlier project.
@@ -392,6 +406,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
             if (cached and os.path.abspath(cached) != os.path.abspath(out_path)
                     and link_or_copy(cached, out_path)):
                 have_file = True
+                _mark_ok(res, out_path)
                 _tick("skipped")
 
         if not have_file:
@@ -410,6 +425,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                     os.path.exists(out_path) and os.path.getsize(out_path) > 0
                 ):
                     have_file = True
+                    _mark_ok(res, out_path)
                     _tick("ok")
                     try:
                         download_cache.register(url, out_path)
@@ -431,10 +447,13 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                         with lock:
                             errors.append(f"clip_library store ({fn}): {e}")
                 else:
+                    err = task_state.get('error_msg', 'unknown error')
+                    _mark_failed(res, err)
                     with lock:
-                        errors.append(f"{fn}: {task_state.get('error_msg', 'unknown error')}")
+                        errors.append(f"{fn}: {err}")
                     _tick("failed")
             except Exception as e:
+                _mark_failed(res, e)
                 with lock:
                     errors.append(f"{fn}: {e}")
                 _tick("failed")
@@ -447,10 +466,13 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
         for _mshot, _mres, mfn in mirrors:
             mpath = os.path.join(base_dir, mfn)
             if os.path.exists(mpath) and os.path.getsize(mpath) > 0:
+                _mark_ok(_mres, mpath)
                 _tick("skipped")
             elif have_file and link_or_copy(out_path, mpath):
+                _mark_ok(_mres, mpath)
                 _tick("ok")
             else:
+                _mark_failed(_mres, "shared-URL source unavailable")
                 with lock:
                     errors.append(f"{mfn}: shared-URL source unavailable")
                 _tick("failed")
@@ -485,6 +507,299 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
 
     return {"ok": counts["ok"], "failed": counts["failed"], "skipped": counts["skipped"],
             "dir": base_dir, "errors": errors}
+
+
+def _clip_has_file(c: dict) -> bool:
+    """True if a selected clip actually has a downloaded file on disk."""
+    lp = c.get("local_path")
+    try:
+        return bool(lp) and os.path.exists(lp) and os.path.getsize(lp) > 0
+    except OSError:
+        return False
+
+
+def _purge_clips_by_url(shots: list, urls) -> int:
+    """Remove every candidate/selection whose URL is in ``urls`` (dead clips), in
+    place across all shots. Returns how many references were removed."""
+    dead = {u for u in urls if u}
+    if not dead:
+        return 0
+    removed = 0
+    for s in shots:
+        for field in ("selected_results", "video_results"):
+            lst = s.get(field)
+            if not lst:
+                continue
+            kept = [c for c in lst if c.get("url") not in dead]
+            removed += len(lst) - len(kept)
+            if field == "selected_results" and not kept:
+                s.pop("selected_results", None)
+                s.pop("auto_selected", None)
+            else:
+                s[field] = kept
+    return removed
+
+
+def drop_undownloaded(shots: list) -> int:
+    """Remove from every shot's selection any clip that did NOT end up with a file
+    on disk — a download that failed (``_dl_failed``) or never produced a file.
+    Run after download so the FCPXML never references missing media. Returns the
+    number of clips dropped."""
+    dropped = 0
+    for s in shots:
+        sel = s.get("selected_results")
+        if not sel:
+            continue
+        kept = [c for c in sel if _clip_has_file(c) and not c.get("_dl_failed")]
+        if len(kept) != len(sel):
+            dropped += len(sel) - len(kept)
+            if kept:
+                s["selected_results"] = kept
+            else:
+                s.pop("selected_results", None)
+                s.pop("auto_selected", None)
+    return dropped
+
+
+def repick_failed_shots(shots: list, slot_ids, groq_key: str = None,
+                        video_topic: str = "", errors: list = None,
+                        blacklist: set = None) -> int:
+    """Re-pick clips for shots whose download failed, *preserving* the clips that
+    already downloaded successfully and topping the selection back up to its
+    per-shot quota with fresh candidates (YouTube emphasized).
+
+    Used by :func:`download_and_repair`. For each target shot it keeps the
+    already-downloaded clips, re-fetches fresh candidates (so a dead URL is
+    replaced by a live one), drops the blacklisted/dead URLs, re-ranks, then fills
+    the now-missing Pexels/YouTube slots from the refreshed pool. Returns how many
+    shots had at least one new clip added."""
+    from core.director import ensure_shot_queries
+    from core.director_youtube import seed_youtube_keywords
+    from core.director_search import fetch_with_retries, filter_youtube_sd_candidates
+    from core.director_rank import (rank_shot_candidates, shot_source_quota,
+                                     _is_youtube, _is_pexels, _asset_ident)
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    if errors is None:
+        errors = []
+    blacklist = blacklist or set()
+    want_ids = set(slot_ids)
+    targets = [s for s in shots
+               if s.get("slot_id") in want_ids and s.get("priority") != "none"]
+    if not targets:
+        return 0
+
+    # Preserve the good (already-downloaded) clips; refresh each target's pool.
+    for s in targets:
+        s["_good_clips"] = [c for c in (s.get("selected_results") or [])
+                            if _clip_has_file(c) and not c.get("_dl_failed")]
+        s["video_results"] = []
+
+    ensure_shot_queries(targets, video_topic)
+    try:
+        seed_youtube_keywords(targets)
+    except Exception:
+        pass
+    fetch_with_retries(targets, errors=errors)
+
+    if os.getenv("YOUTUBE_API_KEY"):
+        try:
+            filter_youtube_sd_candidates(targets, api_key=os.getenv("YOUTUBE_API_KEY"))
+        except Exception as e:
+            errors.append(f"repair hd_filter: {e}")
+
+    drop_shorts(targets)
+    drop_long_videos(targets)
+    drop_vertical(targets)
+    _purge_clips_by_url(targets, blacklist)
+
+    try:
+        rank_shot_candidates(targets, api_key=key, video_topic=video_topic)
+    except Exception as e:
+        errors.append(f"repair rank: {e}")
+
+    repaired = 0
+    for s in targets:
+        sel = list(s.pop("_good_clips", None) or [])
+        before = len(sel)
+        pool = [c for c in (s.get("video_results") or [])
+                if not c.get("irrelevant") and c.get("url") not in blacklist]
+        want_p, want_y = shot_source_quota(s)
+        sel_ids = {_asset_ident(c) for c in sel}
+
+        def _add(pred, n):
+            for c in pool:
+                if n <= 0:
+                    break
+                ident = _asset_ident(c)
+                if ident in sel_ids or not pred(c):
+                    continue
+                sel.append(c)
+                sel_ids.add(ident)
+                n -= 1
+
+        _add(_is_youtube, max(0, want_y - sum(1 for c in sel if _is_youtube(c))))
+        _add(_is_pexels, max(0, want_p - sum(1 for c in sel if _is_pexels(c))))
+        # Floor top-up from anything left so a repaired shot is never under-filled.
+        floor = max(1, want_p + (1 if want_y else 0))
+        if len(sel) < floor:
+            for c in pool:
+                if len(sel) >= floor:
+                    break
+                ident = _asset_ident(c)
+                if ident in sel_ids:
+                    continue
+                sel.append(c)
+                sel_ids.add(ident)
+
+        if sel:
+            s["selected_results"] = sel
+            s["auto_selected"] = True
+        if len(sel) > before:
+            repaired += 1
+    return repaired
+
+
+def ensure_youtube_coverage(shots: list, groq_key: str = None, video_topic: str = "",
+                            errors: list = None, blacklist: set = None) -> int:
+    """Guarantee at least one YouTube clip in every non-empty shot's selection.
+
+    The per-shot quota already picks a YouTube clip when one was fetched; this
+    catches the residual case where a shot's YouTube search returned nothing.
+    For each such shot it fetches fresh YouTube candidates (non-destructively,
+    keeping the existing stock picks), re-ranks, and inserts the best YouTube clip
+    at the front. Returns how many shots gained a YouTube clip."""
+    from core.director_youtube import seed_youtube_keywords
+    from core.director_search import search_youtube_classic
+    from core.director_rank import (rank_shot_candidates, shot_source_quota,
+                                    _is_youtube, _asset_ident)
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    if errors is None:
+        errors = []
+    blacklist = blacklist or set()
+    num = int(os.getenv("AUTO_YOUTUBE_NUM", "4") or 4)
+    secured = 0
+
+    for s in shots:
+        if s.get("priority") == "none" or not s.get("selected_results"):
+            continue
+        if any(_is_youtube(c) for c in s["selected_results"]):
+            continue
+        try:
+            seed_youtube_keywords([s])
+        except Exception:
+            pass
+        kws = s.get("youtube_keywords") or (s.get("search_queries") or [])[:1]
+        existing = {c.get("url") for c in (s.get("video_results") or [])}
+        added = []
+        for kw in kws[:2]:
+            try:
+                for c in search_youtube_classic(kw, num_results=num, errors=errors):
+                    u = c.get("url")
+                    if u and u not in existing and u not in blacklist:
+                        existing.add(u)
+                        added.append(c)
+            except Exception as e:
+                errors.append(f"yt-coverage search slot {s.get('slot_id')}: {e}")
+        if not added:
+            continue
+        s.setdefault("video_results", []).extend(added)
+        drop_shorts([s])
+        drop_long_videos([s])
+        drop_vertical([s])
+        try:
+            rank_shot_candidates([s], api_key=key, video_topic=video_topic, errors=errors)
+        except Exception as e:
+            errors.append(f"yt-coverage rank slot {s.get('slot_id')}: {e}")
+
+        _want_p, want_y = shot_source_quota(s)
+        sel = s["selected_results"]
+        sel_ids = {_asset_ident(c) for c in sel}
+        n = 0
+        for c in (s.get("video_results") or []):
+            if n >= want_y:
+                break
+            if (_is_youtube(c) and not c.get("irrelevant")
+                    and _asset_ident(c) not in sel_ids and c.get("url") not in blacklist):
+                sel.insert(0, c)
+                sel_ids.add(_asset_ident(c))
+                n += 1
+        if n:
+            secured += 1
+    return secured
+
+
+def download_and_repair(shots: list, project_name: str, quality: str = "1080",
+                        rounds: int = None, groq_key: str = None, video_topic: str = "",
+                        errors: list = None, progress=None, should_cancel=None,
+                        max_workers: int = None) -> dict:
+    """Download the selected clips, then *repair* any that failed.
+
+    Closes the loop the pipeline was missing: a YouTube URL that looks valid
+    through every metadata gate but is actually unavailable (deleted, private,
+    region-locked) fails only at download time. Instead of leaving the shot with a
+    dangling reference, each round blacklists the dead URL, drops it from the
+    candidate pool, re-fetches fresh YouTube + stock for just that shot, re-ranks,
+    tops the selection back up to its per-shot quota, and re-downloads — keeping
+    every already-downloaded clip untouched. Loops up to ``rounds`` times
+    (``DOWNLOAD_REPAIR_ROUNDS``, default 2). Any clip still missing afterwards is
+    dropped so the FCPXML never references media that isn't on disk.
+
+    Returns ``{ok, failed, skipped, dir, errors, repaired, dropped}``."""
+    if errors is None:
+        errors = []
+    if rounds is None:
+        try:
+            rounds = int(os.getenv("DOWNLOAD_REPAIR_ROUNDS", "2") or 2)
+        except ValueError:
+            rounds = 2
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    blacklist: set = set()
+
+    report = download_selected_clips(shots, project_name, quality=quality,
+                                     progress=progress, should_cancel=should_cancel,
+                                     max_workers=max_workers)
+    base_dir = report.get("dir")
+    total_skipped = report.get("skipped", 0)
+    dl_errors = list(report.get("errors") or [])
+    repaired_total = 0
+
+    for rnd in range(max(0, rounds)):
+        _check_cancel(should_cancel)
+        failed = [(s, c) for s in shots if s.get("priority") != "none"
+                  for c in (s.get("selected_results") or [])
+                  if c.get("_dl_failed") and not _clip_has_file(c)]
+        if not failed:
+            break
+
+        dead_slots = set()
+        for s, c in failed:
+            if c.get("url"):
+                blacklist.add(c["url"])
+            dead_slots.add(s.get("slot_id"))
+        _purge_clips_by_url(shots, blacklist)   # drop dead clips from pool+selection
+
+        repaired_total += repick_failed_shots(
+            shots, dead_slots, groq_key=key, video_topic=video_topic,
+            errors=errors, blacklist=blacklist)
+
+        rep = download_selected_clips(shots, project_name, quality=quality,
+                                      progress=progress, should_cancel=should_cancel,
+                                      max_workers=max_workers)
+        total_skipped += rep.get("skipped", 0)
+        dl_errors.extend(rep.get("errors") or [])
+
+    # Final accounting + safety net: anything still missing is dropped so the XML
+    # is always clean.
+    still_failed = sum(1 for s in shots for c in (s.get("selected_results") or [])
+                       if not _clip_has_file(c))
+    dropped = drop_undownloaded(shots)
+    ok = sum(1 for s in shots for c in (s.get("selected_results") or [])
+             if _clip_has_file(c))
+    return {"ok": ok, "failed": still_failed, "skipped": total_skipped,
+            "dir": base_dir, "errors": dl_errors,
+            "repaired": repaired_total, "dropped": dropped}
 
 
 def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
@@ -547,7 +862,7 @@ def fill_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
     re-selects so a Short-free YouTube clip is preferred. Returns the number of
     shots newly filled across all passes.
     """
-    from core.director_rank import auto_select_top_candidates, prioritize_youtube
+    from core.director_rank import auto_select_top_candidates
 
     key = groq_key or os.getenv("GROQ_API_KEY")
     if errors is None:
@@ -575,7 +890,8 @@ def fill_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
                 else:
                     s.pop("selected_results", None)
                     s.pop("auto_selected", None)
-        prioritize_youtube(shots)
+        # auto_select binds a YouTube clip per shot via the per-shot quota
+        # (shot_source_quota), so no separate YouTube-first reordering is needed.
         auto_select_top_candidates(shots)
         still = sum(1 for s in shots
                     if s.get("priority") != "none" and not s.get("selected_results"))
@@ -600,7 +916,7 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     from core.director import regenerate_shot_queries
     from core.director_youtube import seed_youtube_keywords
     from core.director_search import fetch_with_retries, filter_youtube_sd_candidates
-    from core.director_rank import rank_shot_candidates, auto_select_top_candidates, prioritize_youtube
+    from core.director_rank import rank_shot_candidates, auto_select_top_candidates
 
     key = groq_key or os.getenv("GROQ_API_KEY")
     by_slot: dict = {}
@@ -673,7 +989,8 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     except Exception as e:
         errors.append(f"refine rank: {e}")
 
-    prioritize_youtube(targets)         # keep the ~70% YouTube bias on refresh
+    # The per-shot quota in auto_select binds a YouTube clip for each refreshed
+    # shot, so no separate YouTube-first reordering is needed here.
     auto_select_top_candidates(shots)   # fills the now-empty refreshed shots
     return sum(1 for s in targets if s.get("selected_results"))
 
@@ -732,6 +1049,20 @@ def write_fcpxml(shots: list, project_name: str, overlays: list = None,
     here before rendering. :func:`enforce_timeline` (run earlier with an LLM key)
     tries to *recover* such shots; this is the final, key-free safety net so a
     broken clip can never slip into the XML, whichever path called us."""
+    # Drop any clip whose download was attempted and failed, so the XML can never
+    # reference missing media (no Premiere "offline media"). Clips never attempted
+    # (Streamlit preview / manual selection) carry no _dl_failed flag and are kept.
+    for s in shots:
+        sel = s.get("selected_results")
+        if not sel:
+            continue
+        kept = [c for c in sel if not c.get("_dl_failed")]
+        if len(kept) != len(sel):
+            if kept:
+                s["selected_results"] = kept
+            else:
+                s.pop("selected_results", None)
+                s.pop("auto_selected", None)
     report = validate_timeline(shots)
     if not report["ok"]:
         _drop_failing_clips(shots, report)
@@ -758,10 +1089,13 @@ def finalize_project(shots: list, project_name: str, quality: str = "1080",
     approves (or after a /refine). Re-runs boundary enforcement first, since a
     /refine may have changed the selection. Returns ``{download, xml_path,
     validation}``."""
-    validation = enforce_timeline(shots, groq_key=groq_key or os.getenv("GROQ_API_KEY"),
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    validation = enforce_timeline(shots, groq_key=key,
                                   video_topic=video_topic, errors=errors)
-    dl = download_selected_clips(shots, project_name, quality=cap_quality(quality),
-                                 progress=progress, should_cancel=should_cancel)
+    ensure_youtube_coverage(shots, groq_key=key, video_topic=video_topic, errors=errors)
+    dl = download_and_repair(shots, project_name, quality=cap_quality(quality),
+                             groq_key=key, video_topic=video_topic, errors=errors,
+                             progress=progress, should_cancel=should_cancel)
     return {"download": dl,
             "xml_path": write_fcpxml(shots, project_name, overlays, sfx_list),
             "validation": validation}
@@ -825,7 +1159,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
                                       auto_fetch_plan)
     from core.director_youtube import seed_youtube_keywords
     from core.director_rank import (rank_shot_candidates, auto_select_top_candidates,
-                                     review_timeline, prioritize_youtube)
+                                     review_timeline)
 
     key = groq_key or os.getenv("GROQ_API_KEY")
     if not key:
@@ -945,10 +1279,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     except Exception as e:
         errors.append(f"rank: {e}")
 
-    # 7b — Bias selection toward YouTube (~70% of shots lead with a YouTube clip).
-    prioritize_youtube(shots)
-
-    # 8 — Auto-select
+    # 8 — Auto-select (the per-shot quota binds a YouTube clip for every shot).
     _p(8, "Auto-selecting clips")
     auto_select_top_candidates(shots)
 
@@ -999,20 +1330,33 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     state.attempts["enforce_rounds"] = state.validation.get("rounds", 0)
     state.attempts["dropped"] = state.validation.get("dropped", 0)
 
-    # 9d — Animated text overlays (Remotion) — opt-in via ENABLE_TEXT_OVERLAYS.
-    # Built from the transcript so timing matches the voice. Stored on the result
-    # so the review-gate path (finalize_project after /download) reuses them.
-    if _flag_default("ENABLE_TEXT_OVERLAYS", False):
+    # 9e — YouTube coverage guarantee: every shot must carry at least one YouTube
+    # clip. The per-shot quota already does this when a YouTube candidate was
+    # fetched; this rescues the residual shots whose YouTube search came back empty.
+    _p(9, "Ensuring YouTube coverage")
+    state.attempts["youtube_secured"] = ensure_youtube_coverage(
+        shots, groq_key=key, video_topic=topic, errors=errors)
+
+    # 9d — Animated text overlays (Remotion) — part of the full process by
+    # default (set ENABLE_TEXT_OVERLAYS=false to skip). Built from the transcript
+    # so timing matches the voice. Stored on the result so the review-gate path
+    # (finalize_project after /download) reuses them.
+    if _flag_default("ENABLE_TEXT_OVERLAYS", True):
         _p(9, "Rendering text overlays")
         state.overlays, state.sfx_list = build_text_overlays(
             project_name, segments, key, shots=shots)
 
-    # 10 — Download (optional) — capped at 1080p.
+    # 10 — Download (optional) — capped at 1080p, with the repair loop so a
+    # YouTube clip that 404s at download time is replaced by a live one.
     if download:
         _p(10, "Downloading clips")
-        state.download = download_selected_clips(shots, project_name,
-                                                 quality=cap_quality(quality),
-                                                 should_cancel=should_cancel)
+        state.download = download_and_repair(
+            shots, project_name, quality=cap_quality(quality),
+            groq_key=key, video_topic=topic, errors=errors,
+            should_cancel=should_cancel)
+        state.attempts["repaired"] = state.download.get("repaired", 0)
+        state.attempts["dropped"] = (state.attempts.get("dropped", 0)
+                                     + state.download.get("dropped", 0))
 
     # Final — FCPXML
     _p(total, "Writing Premiere XML")

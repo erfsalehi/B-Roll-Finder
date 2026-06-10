@@ -35,6 +35,9 @@ def _mock_stages(monkeypatch, tmp_path):
     monkeypatch.setenv("GROQ_API_KEY", "k")
     monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
     monkeypatch.delenv("ENABLE_CONTEXT_AWARE_KEYWORDS", raising=False)
+    # Keep these orchestration tests hermetic: overlays + the YouTube-coverage
+    # search both reach out to LLMs / yt-dlp by default now, so stub them off.
+    monkeypatch.setenv("ENABLE_TEXT_OVERLAYS", "false")
 
     segs = [{"start": 0.0, "end": 2.0, "text": "hello world"}]
     shots = [
@@ -53,6 +56,9 @@ def _mock_stages(monkeypatch, tmp_path):
                         lambda *a, **k: [dict(s) for s in shots])
     monkeypatch.setattr(core.director_youtube, "seed_youtube_keywords", lambda s: s)
     monkeypatch.setattr(core.director_search, "fetch_director_footage", lambda *a, **k: None)
+    # ensure_youtube_coverage() searches YouTube for shots lacking a YT pick;
+    # stub it so the orchestration tests don't fire real yt-dlp queries.
+    monkeypatch.setattr(core.director_search, "search_youtube_classic", lambda *a, **k: [])
     monkeypatch.setattr(core.director_rank, "rank_shot_candidates", lambda *a, **k: None)
     monkeypatch.setattr(core.director_rank, "review_timeline",
                         lambda *a, **k: {"overall": "ok", "issues": []})
@@ -153,9 +159,11 @@ def test_pipeline_raises_without_key(monkeypatch, tmp_path):
 
 
 def test_pipeline_calls_download_when_enabled(_mock_stages, monkeypatch):
+    # The pipeline downloads via download_and_repair (download + reselect-on-fail).
     calls = {"n": 0}
-    monkeypatch.setattr(pipeline, "download_selected_clips",
-                        lambda *a, **k: calls.update(n=calls["n"] + 1) or {"ok": 3, "failed": 0})
+    monkeypatch.setattr(pipeline, "download_and_repair",
+                        lambda *a, **k: calls.update(n=calls["n"] + 1)
+                        or {"ok": 3, "failed": 0, "skipped": 0, "repaired": 0, "dropped": 0})
     res = pipeline.run_pipeline_headless("voice.mp3", project_name="p2", download=True)
     assert calls["n"] == 1 and res["download"]["ok"] == 3
 

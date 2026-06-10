@@ -48,7 +48,7 @@ DEFAULTS = {
     "auto_refine": True,
     "auto_fill": True,
     "review_gate": True,
-    "overlays": False,
+    "overlays": True,
 }
 
 

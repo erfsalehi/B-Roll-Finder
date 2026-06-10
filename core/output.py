@@ -470,13 +470,22 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             duration_frames = max(1, end_frame - start_frame)
             max_end_frame   = max(max_end_frame, end_frame)
 
-            # Shared filename logic so the headless downloader and this exporter
-            # always agree on the path.
+            # Prefer the exact file the downloader recorded (``local_path``) so the
+            # XML can only ever reference media that's actually on disk — this is
+            # what stops Premiere "offline media" when a clip's filename shifted
+            # (e.g. after the repair loop dropped/replaced an earlier pick). Fall
+            # back to the shared deterministic filename for the not-yet-downloaded
+            # (Streamlit preview / manual) path.
             slot_id = shot.get("slot_id", "X")
             footage_num = res_idx + 1
-            filename = clip_filename(slot_id, footage_num, res.get("matched_query", ""), seen_filenames)
-
-            filepath = os.path.join(base_dir, filename)
+            local_path = res.get("local_path")
+            if local_path and os.path.exists(local_path):
+                filepath = os.path.abspath(local_path)
+                filename = os.path.basename(filepath)
+                seen_filenames.add(filename)
+            else:
+                filename = clip_filename(slot_id, footage_num, res.get("matched_query", ""), seen_filenames)
+                filepath = os.path.join(base_dir, filename)
             file_uri = _relative_pathurl(filepath, xml_out_dir)
             
             if filename not in asset_map:
