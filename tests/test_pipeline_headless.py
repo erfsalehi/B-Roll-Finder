@@ -75,6 +75,14 @@ def test_pipeline_runs_all_stages_and_writes_xml(_mock_stages):
     assert seen[0][0] == 1 and "Transcrib" in seen[0][1]   # progress fired
 
 
+def test_pipeline_clears_query_cache_per_job(_mock_stages):
+    # A long-lived bot process must not reuse a previous job's search results.
+    import core.director_search as ds
+    ds._query_cache[("pexels", "stale query", 3, 0)] = [{"url": "stale"}]
+    pipeline.run_pipeline_headless("voice.mp3", project_name="fresh", download=False)
+    assert ds._query_cache == {}   # cleared at job start; mocked fetch adds nothing
+
+
 def test_pipeline_cancels_before_work(monkeypatch, tmp_path):
     from core.pipeline import PipelineCancelled
     monkeypatch.setenv("GROQ_API_KEY", "k")
@@ -150,6 +158,85 @@ def test_pipeline_calls_download_when_enabled(_mock_stages, monkeypatch):
                         lambda *a, **k: calls.update(n=calls["n"] + 1) or {"ok": 3, "failed": 0})
     res = pipeline.run_pipeline_headless("voice.mp3", project_name="p2", download=True)
     assert calls["n"] == 1 and res["download"]["ok"] == 3
+
+
+def test_download_dedupes_same_url_across_shots(monkeypatch, tmp_path):
+    """The same URL selected for two shots downloads ONCE; the second file is
+    materialized as a hardlink/copy of the first."""
+    monkeypatch.chdir(tmp_path)
+    from core import download_cache
+    download_cache._reset_for_tests()
+
+    calls = []
+    import core.direct_downloader
+
+    def _direct(url, out, ts, **k):
+        calls.append(url); ts["status"] = "completed"
+        open(out, "wb").write(b"shared-bytes")
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video", _direct)
+
+    shots = [
+        {"slot_id": 1, "priority": "medium", "selected_results": [
+            {"url": "http://x/same.mp4", "source": "pexels", "matched_query": "city"}]},
+        {"slot_id": 2, "priority": "medium", "selected_results": [
+            {"url": "http://x/same.mp4", "source": "pexels", "matched_query": "city"}]},
+    ]
+    res = pipeline.download_selected_clips(shots, "proj")
+
+    assert calls == ["http://x/same.mp4"]          # one network fetch
+    assert res["ok"] == 2 and res["failed"] == 0   # but both shots got a file
+    mp4s = [f for f in os.listdir(res["dir"]) if f.endswith(".mp4")]
+    assert len(mp4s) == 2
+    for f in mp4s:
+        assert open(os.path.join(res["dir"], f), "rb").read() == b"shared-bytes"
+    download_cache._reset_for_tests()
+
+
+def test_download_reuses_cross_session_cache(monkeypatch, tmp_path):
+    """A URL already in core.download_cache is linked from disk, not re-fetched."""
+    monkeypatch.chdir(tmp_path)
+    from core import download_cache
+    download_cache._reset_for_tests()
+
+    cached = tmp_path / "old_project_clip.mp4"
+    cached.write_bytes(b"cached-bytes")
+    download_cache.register("http://x/a.mp4", str(cached))
+
+    import core.direct_downloader
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not re-download a cached URL")))
+
+    shots = [{"slot_id": 1, "priority": "medium", "selected_results": [
+        {"url": "http://x/a.mp4", "source": "pexels", "matched_query": "city"}]}]
+    res = pipeline.download_selected_clips(shots, "proj")
+
+    assert res["skipped"] == 1 and res["failed"] == 0
+    mp4s = [f for f in os.listdir(res["dir"]) if f.endswith(".mp4")]
+    assert mp4s and open(os.path.join(res["dir"], mp4s[0]), "rb").read() == b"cached-bytes"
+    download_cache._reset_for_tests()
+
+
+def test_download_registers_fresh_downloads_in_cache(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    from core import download_cache
+    download_cache._reset_for_tests()
+
+    import core.direct_downloader
+
+    def _direct(url, out, ts, **k):
+        ts["status"] = "completed"
+        open(out, "wb").write(b"x")
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video", _direct)
+
+    shots = [{"slot_id": 1, "priority": "medium", "selected_results": [
+        {"url": "http://x/new.mp4", "source": "pexels", "matched_query": "road"}]}]
+    res = pipeline.download_selected_clips(shots, "proj")
+
+    assert res["ok"] == 1
+    path = download_cache.lookup_path("http://x/new.mp4")
+    assert path and os.path.exists(path)
+    download_cache._reset_for_tests()
 
 
 def test_download_routes_by_source(monkeypatch, tmp_path):

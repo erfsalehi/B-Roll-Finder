@@ -298,7 +298,8 @@ def _check_cancel(should_cancel) -> None:
 
 
 def download_selected_clips(shots: list, project_name: str, quality: str = "1080",
-                            progress=None, should_cancel=None) -> dict:
+                            progress=None, should_cancel=None,
+                            max_workers: int = None) -> dict:
     """Download every selected clip into the project's clip folder, using the
     exact filenames :func:`generate_fcpxml` will reference.
 
@@ -306,9 +307,28 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
     everything else (direct stock MP4s) via ``download_direct_video``. Returns
     ``{ok, failed, skipped, dir, errors}``. ``progress(done, total)`` is called
     as clips complete.
+
+    Three optimizations over a naive per-clip loop:
+
+    * **One download per URL** — when the same clip is selected for several
+      shots, the first occurrence downloads and the rest are hardlinked (or
+      copied) from it.
+    * **Cross-session cache** — a URL already on disk from a previous project
+      (``core.download_cache``) is hardlinked instead of re-fetched, and every
+      fresh download is registered back into the cache.
+    * **Parallelism** — URL groups run in a small thread pool
+      (``PIPELINE_DOWNLOAD_WORKERS``, default 3). Cancellation flips every
+      in-flight downloader's ``task_state`` to ``cancelled`` (both downloaders
+      poll it), so ``/cancel`` interrupts mid-file instead of only between clips.
     """
+    import concurrent.futures
+    import threading
+    import time
+
     from core.direct_downloader import download_direct_video
     from core.youtube import download_video
+    from core.download_manager import link_or_copy
+    from core import download_cache
 
     base_dir = clip_base_dir(project_name)
     os.makedirs(base_dir, exist_ok=True)
@@ -325,52 +345,146 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                                res.get("matched_query", ""), seen)
             jobs.append((shot, res, fn))
 
-    ok = failed = skipped = 0
-    errors = []
-    total = len(jobs)
-    for i, (shot, res, fn) in enumerate(jobs, start=1):
-        _check_cancel(should_cancel)
-        out_path = os.path.join(base_dir, fn)
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            skipped += 1
-            if progress:
-                progress(i, total)
-            continue
-        task_state: dict = {}
-        try:
-            if (res.get("source") or "").lower() == "youtube":
-                download_video(res["url"], out_path, quality, task_state, no_audio=True)
-            else:
-                download_direct_video(res["url"], out_path, task_state)
-            if task_state.get("status") == "completed" or (
-                os.path.exists(out_path) and os.path.getsize(out_path) > 0
-            ):
-                ok += 1
-                # Record the downloaded clip in the Clip Library so the server
-                # accumulates reusable, semantically-searchable footage over time
-                # (the bot pipeline previously only read the library, never wrote
-                # to it). Dedupes by URL; best-effort so it can't fail a download.
-                try:
-                    from core.clip_library import store_clip
-                    store_clip(
-                        (shot.get("shot_intent") or shot.get("shot_description")
-                         or res.get("matched_query") or "").strip(),
-                        {**res, "local_path": out_path},
-                        project=project_name,
-                        search_query=res.get("matched_query", ""),
-                    )
-                except Exception as e:
-                    errors.append(f"clip_library store ({fn}): {e}")
-            else:
-                failed += 1
-                errors.append(f"{fn}: {task_state.get('error_msg', 'unknown error')}")
-        except Exception as e:
-            failed += 1
-            errors.append(f"{fn}: {e}")
-        if progress:
-            progress(i, total)
+    # Group jobs by URL, preserving job order: the first job in a group is the
+    # canonical download, the rest become mirrors of its file.
+    groups: dict = {}   # url -> [(shot, res, fn), ...]
+    order: list = []
+    for job in jobs:
+        url = job[1]["url"]
+        if url not in groups:
+            groups[url] = []
+            order.append(url)
+        groups[url].append(job)
 
-    return {"ok": ok, "failed": failed, "skipped": skipped, "dir": base_dir, "errors": errors}
+    total = len(jobs)
+    counts = {"ok": 0, "failed": 0, "skipped": 0, "done": 0}
+    errors: list = []
+    lock = threading.Lock()
+    cancelled = threading.Event()
+    live_states: list = []   # task_state dicts of in-flight downloads
+
+    def _tick(field):
+        with lock:
+            counts[field] += 1
+            counts["done"] += 1
+            done = counts["done"]
+        if progress:
+            try:
+                progress(done, total)
+            except Exception:
+                pass
+
+    def _run_group(url):
+        if cancelled.is_set() or (should_cancel and should_cancel()):
+            cancelled.set()
+            return
+        shot, res, fn = groups[url][0]
+        mirrors = groups[url][1:]
+        out_path = os.path.join(base_dir, fn)
+
+        have_file = False
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            have_file = True
+            _tick("skipped")
+        else:
+            # Cross-session cache: reuse a copy downloaded for an earlier project.
+            cached = download_cache.lookup_path(url)
+            if (cached and os.path.abspath(cached) != os.path.abspath(out_path)
+                    and link_or_copy(cached, out_path)):
+                have_file = True
+                _tick("skipped")
+
+        if not have_file:
+            task_state: dict = {}
+            with lock:
+                live_states.append(task_state)
+            try:
+                if (res.get("source") or "").lower() == "youtube":
+                    download_video(url, out_path, quality, task_state, no_audio=True)
+                else:
+                    download_direct_video(url, out_path, task_state)
+                if task_state.get("status") == "cancelled":
+                    cancelled.set()
+                    return
+                if task_state.get("status") == "completed" or (
+                    os.path.exists(out_path) and os.path.getsize(out_path) > 0
+                ):
+                    have_file = True
+                    _tick("ok")
+                    try:
+                        download_cache.register(url, out_path)
+                    except Exception:
+                        pass
+                    # Record the downloaded clip in the Clip Library so the server
+                    # accumulates reusable, semantically-searchable footage over
+                    # time. Dedupes by URL; best-effort so it can't fail a download.
+                    try:
+                        from core.clip_library import store_clip
+                        store_clip(
+                            (shot.get("shot_intent") or shot.get("shot_description")
+                             or res.get("matched_query") or "").strip(),
+                            {**res, "local_path": out_path},
+                            project=project_name,
+                            search_query=res.get("matched_query", ""),
+                        )
+                    except Exception as e:
+                        with lock:
+                            errors.append(f"clip_library store ({fn}): {e}")
+                else:
+                    with lock:
+                        errors.append(f"{fn}: {task_state.get('error_msg', 'unknown error')}")
+                    _tick("failed")
+            except Exception as e:
+                with lock:
+                    errors.append(f"{fn}: {e}")
+                _tick("failed")
+            finally:
+                with lock:
+                    if task_state in live_states:
+                        live_states.remove(task_state)
+
+        # Mirrors: other shots that selected the same URL share the file.
+        for _mshot, _mres, mfn in mirrors:
+            mpath = os.path.join(base_dir, mfn)
+            if os.path.exists(mpath) and os.path.getsize(mpath) > 0:
+                _tick("skipped")
+            elif have_file and link_or_copy(out_path, mpath):
+                _tick("ok")
+            else:
+                with lock:
+                    errors.append(f"{mfn}: shared-URL source unavailable")
+                _tick("failed")
+
+    if max_workers is None:
+        try:
+            max_workers = int(os.getenv("PIPELINE_DOWNLOAD_WORKERS", "3") or 3)
+        except ValueError:
+            max_workers = 3
+
+    if order:
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, min(max_workers, len(order)))) as ex:
+            futures = [ex.submit(_run_group, u) for u in order]
+            # Cancellation watcher: flip every in-flight downloader's state so
+            # their progress hooks abort mid-file.
+            def _watch():
+                while not all(f.done() for f in futures):
+                    if cancelled.is_set() or (should_cancel and should_cancel()):
+                        cancelled.set()
+                        with lock:
+                            for ts in live_states:
+                                ts["status"] = "cancelled"
+                    time.sleep(0.5)
+            watcher = threading.Thread(target=_watch, daemon=True)
+            watcher.start()
+            for f in concurrent.futures.as_completed(futures):
+                f.result()   # worker handles its own errors; surface the unexpected
+        if cancelled.is_set():
+            raise PipelineCancelled("Cancelled by user.")
+    _check_cancel(should_cancel)
+
+    return {"ok": counts["ok"], "failed": counts["failed"], "skipped": counts["skipped"],
+            "dir": base_dir, "errors": errors}
 
 
 def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
@@ -733,6 +847,13 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # time, so the tracker is global but job-scoped).
     from core import usage as _usage
     _usage.reset()
+
+    # Fresh query cache per job: the cross-shot cache is meant to dedupe API
+    # calls WITHIN one run. In the long-lived bot process, leftovers from a
+    # previous job would otherwise be reused (stale results) and the cache
+    # would grow for the lifetime of the process.
+    from core.director_search import clear_query_cache
+    clear_query_cache()
 
     def _p(step, label):
         _check_cancel(should_cancel)   # cooperative cancel at every stage boundary

@@ -817,15 +817,16 @@ from core.ffmpeg_utils import normalize_video
 class DownloadInterrupt(Exception):
     pass
 
-def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True):
+def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True, disable_cookies: bool = False):
     """
     Downloads a video using yt-dlp with progress tracking and interruption support.
     Supports Premiere Pro compatibility, strict quality, and size limits.
+
+    ``disable_cookies`` skips the cookie source for THIS call only — used by the
+    format-error retry below. (It must not flip the module-global
+    ``_cookies_broken``: downloads run in parallel, and a temporary global flip
+    would silently strip cookies from every concurrent download.)
     """
-    # Declared here so the format-error retry block below can flip the
-    # module-level _cookies_broken flag without Python complaining about
-    # using the name before the global declaration.
-    global _cookies_broken
     # Map quality → target height. Accepts "1080", "1080p", or int; "Best"/"Worst"
     # are handled below as special selectors. Parsing the digits (rather than a
     # fixed lookup) means a bare "1080" from the headless/bot path actually caps
@@ -952,9 +953,9 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             'preferedformat': 'mp4',
         }],
         # Inject cookies (browser session or cookies.txt) — eliminates bot checks
-        **_get_cookie_opts(),
+        **({} if disable_cookies else _get_cookie_opts()),
     }
-    
+
     try:
         task_state['status'] = 'downloading'
         task_state['progress'] = 0.0
@@ -1014,19 +1015,17 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         # to android_vr / tv_simply which still serve format lists publicly.
         # Auto-retry once without cookies before reporting the error.
         if ('Requested format is not available' in err_str
+                and not disable_cookies
                 and _get_cookie_opts()
                 and not task_state.get('_retried_no_cookies')):
             print(f"[yt-dlp] {url}: format not available with cookies — retrying without cookies")
             task_state['_retried_no_cookies'] = True
-            # Strip cookies for this retry by reaching past _get_cookie_opts.
-            _was_broken = _cookies_broken
-            _cookies_broken = True
-            try:
-                download_video(url, output_path, quality, task_state,
-                               max_size_mb=max_size_mb, strict_quality=strict_quality,
-                               normalize=normalize, no_audio=no_audio)
-            finally:
-                _cookies_broken = _was_broken
+            # Strip cookies for this call only (never via the module-global —
+            # that would race with concurrent downloads).
+            download_video(url, output_path, quality, task_state,
+                           max_size_mb=max_size_mb, strict_quality=strict_quality,
+                           normalize=normalize, no_audio=no_audio,
+                           disable_cookies=True)
             return
 
         task_state['status'] = 'error'
