@@ -1,4 +1,6 @@
-from core.director_search import fetch_director_footage, search_youtube_classic
+import core.director_search as director_search
+from core.director_search import (fetch_director_footage, search_youtube_classic,
+                                  _fetch_query, clear_query_cache)
 
 
 def test_search_youtube_classic_adapts_results(monkeypatch):
@@ -112,3 +114,36 @@ def test_fetch_director_footage_can_use_api_and_classic_together(monkeypatch):
         "classic search query",
         "director api query",
     ]
+
+
+# ── query cache bounds ─────────────────────────────────────────────────────────
+
+def test_query_cache_caches_and_is_clearable(monkeypatch):
+    clear_query_cache()
+    calls = []
+    monkeypatch.setattr("core.director_search.search_pexels",
+                        lambda q, key, n, errors=None: calls.append(q) or [{"url": f"u-{q}"}])
+
+    _fetch_query("city", "pexels", "k", 3, [])
+    _fetch_query("city", "pexels", "k", 3, [])      # cache hit — no second call
+    assert calls == ["city"]
+
+    clear_query_cache()
+    _fetch_query("city", "pexels", "k", 3, [])      # cleared — refetches
+    assert calls == ["city", "city"]
+    clear_query_cache()
+
+
+def test_query_cache_evicts_oldest_at_cap(monkeypatch):
+    clear_query_cache()
+    monkeypatch.setattr(director_search, "_QUERY_CACHE_MAXSIZE", 3)
+    monkeypatch.setattr("core.director_search.search_pexels",
+                        lambda q, key, n, errors=None: [{"url": f"u-{q}"}])
+
+    for q in ("q1", "q2", "q3", "q4"):
+        _fetch_query(q, "pexels", "k", 3, [])
+
+    keys = {k[1] for k in director_search._query_cache}
+    assert len(director_search._query_cache) == 3
+    assert "q1" not in keys and "q4" in keys        # oldest evicted, newest kept
+    clear_query_cache()

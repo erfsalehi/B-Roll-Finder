@@ -16,9 +16,14 @@ except ImportError:
 # ── Cross-shot query result cache ─────────────────────────────────────────────
 # Keyed by (source, query, num_results, min_height).  Multiple shots that share
 # the same stock query (e.g. "city street") hit the same API only once.
+# Scoped to ONE Director run: the headless pipeline clears it at job start
+# (and Streamlit's auto mode clears it between runs), so a long-lived bot
+# process never reuses stale results across jobs. The size cap is a second
+# line of defence against unbounded growth if a caller forgets to clear.
 _query_cache:   dict = {}
 _query_pending: dict = {}   # cache_key -> threading.Event (in-flight guard)
 _query_cache_lock = threading.Lock()
+_QUERY_CACHE_MAXSIZE = 1000   # ~queries per run × sources, with headroom
 
 
 def _fetch_query(query: str, source: str, api_key: str, num_results: int,
@@ -75,6 +80,10 @@ def _fetch_query(query: str, source: str, api_key: str, num_results: int,
             # forever instead of actually re-querying. Truly "no matches"
             # queries are rare enough that re-issuing them on retry is fine.
             if results:
+                if len(_query_cache) >= _QUERY_CACHE_MAXSIZE:
+                    # Evict the oldest entry (dict insertion order) so the
+                    # cache stays bounded even in a long-lived process.
+                    _query_cache.pop(next(iter(_query_cache)), None)
                 _query_cache[cache_key] = results
             _query_pending.pop(cache_key, None)
         evt.set()
