@@ -8,7 +8,15 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
     """
     Downloads an MP4 directly via HTTP using requests.
     Supports pause, resume, cancellation, auto-resume, and max size limit.
+
+    All bytes stream into ``<output_path>.part``; the final path appears only
+    via an atomic rename after the download (and optional normalize) completed.
+    A file at ``output_path`` therefore always means "complete" — callers that
+    skip already-present files (pipeline.download_selected_clips) can't be
+    fooled by a truncated leftover from an earlier failed run. A failed
+    attempt's ``.part`` is kept so a retry resumes via HTTP Range.
     """
+    part_path = output_path + '.part'
     try:
         task_state['status'] = 'downloading'
         if 'progress' not in task_state:
@@ -29,9 +37,9 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
             except requests.exceptions.RequestException:
                 pass  # HEAD failed; secondary check runs during GET
 
-        # Resume from partial file if it exists
-        if os.path.exists(output_path):
-            downloaded = os.path.getsize(output_path)
+        # Resume from a partial file if a previous attempt left one
+        if os.path.exists(part_path):
+            downloaded = os.path.getsize(part_path)
 
         for attempt in range(max_retries):
             try:
@@ -46,7 +54,7 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
                 # Server ignored Range header — restart from scratch
                 if response.status_code == 200 and downloaded > 0:
                     downloaded = 0
-                    open(output_path, 'wb').close()
+                    open(part_path, 'wb').close()
 
                 response.raise_for_status()
 
@@ -64,7 +72,7 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
                 session_start = time.monotonic()
                 session_start_bytes = downloaded
 
-                with open(output_path, mode) as f:
+                with open(part_path, mode) as f:
                     for data in response.iter_content(1024 * 1024):  # 1MB chunks
                         if task_state.get('status') == 'cancelled':
                             raise DownloadInterrupt("Download cancelled by user")
@@ -101,7 +109,10 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
         if normalize:
             task_state['status'] = 'processing'
             task_state['speed'] = None
-            normalize_video(output_path, task_state=task_state)
+            normalize_video(part_path, task_state=task_state)
+
+        # Atomic publish: the final path only ever holds a complete file.
+        os.replace(part_path, output_path)
 
         task_state['status'] = 'completed'
         task_state['progress'] = 1.0
@@ -109,17 +120,19 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
 
     except DownloadInterrupt:
         task_state['status'] = 'cancelled'
-        if os.path.exists(output_path):
+        if os.path.exists(part_path):
             try:
-                os.remove(output_path)
+                os.remove(part_path)
             except Exception:
                 pass
     except Exception as e:
         task_state['status'] = 'error'
         task_state['error_msg'] = str(e)
         err = str(e).lower()
-        if ("exceeds limit" in err or "exceeded limit" in err) and os.path.exists(output_path):
+        # An over-limit partial is useless (a retry would just trip the limit
+        # again) — delete it. Other failures keep the .part so a retry resumes.
+        if ("exceeds limit" in err or "exceeded limit" in err) and os.path.exists(part_path):
             try:
-                os.remove(output_path)
+                os.remove(part_path)
             except Exception:
                 pass
