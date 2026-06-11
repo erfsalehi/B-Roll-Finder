@@ -47,8 +47,10 @@ def _patch_all(monkeypatch, *, yt_dl_ok=True, ffmpeg=True, pexels_key=True):
             ts["error_msg"] = "Video unavailable. This content isn't available."
     monkeypatch.setattr(core.youtube, "download_video", _ytdl)
     monkeypatch.setattr(core.youtube, "cookie_mode", lambda: (True, "file ok"))
-    # Don't let the real (possibly stale) yt-dlp version flip the rollup.
+    # Don't let the real (possibly stale) yt-dlp version / update marker flip the
+    # rollup in the generic-path tests.
     monkeypatch.setattr(st, "_ytdlp_version_check", lambda: (True, "fresh"))
+    monkeypatch.setattr(st, "_ytdlp_update_check", lambda: (True, "last ran today"))
 
 
 def _by_name(report):
@@ -113,6 +115,41 @@ def test_ytdlp_version_ok_when_fresh(monkeypatch):
                         raising=False)
     ok, detail = st._ytdlp_version_check()
     assert ok is True
+
+
+def test_ytdlp_update_check_flags_failure(monkeypatch):
+    import core.app_utils as au
+    from datetime import date
+    monkeypatch.setattr(au, "_read_update_marker",
+                        lambda: {"last_check": date.today().isoformat(),
+                                 "error": "pip failed: network unreachable"})
+    ok, detail = st._ytdlp_update_check()
+    assert ok is False and "FAILED" in detail
+
+
+def test_ytdlp_update_check_ok_when_recent(monkeypatch):
+    import core.app_utils as au
+    from datetime import date
+    monkeypatch.setattr(au, "_read_update_marker",
+                        lambda: {"last_check": date.today().isoformat(),
+                                 "version": "2026.06.10", "error": ""})
+    ok, detail = st._ytdlp_update_check()
+    assert ok is True and "2026.06.10" in detail
+
+
+def test_ytdlp_update_check_flags_stale_marker(monkeypatch):
+    import core.app_utils as au
+    monkeypatch.setattr(au, "_read_update_marker",
+                        lambda: {"last_check": "2026-01-01", "version": "x", "error": ""})
+    ok, detail = st._ytdlp_update_check()
+    assert ok is False and "days ago" in detail
+
+
+def test_ytdlp_update_check_skips_when_absent(monkeypatch):
+    import core.app_utils as au
+    monkeypatch.setattr(au, "_read_update_marker", lambda: {})
+    ok, detail = st._ytdlp_update_check()
+    assert ok is None      # absent marker is skipped, not a failure
 
 
 # ── bot wiring ────────────────────────────────────────────────────────────────

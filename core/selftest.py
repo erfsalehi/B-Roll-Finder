@@ -136,6 +136,38 @@ def _ytdlp_version_check():
         return True, v
 
 
+def _ytdlp_update_check():
+    """Report the daily yt-dlp auto-update marker so a *silently-failing* update
+    is obvious. The marker is written even on failure (so a broken pip/network
+    doesn't retry every run), which means a persistent ``error`` here is exactly
+    the smoking gun for "yt-dlp is stuck stale and that's why downloads die"."""
+    try:
+        from core.app_utils import _read_update_marker
+    except Exception as e:
+        return None, f"update marker unreadable ({e})"
+    m = _read_update_marker()
+    if not m:
+        return None, "no auto-update has run yet (marker absent — a restart triggers it)"
+    last = m.get("last_check") or "?"
+    err = (m.get("error") or "").strip()
+    ver = m.get("version") or "?"
+    if err:
+        return False, f"last auto-update FAILED on {last}: {err[:140]}"
+    detail = f"last ran {last}, version {ver}"
+    if m.get("changed"):
+        detail += " (upgraded — restart to load it)"
+    try:
+        from datetime import date
+        age = (date.today() - date.fromisoformat(last)).days
+        if age > 3:
+            return False, (detail +
+                           f" — but {age} days ago; the daily updater may not be running "
+                           "(restart the bot, or the upgrade is erroring earlier)")
+    except Exception:
+        pass
+    return True, detail
+
+
 def _yt_search_check(state):
     from core.director_search import search_youtube_classic
     errs: list = []
@@ -220,6 +252,7 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
         _run("Pexels search", lambda: _pexels_search_check(state),
              critical=bool(os.getenv("PEXELS_API_KEY")))
         _run("yt-dlp version", _ytdlp_version_check, critical=False)
+        _run("yt-dlp auto-update", _ytdlp_update_check, critical=False)
         _run("YouTube search (yt-dlp)", lambda: _yt_search_check(state), critical=True)
         _run("YouTube cookies", _cookie_check, critical=False)
         if do_downloads:
