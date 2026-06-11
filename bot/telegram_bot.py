@@ -365,6 +365,10 @@ def is_cleanup_command(text: str) -> bool:
     return _command(text) in ("/cleanup", "/clean", "/disk")
 
 
+def is_test_command(text: str) -> bool:
+    return _command(text) in ("/test", "/selftest", "/preflight", "/check")
+
+
 # ── reporting (per-shot + QA + errors) ───────────────────────────────────────
 
 def _shot_clip_info(shots: list) -> list:
@@ -952,10 +956,60 @@ def handle_logs(chat_id) -> None:
         pass
 
 
+def format_selftest(report: dict) -> str:
+    """Render the preflight report: a headline verdict then one line per check."""
+    ok = report.get("ok")
+    lines = ["✅ Preflight passed — safe to send a long voice file." if ok
+             else "❌ Preflight found problems — look at these BEFORE a real run:"]
+    for r in report.get("results", []):
+        if r["ok"] is None:
+            icon = "➖"                       # skipped (e.g. no key for that source)
+        elif r["ok"]:
+            icon = "✅"
+        else:
+            icon = "❌" if r["critical"] else "⚠️"   # ⚠️ = non-blocking
+        secs = f"  ({r['secs']}s)" if r.get("secs") else ""
+        lines.append(f"{icon} {r['name']}: {r['detail']}{secs}")
+    if not ok:
+        lines.append("")
+        lines.append("Tip: most YouTube download failures are cookies/anti-bot — "
+                     "see /cookies. Re-run /test after fixing.")
+    return "\n".join(lines)
+
+
+def handle_selftest(chat_id, text: str) -> None:
+    """Run the live preflight self-test (LLM, transcription, Pexels + yt-dlp
+    search and real downloads) so problems surface before a long voiceover is
+    processed. ``/test quick`` skips the actual clip downloads."""
+    from core.selftest import run_self_test
+
+    quick = "quick" in (text or "").lower()
+    head = ("🧪 Running preflight (quick — no downloads)…" if quick
+            else "🧪 Running preflight — LLM, transcription, Pexels + yt-dlp search "
+                 "and a couple of real test downloads. ~30–60s…")
+    status = send_message(chat_id, head)
+    msg_id = status.get("message_id")
+
+    def _p(label):
+        try:
+            edit_message(chat_id, msg_id, f"{head}\n⏳ checking: {label}")
+        except Exception:
+            pass
+
+    try:
+        report = run_self_test(do_downloads=not quick, quality="360", progress=_p)
+    except Exception as e:
+        send_message(chat_id, f"❌ Preflight itself errored: {e}")
+        return
+    edit_message(chat_id, msg_id, "🧪 Preflight complete.")
+    send_message(chat_id, format_selftest(report))
+
+
 # (command, description) pairs registered with Telegram so typing '/' shows a menu.
 _BOT_COMMANDS = [
     ("settings", "Sources, counts, quality, QA, review gate"),
     ("status", "Is the bot online and ready?"),
+    ("test", "Preflight: test yt-dlp/Pexels/LLM before a real run"),
     ("details", "Per-shot clip breakdown (pending project)"),
     ("download", "Fetch clips for the reviewed project"),
     ("refine", "Re-pick QA-flagged shots (or /refine 4 9)"),
@@ -1209,6 +1263,8 @@ _HELP = (
     "/settings — choose sources, counts, quality, QA, review gate, text overlays\n"
     "/overlay — next voice file → animated text-overlays only (no footage)\n"
     "/status — am I online & ready\n"
+    "/test — preflight: live-test LLM, transcription, Pexels + yt-dlp search and "
+    "real downloads before a long run (/test quick = no downloads)\n"
     "/details — per-shot breakdown of the project awaiting review\n"
     "/download — fetch clips for the reviewed project\n"
     "/refine [shots] — re-pick QA-flagged shots (or named ones, e.g. /refine 4 9)\n"
@@ -1473,6 +1529,18 @@ def main() -> None:
 
             if is_logs_command(text):
                 handle_logs(chat_id)
+                continue
+
+            if is_test_command(text):
+                if _BUSY.get("active"):
+                    send_message(chat_id, f"⏳ Busy with '{_BUSY.get('project')}'. "
+                                          "Run /test once it's idle.")
+                    continue
+                _BUSY.update(active=True, project="preflight self-test",
+                             cancel=threading.Event(), started=time.time())
+                threading.Thread(target=_job_thread,
+                                 args=(handle_selftest, chat_id, text),
+                                 daemon=True).start()
                 continue
 
             if is_cookies_command(text):
