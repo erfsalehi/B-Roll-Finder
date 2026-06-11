@@ -38,6 +38,50 @@ def test_extract_audio_document_by_mime_and_ext():
     assert fid2 == "D2"
 
 
+# ── oversize-file guard (Telegram's 20 MB getFile cap) ────────────────────────
+
+def test_audio_size_reads_file_size():
+    assert tb._audio_size({"voice": {"file_id": "V", "file_size": 1234}}) == 1234
+    assert tb._audio_size({"audio": {"file_id": "A", "file_size": 5_000_000}}) == 5_000_000
+    assert tb._audio_size({"document": {"file_id": "D", "file_size": 42}}) == 42
+    assert tb._audio_size({"voice": {"file_id": "V"}}) == 0      # unknown
+    assert tb._audio_size({}) == 0
+
+
+def test_too_big_message_states_limit_and_fixes():
+    msg = tb.too_big_message(30 * 1024 * 1024)
+    assert "20 MB" in msg
+    assert "ffmpeg" in msg                       # concrete fix
+    assert "TELEGRAM_API_BASE" in msg
+
+
+def test_using_local_bot_api(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_API_BASE", raising=False)
+    assert tb._using_local_bot_api() is False
+    monkeypatch.setenv("TELEGRAM_API_BASE", "https://api.telegram.org")
+    assert tb._using_local_bot_api() is False    # the public host is still capped
+    monkeypatch.setenv("TELEGRAM_API_BASE", "http://localhost:8081")
+    assert tb._using_local_bot_api() is True
+
+
+def test_call_surfaces_telegram_description(monkeypatch):
+    import pytest
+
+    class _Resp:
+        ok = False
+        status_code = 400
+        def json(self):
+            return {"ok": False, "error_code": 400,
+                    "description": "Bad Request: file is too big"}
+
+    monkeypatch.setattr(tb.requests, "post", lambda *a, **k: _Resp())
+    monkeypatch.setattr(tb, "_token", lambda: "T")
+    monkeypatch.setattr(tb, "_proxies", lambda: None)
+    with pytest.raises(tb.requests.HTTPError) as ei:
+        tb._call("getFile", file_id="x")
+    assert "file is too big" in str(ei.value)     # not just "400 Bad Request"
+
+
 def test_extract_audio_ignores_non_audio():
     assert tb.extract_audio({"text": "hi"}) == (None, None)
     assert tb.extract_audio({"document": {"file_id": "z", "file_name": "notes.pdf"}}) == (None, None)

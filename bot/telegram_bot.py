@@ -132,6 +132,45 @@ def extract_audio(message: dict):
     return None, None
 
 
+# Telegram's Bot API only lets a bot DOWNLOAD files up to 20 MB via getFile.
+# A self-hosted local Bot API server (TELEGRAM_API_BASE) lifts this to ~2 GB.
+_TG_DOWNLOAD_LIMIT = 20 * 1024 * 1024
+
+
+def _audio_size(message: dict) -> int:
+    """Best-effort byte size of the audio in a message (0 if unknown)."""
+    if not isinstance(message, dict):
+        return 0
+    for key in ("voice", "audio", "document"):
+        obj = message.get(key)
+        if obj and obj.get("file_size"):
+            try:
+                return int(obj["file_size"])
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _using_local_bot_api() -> bool:
+    """True when pointed at a self-hosted Bot API server (no 20 MB download cap)."""
+    base = (os.getenv("TELEGRAM_API_BASE") or "").strip()
+    return bool(base) and "api.telegram.org" not in base
+
+
+def too_big_message(size: int) -> str:
+    return (
+        f"❌ That file is {_human_size(size)} — Telegram's Bot API only lets bots "
+        "download files up to 20 MB, so I can't fetch it.\n\n"
+        "Fix it one of these ways:\n"
+        "• Re-export the voiceover smaller — mono 64 kbps MP3 is plenty for speech "
+        "(a ~30-min VO ≈ 14 MB):\n"
+        "   ffmpeg -i input.wav -ac 1 -b:a 64k output.mp3\n"
+        "• Or split it into parts under 20 MB and send them one at a time.\n"
+        "• Or self-host a local Telegram Bot API server and set TELEGRAM_API_BASE "
+        "(lifts the limit to ~2 GB)."
+    )
+
+
 def extract_cookies_doc(message: dict):
     """Return ``(file_id, name)`` for a YouTube cookies upload — a ``.txt``
     document whose name contains 'cookie', or any ``.txt`` sent with a /cookies
@@ -176,7 +215,18 @@ def project_name_from(suggested_name: str, fallback: str = "") -> str:
 def _call(method: str, _timeout: int = 60, **params) -> dict:
     resp = requests.post(_API.format(token=_token(), method=method), data=params,
                          timeout=_timeout, proxies=_proxies())
-    resp.raise_for_status()
+    if not resp.ok:
+        # Surface Telegram's own reason (e.g. "file is too big", "Conflict:
+        # terminated by other getUpdates") instead of a bare "400 Bad Request",
+        # so /logs and user-facing errors actually say what went wrong.
+        desc = ""
+        try:
+            desc = (resp.json() or {}).get("description") or ""
+        except Exception:
+            pass
+        if desc:
+            raise requests.HTTPError(f"{resp.status_code} {desc}", response=resp)
+        resp.raise_for_status()
     return resp.json()
 
 
@@ -1371,6 +1421,16 @@ def main() -> None:
         for _v in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             os.environ[_v] = _app_proxy
 
+    # Point at a self-hosted Bot API server when TELEGRAM_API_BASE is set, which
+    # lifts the 20 MB file-download cap to ~2 GB (for long/large voiceovers).
+    # Resolved here — after .env is loaded — and applied to both API endpoints.
+    _api_base = (os.getenv("TELEGRAM_API_BASE") or "").strip().rstrip("/")
+    if _api_base:
+        global _API, _FILE_API
+        _API = _api_base + "/bot{token}/{method}"
+        _FILE_API = _api_base + "/file/bot{token}/{path}"
+        print(f"[bot] using Bot API server: {_api_base} (20 MB download cap lifted)")
+
     # Capture stdout/stderr to .cache/bot.log so /logs can export them.
     logsetup.install_file_logging()
 
@@ -1449,9 +1509,20 @@ def main() -> None:
                 print(f"[bot] poll error: {e}")
                 last_err, repeat = sig, 1
             if fails == 3:
-                print("[bot] Repeated connection failures reaching api.telegram.org. "
-                      "If Telegram needs your VPN proxy, set BOT_PROXY in .env "
-                      "(e.g. BOT_PROXY=http://127.0.0.1:10809). Make sure the VPN is up.")
+                # A 409 Conflict isn't a network problem — it means a SECOND
+                # poller is hitting the same bot token (usually the old container
+                # still running for a few seconds during a redeploy; if it
+                # persists, two hosts have BOT_POLLING_ENABLED=1). Don't send the
+                # VPN/proxy advice for it.
+                if "409" in str(e) or "conflict" in str(e).lower():
+                    print("[bot] 409 Conflict: another poller is using this bot token. "
+                          "Harmless during a redeploy (old container overlapping the new "
+                          "one) and clears on its own. If it never recovers, make sure only "
+                          "ONE instance has BOT_POLLING_ENABLED=1.")
+                else:
+                    print("[bot] Repeated connection failures reaching api.telegram.org. "
+                          "If Telegram needs your VPN proxy, set BOT_PROXY in .env "
+                          "(e.g. BOT_PROXY=http://127.0.0.1:10809). Make sure the VPN is up.")
             time.sleep(min(5 + fails, 30))
             continue
 
@@ -1584,6 +1655,12 @@ def main() -> None:
 
             file_id, name = extract_audio(msg)
             if file_id:
+                # Telegram won't let a bot download a file over 20 MB — catch it
+                # here with a clear fix instead of an opaque getFile 400 later.
+                size = _audio_size(msg)
+                if size > _TG_DOWNLOAD_LIMIT and not _using_local_bot_api():
+                    send_message(chat_id, too_big_message(size))
+                    continue
                 if _BUSY.get("active"):
                     send_message(chat_id, f"⏳ Still processing '{_BUSY.get('project')}'. "
                                           "Send /cancel to stop it, or wait and resend.")
