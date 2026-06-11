@@ -47,6 +47,10 @@ def _patch_all(monkeypatch, *, yt_dl_ok=True, ffmpeg=True, pexels_key=True):
             ts["error_msg"] = "Video unavailable. This content isn't available."
     monkeypatch.setattr(core.youtube, "download_video", _ytdl)
     monkeypatch.setattr(core.youtube, "cookie_mode", lambda: (True, "file ok"))
+    # The client probe only runs on download failure; stub it so that path stays
+    # hermetic (it otherwise hits real yt-dlp).
+    monkeypatch.setattr(core.youtube, "probe_download_clients",
+                        lambda url, **k: [("no-cookies + android_vr", True, "ok")])
     # Don't let the real (possibly stale) yt-dlp version / update marker flip the
     # rollup in the generic-path tests.
     monkeypatch.setattr(st, "_ytdlp_version_check", lambda: (True, "fresh"))
@@ -150,6 +154,43 @@ def test_ytdlp_update_check_skips_when_absent(monkeypatch):
     monkeypatch.setattr(au, "_read_update_marker", lambda: {})
     ok, detail = st._ytdlp_update_check()
     assert ok is None      # absent marker is skipped, not a failure
+
+
+def test_yt_client_probe_reports_working_config(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.setattr(yt, "probe_download_clients", lambda url, **k: [
+        ("cookies + tv/web_safari/web_embedded", False, "This content isn't available"),
+        ("no-cookies + android_vr", True, "ok — formats available (max 1080p)"),
+    ])
+    ok, detail = st._yt_client_probe_check(
+        {"yt_download_failed": True, "yt_results": [{"url": "https://y/1"}]})
+    assert ok is True
+    assert "WORKING" in detail and "android_vr" in detail
+
+
+def test_yt_client_probe_reports_systemic_block(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.setattr(yt, "probe_download_clients", lambda url, **k: [
+        ("cookies + tv/web_safari/web_embedded", False, "This content isn't available"),
+        ("no-cookies + yt-dlp default", False, "This content isn't available"),
+        ("no-cookies + android_vr", False, "This content isn't available"),
+    ])
+    ok, detail = st._yt_client_probe_check(
+        {"yt_download_failed": True, "yt_results": [{"url": "https://y/1"}]})
+    assert ok is False
+    assert "EVERY client failed" in detail
+
+
+def test_yt_client_probe_skipped_when_downloads_ok():
+    ok, _ = st._yt_client_probe_check({"yt_download_failed": False})
+    assert ok is None
+
+
+def test_self_test_failure_runs_probe(monkeypatch):
+    _patch_all(monkeypatch, yt_dl_ok=False)
+    report = st.run_self_test(do_downloads=True)
+    names = {r["name"] for r in report["results"]}
+    assert "YouTube client probe" in names      # probe runs on download failure
 
 
 # ── bot wiring ────────────────────────────────────────────────────────────────

@@ -1081,3 +1081,74 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                 "Original: " + err_str
             )
         task_state['error_msg'] = err_str
+
+
+# Player-client configs the probe tries, in order. Each is (label, use_cookies,
+# player_client-list-or-None). ``None`` lets yt-dlp pick its own default set.
+_PROBE_CLIENT_CONFIGS = (
+    ("cookies + tv/web_safari/web_embedded", True, ['tv', 'web_safari', 'web_embedded']),
+    ("no-cookies + yt-dlp default",          False, None),
+    ("no-cookies + android_vr",              False, ['android_vr']),
+    ("no-cookies + tv_simply",               False, ['tv_simply']),
+    ("no-cookies + ios",                     False, ['ios']),
+    ("no-cookies + mweb",                    False, ['mweb']),
+    ("no-cookies + web_safari",              False, ['web_safari']),
+    ("cookies + default",                    True, None),
+)
+
+
+def _config_has_downloadable_format(info: dict) -> bool:
+    """True if an extracted info dict exposes at least one real, fetchable video
+    format (a URL on a non-storyboard video stream) — i.e. a download would have
+    something to pull."""
+    if not info:
+        return False
+    if info.get("url") and info.get("vcodec") not in (None, "none"):
+        return True
+    for f in (info.get("formats") or []):
+        if f.get("url") and _is_real_video_format(f):
+            return True
+    return False
+
+
+def probe_download_clients(url: str, per_timeout: int = 25) -> list:
+    """Diagnostic: try resolving a YouTube video's formats under several
+    cookie/player-client combinations and report which actually yield a
+    downloadable format. Used by ``/test`` when downloads fail so the operator can
+    SEE whether it's a per-video restriction (some combo works) or a systemic
+    datacenter-IP / PO-token block (every combo fails the same way) — and exactly
+    which client to force if one works.
+
+    Returns a list of ``(label, ok, detail)``. Uses ``extract_info(download=False)``
+    with ``process=True`` so YouTube's playability check (the source of "This
+    content isn't available") runs without fetching bytes."""
+    results = []
+    for label, use_cookies, clients in _PROBE_CLIENT_CONFIGS:
+        opts = {
+            'logger': _QuietLogger(),
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'socket_timeout': per_timeout,
+            'extractor_args': ({'youtube': {'player_client': clients}}
+                               if clients else {}),
+        }
+        if use_cookies:
+            ck = _get_cookie_opts()
+            if not ck:
+                results.append((label, None, "no cookie source configured (skipped)"))
+                continue
+            opts.update(ck)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if _config_has_downloadable_format(info or {}):
+                h = (info or {}).get("height") or "?"
+                results.append((label, True, f"ok — formats available (max {h}p)"))
+            else:
+                results.append((label, False, "no downloadable format returned"))
+        except Exception as e:
+            last = (str(e).strip().splitlines() or ["?"])[-1]
+            results.append((label, False, last[:140]))
+    return results
+

@@ -171,7 +171,10 @@ def _ytdlp_update_check():
 def _yt_search_check(state):
     from core.director_search import search_youtube_classic
     errs: list = []
-    results = search_youtube_classic("nature documentary", num_results=4, errors=errs)
+    # A generic B-roll query (returns lots of short, downloadable stock-style
+    # clips) rather than "documentary" terms that surface long, often-restricted
+    # full episodes — keeps the download test representative of a real run.
+    results = search_youtube_classic("city street", num_results=5, errors=errs)
     # Prefer the shortest videos for the download test (fastest, smallest).
     results = [r for r in results if r.get("url")]
     results.sort(key=lambda r: r.get("duration") or 1e9)
@@ -182,7 +185,7 @@ def _yt_search_check(state):
     return True, f"{len(results)} result(s) via yt-dlp"
 
 
-def _yt_download_check(state, out_dir, quality="360", attempts=2):
+def _yt_download_check(state, out_dir, quality="360", attempts=3):
     """Download the shortest YouTube results — the single most failure-prone
     step (cookies, format selection, Deno nsig, anti-bot). Passes if at least one
     of ``attempts`` clips downloads, mirroring the pipeline's repair philosophy
@@ -210,7 +213,37 @@ def _yt_download_check(state, out_dir, quality="360", attempts=2):
         if fails:
             detail += f"  ·  {len(fails)} failed (e.g. {fails[0][:120]})"
         return True, detail
+    state["yt_download_failed"] = True
     return False, "all download attempts failed — " + ("; ".join(fails)[:300] or "unknown")
+
+
+def _yt_client_probe_check(state):
+    """When downloads fail, resolve formats under several cookie/player-client
+    combos so the report shows whether ANY config works (→ force that client) or
+    they all fail identically (→ the datacenter IP is blocked / needs a PO-token
+    provider or proxy). Skipped when downloads already succeeded."""
+    if not state.get("yt_download_failed"):
+        return None, "skipped (downloads worked)"
+    results = state.get("yt_results") or []
+    url = results[0].get("url") if results else None
+    if not url:
+        return None, "no URL to probe"
+    from core.youtube import probe_download_clients
+    probe = probe_download_clients(url)
+    working = [lbl for lbl, ok, _ in probe if ok]
+    lines = []
+    for lbl, ok, detail in probe:
+        icon = "✅" if ok else ("➖" if ok is None else "❌")
+        lines.append(f"   {icon} {lbl}: {detail}")
+    if working:
+        head = (f"a WORKING config exists → \"{working[0]}\". "
+                "Set the matching client (or YT_DOWNLOAD_NO_COOKIES=1 if a "
+                "no-cookies row works).")
+    else:
+        head = ("EVERY client failed the same way → this datacenter IP is blocked "
+                "for YouTube playback (needs a residential proxy via APP_PROXY, or "
+                "a PO-token provider). It is NOT a code bug.")
+    return (bool(working), head + "\n" + "\n".join(lines))
 
 
 def _cookie_check():
@@ -261,6 +294,10 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
             _run("YouTube download (yt-dlp)",
                  lambda: _yt_download_check(state, tmp_dir, quality=quality),
                  critical=True)
+            # Only does work when the download failed — then it pinpoints whether
+            # any client config works (vs. a systemic IP/PO-token block).
+            _run("YouTube client probe", lambda: _yt_client_probe_check(state),
+                 critical=False)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
