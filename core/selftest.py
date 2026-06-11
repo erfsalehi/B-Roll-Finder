@@ -235,16 +235,18 @@ def _yt_client_probe_check(state):
     for lbl, ok, detail in probe:
         icon = "✅" if ok else ("➖" if ok is None else "❌")
         lines.append(f"   {icon} {lbl}: {detail}")
-    from core.youtube import youtube_proxy
-    proxy = youtube_proxy()
+    from core.youtube import youtube_proxies
+    proxies = youtube_proxies()
     if working:
         head = (f"a WORKING config exists → \"{working[0]}\". "
                 "Set the matching client (or YT_DOWNLOAD_NO_COOKIES=1 if a "
                 "no-cookies row works).")
-    elif proxy:
-        head = (f"EVERY client failed even via YT_DLP_PROXY ({_mask_proxy(proxy)}) → "
-                "that proxy IP is ALSO blocked by YouTube. Use a different "
-                "residential/mobile proxy. It is NOT a code bug.")
+    elif proxies:
+        where = (_mask_proxy(proxies[0]) if len(proxies) == 1
+                 else f"all {len(proxies)} YT_DLP_PROXY proxies")
+        head = (f"EVERY client failed even via {where} → that proxy IP is ALSO "
+                "blocked by YouTube. Use a different residential/mobile proxy. "
+                "It is NOT a code bug.")
     else:
         head = ("EVERY client failed the same way → this host's IP is blocked by "
                 "YouTube for playback. Fix: set YT_DLP_PROXY to a residential/mobile "
@@ -266,12 +268,17 @@ def _mask_proxy(url: str) -> str:
 
 
 def _youtube_proxy_check():
-    from core.youtube import youtube_proxy
-    p = youtube_proxy()
-    if not p:
+    from core.youtube import youtube_proxies
+    ps = youtube_proxies()
+    if not ps:
         return None, ("not set — fine unless YouTube blocks this host's IP; then set "
                       "YT_DLP_PROXY to a residential proxy")
-    return True, f"YT_DLP_PROXY = {_mask_proxy(p)}"
+    shown = ", ".join(_mask_proxy(p) for p in ps[:4])
+    if len(ps) > 4:
+        shown += f", +{len(ps) - 4} more"
+    if len(ps) == 1:
+        return True, f"YT_DLP_PROXY = {shown}"
+    return True, f"{len(ps)} proxies (round-robin + failover): {shown}"
 
 
 def run_self_test(do_downloads: bool = True, quality: str = "360",

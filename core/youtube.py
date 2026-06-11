@@ -104,22 +104,69 @@ def _get_cookie_opts() -> dict:
     return {}
 
 
+def youtube_proxies() -> list:
+    """All configured YouTube proxies, in order. Routing ONLY yt-dlp through a
+    residential/mobile proxy is the fix when the host's datacenter IP is blocked
+    by YouTube ("This content isn't available" on every client), without forcing
+    Telegram/stock/LLM traffic through the same (often slow/metered) proxy.
+
+    Set ``YT_DLP_PROXY`` to one proxy or a LIST (comma / whitespace / newline
+    separated) for backups — e.g.
+    ``http://user:pass@a:1, http://user:pass@b:1, socks5://c:2``. The pool is
+    round-robined per request (spreads load across free proxies' bandwidth caps)
+    and a download fails over to the next proxy when one is down. ``YOUTUBE_PROXY``
+    is accepted as an alias."""
+    raw = os.getenv("YT_DLP_PROXY") or os.getenv("YOUTUBE_PROXY") or ""
+    return [p.strip() for p in re.split(r"[\s,;]+", raw.strip()) if p.strip()]
+
+
 def youtube_proxy() -> str:
-    """The proxy URL to route YouTube (yt-dlp) traffic through, or ''.
-
-    Datacenter/cloud IPs are routinely blocked by YouTube — every player client
-    comes back "This content isn't available" regardless of cookies. Routing ONLY
-    yt-dlp through a residential/mobile proxy fixes that without forcing Telegram
-    and the stock/LLM APIs through the same (often slow/metered) proxy. Set
-    ``YT_DLP_PROXY`` (e.g. ``http://user:pass@host:port`` or
-    ``socks5://host:port``); ``YOUTUBE_PROXY`` is accepted as an alias."""
-    return (os.getenv("YT_DLP_PROXY") or os.getenv("YOUTUBE_PROXY") or "").strip()
+    """First configured proxy (for display / back-compat); '' if none."""
+    ps = youtube_proxies()
+    return ps[0] if ps else ""
 
 
-def _youtube_proxy_opts() -> dict:
-    """yt-dlp ``proxy`` option for YouTube traffic, or ``{}`` when unset."""
-    p = youtube_proxy()
-    return {"proxy": p} if p else {}
+_proxy_rr_lock = threading.Lock()
+_proxy_rr_index = 0
+
+
+def _next_youtube_proxy() -> str:
+    """Round-robin one proxy from the pool (spreads load across backups). '' if
+    none configured."""
+    ps = youtube_proxies()
+    if not ps:
+        return ""
+    global _proxy_rr_index
+    with _proxy_rr_lock:
+        p = ps[_proxy_rr_index % len(ps)]
+        _proxy_rr_index += 1
+    return p
+
+
+def _youtube_proxy_opts(proxy=None) -> dict:
+    """yt-dlp ``proxy`` option. ``proxy=None`` round-robins the pool; an explicit
+    value (including '') is used as-is. Returns ``{}`` when there's no proxy."""
+    if proxy is None:
+        proxy = _next_youtube_proxy()
+    return {"proxy": proxy} if proxy else {}
+
+
+# Error substrings (lower-cased) that mean the PROXY itself failed (down, capped,
+# unreachable) rather than the video — so we should fail over to a backup proxy.
+# Deliberately excludes the "content isn't available" block class: that's handled
+# by rotation + the reselect repair loop, and cycling a dead video through every
+# slow proxy would just waste time.
+_YT_PROXY_FAILOVER_MARKERS = (
+    'proxy', 'timed out', 'timeout', 'connection reset', 'connection aborted',
+    'unable to connect', 'cannot connect', 'failed to connect',
+    'tunnel connection failed', 'remote end closed', 'max retries',
+    'connection refused', 'econnreset', 'getaddrinfo', 'name resolution',
+    'temporary failure', 'eof occurred',
+)
+
+
+def _is_proxy_failover_error(low: str) -> bool:
+    return any(m in low for m in _YT_PROXY_FAILOVER_MARKERS)
 
 
 _sanitized_cookie_cache: dict = {}
@@ -863,7 +910,7 @@ _YT_NO_COOKIE_RETRY_MARKERS = (
 )
 
 
-def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True, disable_cookies: bool = False, force_clients=_DOWNLOAD_PLAYER_CLIENTS):
+def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True, disable_cookies: bool = False, force_clients=_DOWNLOAD_PLAYER_CLIENTS, proxy=None):
     """
     Downloads a video using yt-dlp with progress tracking and interruption support.
     Supports Premiere Pro compatibility, strict quality, and size limits.
@@ -885,6 +932,10 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         disable_cookies = True
         if force_clients == _DOWNLOAD_PLAYER_CLIENTS:
             force_clients = None
+
+    # Pick the proxy for this attempt: an explicit one (a failover retry) or the
+    # next round-robin from the pool. '' means "no proxy configured".
+    chosen_proxy = proxy if proxy is not None else _next_youtube_proxy()
 
     # Map quality → target height. Accepts "1080", "1080p", or int; "Best"/"Worst"
     # are handled below as special selectors. Parsing the digits (rather than a
@@ -1012,7 +1063,7 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         **({} if disable_cookies else _get_cookie_opts()),
         # Route through a residential proxy when YT_DLP_PROXY is set — the only
         # real fix when the host's datacenter IP is blocked by YouTube.
-        **_youtube_proxy_opts(),
+        **_youtube_proxy_opts(chosen_proxy),
     }
 
     try:
@@ -1066,6 +1117,33 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             return
 
         err_str = str(e)
+        low = err_str.lower()
+
+        # Proxy failover: if this attempt went through a proxy that's down/capped
+        # /unreachable, retry the SAME video through the next untried backup proxy.
+        # Capped (YT_PROXY_MAX_FAILOVER, default 2) so a flaky pool can't stall one
+        # clip forever. Block errors aren't failed over here — rotation + the
+        # reselect repair loop handle a proxy whose IP got blocked.
+        proxies = youtube_proxies()
+        if chosen_proxy and len(proxies) > 1 and _is_proxy_failover_error(low):
+            tried = task_state.setdefault('_proxies_tried', [])
+            if chosen_proxy not in tried:
+                tried.append(chosen_proxy)
+            untried = [p for p in proxies if p not in tried]
+            try:
+                max_fail = int(os.getenv("YT_PROXY_MAX_FAILOVER", "2") or 2)
+            except ValueError:
+                max_fail = 2
+            if untried and len(tried) <= max_fail:
+                nxt = untried[0]
+                print(f"[yt-dlp] {url}: proxy failed ({err_str.strip()[:70]}) — "
+                      "failing over to a backup proxy")
+                download_video(url, output_path, quality, task_state,
+                               max_size_mb=max_size_mb, strict_quality=strict_quality,
+                               normalize=normalize, no_audio=no_audio,
+                               disable_cookies=disable_cookies,
+                               force_clients=force_clients, proxy=nxt)
+                return
 
         # With cookies configured, two failure classes almost always clear when
         # retried WITHOUT cookies:
@@ -1079,7 +1157,6 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         # clients (android_vr / tv_simply), which still serve the formats. Retry
         # once without cookies AND without forcing the cookie-only client set
         # (force_clients=None) so that fallback can actually happen.
-        low = err_str.lower()
         if (any(m in low for m in _YT_NO_COOKIE_RETRY_MARKERS)
                 and not disable_cookies
                 and _get_cookie_opts()
