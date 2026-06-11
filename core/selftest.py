@@ -117,6 +117,25 @@ def _pexels_download_check(state, out_dir):
     return False, f"download failed: {ts.get('error_msg', 'no file produced')}"
 
 
+def _ytdlp_version_check():
+    """Report the installed yt-dlp version and flag it if it looks stale —
+    YouTube changes often break a yt-dlp that's more than a few weeks old, and a
+    stale build is a common cause of every download failing at once."""
+    import yt_dlp
+    v = getattr(getattr(yt_dlp, "version", None), "__version__", "") or "?"
+    try:
+        from datetime import date
+        parts = v.split("-")[0].split(".")
+        vd = date(int(parts[0]), int(parts[1]), int(parts[2]))
+        age = (date.today() - vd).days
+        if age > 45:
+            return False, (f"{v} — {age} days old; STALE. YouTube breaks old "
+                           "yt-dlp — rebuild/upgrade (pip install -U yt-dlp).")
+        return True, f"{v} ({age}d old)"
+    except Exception:
+        return True, v
+
+
 def _yt_search_check(state):
     from core.director_search import search_youtube_classic
     errs: list = []
@@ -200,6 +219,7 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
         _run("Transcription (Whisper)", _transcription_check, critical=True)
         _run("Pexels search", lambda: _pexels_search_check(state),
              critical=bool(os.getenv("PEXELS_API_KEY")))
+        _run("yt-dlp version", _ytdlp_version_check, critical=False)
         _run("YouTube search (yt-dlp)", lambda: _yt_search_check(state), critical=True)
         _run("YouTube cookies", _cookie_check, critical=False)
         if do_downloads:

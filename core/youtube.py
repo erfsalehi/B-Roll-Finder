@@ -817,16 +817,55 @@ from core.ffmpeg_utils import normalize_video
 class DownloadInterrupt(Exception):
     pass
 
-def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True, disable_cookies: bool = False):
+
+# Player clients forced for DOWNLOADS when a cookie file is set. With cookies,
+# yt-dlp skips the anonymous android_vr/tv_simply clients, and web/mweb cap at
+# 360p without a GVS PO token — so these three are the cookie-compatible,
+# HD-capable set. The catch: on a datacenter IP a logged-in (cookie'd) session is
+# frequently answered with "This content isn't available" even for public videos,
+# and this client set can't recover. The download then falls back to cookie-less
+# mode with ``force_clients=None`` (yt-dlp's own anonymous client selection),
+# which serves those formats — see the retry in download_video.
+_DOWNLOAD_PLAYER_CLIENTS = ('tv', 'web_safari', 'web_embedded')
+
+# Error substrings (lower-cased) that, when cookies are active, are worth one
+# automatic cookie-less retry. Covers the PO-token format error AND the
+# datacenter-IP "this content isn't available" / "video unavailable" block, both
+# of which usually clear without cookies. ("content isn" matches the straight and
+# curly apostrophe forms of "isn't".)
+_YT_NO_COOKIE_RETRY_MARKERS = (
+    'requested format is not available',
+    'content isn',
+    'video unavailable',
+    'sign in to confirm',
+    'not available on this app',
+    'failed to extract any player response',
+)
+
+
+def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True, disable_cookies: bool = False, force_clients=_DOWNLOAD_PLAYER_CLIENTS):
     """
     Downloads a video using yt-dlp with progress tracking and interruption support.
     Supports Premiere Pro compatibility, strict quality, and size limits.
 
     ``disable_cookies`` skips the cookie source for THIS call only — used by the
-    format-error retry below. (It must not flip the module-global
-    ``_cookies_broken``: downloads run in parallel, and a temporary global flip
-    would silently strip cookies from every concurrent download.)
+    no-cookie retry below. (It must not flip the module-global ``_cookies_broken``:
+    downloads run in parallel, and a temporary global flip would silently strip
+    cookies from every concurrent download.) ``force_clients`` is the YouTube
+    player-client list to force, or ``None`` to let yt-dlp pick (used by the
+    cookie-less retry so it can reach the anonymous android_vr/tv_simply clients).
     """
+    # Escape hatch for servers where logged-in YouTube downloads are IP-blocked
+    # but anonymous ones work: YT_DOWNLOAD_NO_COOKIES=1 skips cookies (and the
+    # cookie-only client set) for downloads from the very first attempt, so we
+    # don't waste a failed cookie'd try on every clip.
+    if (not disable_cookies
+            and os.getenv("YT_DOWNLOAD_NO_COOKIES", "").strip().lower()
+            in ("1", "true", "yes", "on")):
+        disable_cookies = True
+        if force_clients == _DOWNLOAD_PLAYER_CLIENTS:
+            force_clients = None
+
     # Map quality → target height. Accepts "1080", "1080p", or int; "Best"/"Worst"
     # are handled below as special selectors. Parsing the digits (rather than a
     # fixed lookup) means a bare "1080" from the headless/bot path actually caps
@@ -937,16 +976,13 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
         },
-        'extractor_args': {
-            'youtube': {
-                # Must match the search/probe clients: with a cookiefile set,
-                # yt-dlp skips android_vr/tv_simply, and web/mweb only expose
-                # 360p without a GVS PO token. 'tv'/'web_safari'/'web_embedded'
-                # accept cookies and return the full HD/4K list with no PO token
-                # (Deno solves the nsig challenge so the URLs download).
-                'player_client': ['tv', 'web_safari', 'web_embedded'],
-            }
-        },
+        # Force the cookie-compatible client set by default; on the cookie-less
+        # retry force_clients is None so yt-dlp uses its own anonymous selection
+        # (android_vr/tv_simply/…), which serves formats the cookie'd clients are
+        # blocked from on a datacenter IP. (Deno solves the nsig challenge either
+        # way so the URLs download.)
+        'extractor_args': ({'youtube': {'player_client': list(force_clients)}}
+                           if force_clients else {}),
         # Premiere Pro compatibility: ensure standard MP4 container
         'postprocessors': [{
             'key': 'FFmpegVideoConvertor',
@@ -1008,24 +1044,32 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
 
         err_str = str(e)
 
-        # "Requested format is not available" with cookies configured almost
-        # always means YouTube's logged-in pipeline kicked us onto a PO-token-
-        # gated client (web/mweb) which then returned zero formats. The same
-        # request without cookies usually succeeds because yt-dlp falls back
-        # to android_vr / tv_simply which still serve format lists publicly.
-        # Auto-retry once without cookies before reporting the error.
-        if ('Requested format is not available' in err_str
+        # With cookies configured, two failure classes almost always clear when
+        # retried WITHOUT cookies:
+        #   * "Requested format is not available" — YouTube kicked the logged-in
+        #     request onto a PO-token-gated client (web/mweb) that returned zero
+        #     formats.
+        #   * "This content isn't available" / "Video unavailable" — on a
+        #     datacenter IP a logged-in session is frequently blocked for videos
+        #     that are perfectly public anonymously.
+        # In both cases the cookie-less request falls back to yt-dlp's anonymous
+        # clients (android_vr / tv_simply), which still serve the formats. Retry
+        # once without cookies AND without forcing the cookie-only client set
+        # (force_clients=None) so that fallback can actually happen.
+        low = err_str.lower()
+        if (any(m in low for m in _YT_NO_COOKIE_RETRY_MARKERS)
                 and not disable_cookies
                 and _get_cookie_opts()
                 and not task_state.get('_retried_no_cookies')):
-            print(f"[yt-dlp] {url}: format not available with cookies — retrying without cookies")
+            print(f"[yt-dlp] {url}: \"{err_str.strip()[:90]}\" with cookies — "
+                  "retrying cookie-less with anonymous clients")
             task_state['_retried_no_cookies'] = True
             # Strip cookies for this call only (never via the module-global —
             # that would race with concurrent downloads).
             download_video(url, output_path, quality, task_state,
                            max_size_mb=max_size_mb, strict_quality=strict_quality,
                            normalize=normalize, no_audio=no_audio,
-                           disable_cookies=True)
+                           disable_cookies=True, force_clients=None)
             return
 
         task_state['status'] = 'error'

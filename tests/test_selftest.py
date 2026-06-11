@@ -47,6 +47,8 @@ def _patch_all(monkeypatch, *, yt_dl_ok=True, ffmpeg=True, pexels_key=True):
             ts["error_msg"] = "Video unavailable. This content isn't available."
     monkeypatch.setattr(core.youtube, "download_video", _ytdl)
     monkeypatch.setattr(core.youtube, "cookie_mode", lambda: (True, "file ok"))
+    # Don't let the real (possibly stale) yt-dlp version flip the rollup.
+    monkeypatch.setattr(st, "_ytdlp_version_check", lambda: (True, "fresh"))
 
 
 def _by_name(report):
@@ -95,6 +97,22 @@ def test_self_test_fails_without_ffmpeg(monkeypatch):
     res = _by_name(report)
     assert res["ffmpeg"]["ok"] is False
     assert report["ok"] is False
+
+
+def test_ytdlp_version_flags_stale(monkeypatch):
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp.version, "__version__", "2020.01.01", raising=False)
+    ok, detail = st._ytdlp_version_check()
+    assert ok is False and "stale" in detail.lower()
+
+
+def test_ytdlp_version_ok_when_fresh(monkeypatch):
+    import yt_dlp
+    from datetime import date
+    monkeypatch.setattr(yt_dlp.version, "__version__", date.today().isoformat(),
+                        raising=False)
+    ok, detail = st._ytdlp_version_check()
+    assert ok is True
 
 
 # ── bot wiring ────────────────────────────────────────────────────────────────
