@@ -235,14 +235,21 @@ def _yt_client_probe_check(state):
     for lbl, ok, detail in probe:
         icon = "✅" if ok else ("➖" if ok is None else "❌")
         lines.append(f"   {icon} {lbl}: {detail}")
+    from core.youtube import youtube_proxy
+    proxy = youtube_proxy()
     if working:
         head = (f"a WORKING config exists → \"{working[0]}\". "
                 "Set the matching client (or YT_DOWNLOAD_NO_COOKIES=1 if a "
                 "no-cookies row works).")
+    elif proxy:
+        head = (f"EVERY client failed even via YT_DLP_PROXY ({_mask_proxy(proxy)}) → "
+                "that proxy IP is ALSO blocked by YouTube. Use a different "
+                "residential/mobile proxy. It is NOT a code bug.")
     else:
-        head = ("EVERY client failed the same way → this datacenter IP is blocked "
-                "for YouTube playback (needs a residential proxy via APP_PROXY, or "
-                "a PO-token provider). It is NOT a code bug.")
+        head = ("EVERY client failed the same way → this host's IP is blocked by "
+                "YouTube for playback. Fix: set YT_DLP_PROXY to a residential/mobile "
+                "proxy (http://user:pass@host:port or socks5://host:port) and re-run "
+                "/test. It is NOT a code bug — no client/cookie change helps an IP block.")
     return (bool(working), head + "\n" + "\n".join(lines))
 
 
@@ -250,6 +257,21 @@ def _cookie_check():
     from core.youtube import cookie_mode
     ok, detail = cookie_mode()
     return ok, detail
+
+
+def _mask_proxy(url: str) -> str:
+    """Hide any user:pass in a proxy URL before showing it in the report."""
+    import re
+    return re.sub(r"//[^@/]+@", "//***@", url or "")
+
+
+def _youtube_proxy_check():
+    from core.youtube import youtube_proxy
+    p = youtube_proxy()
+    if not p:
+        return None, ("not set — fine unless YouTube blocks this host's IP; then set "
+                      "YT_DLP_PROXY to a residential proxy")
+    return True, f"YT_DLP_PROXY = {_mask_proxy(p)}"
 
 
 def run_self_test(do_downloads: bool = True, quality: str = "360",
@@ -288,6 +310,7 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
         _run("yt-dlp auto-update", _ytdlp_update_check, critical=False)
         _run("YouTube search (yt-dlp)", lambda: _yt_search_check(state), critical=True)
         _run("YouTube cookies", _cookie_check, critical=False)
+        _run("YouTube proxy", _youtube_proxy_check, critical=False)
         if do_downloads:
             _run("Pexels download", lambda: _pexels_download_check(state, tmp_dir),
                  critical=bool(os.getenv("PEXELS_API_KEY")))

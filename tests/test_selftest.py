@@ -186,6 +186,44 @@ def test_yt_client_probe_skipped_when_downloads_ok():
     assert ok is None
 
 
+def test_youtube_proxy_opts(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.delenv("YT_DLP_PROXY", raising=False)
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    assert yt.youtube_proxy() == ""
+    assert yt._youtube_proxy_opts() == {}
+    monkeypatch.setenv("YT_DLP_PROXY", "http://u:p@host:8080")
+    assert yt._youtube_proxy_opts() == {"proxy": "http://u:p@host:8080"}
+
+
+def test_mask_proxy_hides_credentials():
+    assert st._mask_proxy("http://user:pass@1.2.3.4:8080") == "http://***@1.2.3.4:8080"
+    assert st._mask_proxy("socks5://1.2.3.4:1080") == "socks5://1.2.3.4:1080"
+
+
+def test_probe_message_suggests_proxy_when_unset(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.delenv("YT_DLP_PROXY", raising=False)
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.setattr(yt, "probe_download_clients",
+                        lambda url, **k: [("cookies + tv", False, "unavailable")])
+    ok, detail = st._yt_client_probe_check(
+        {"yt_download_failed": True, "yt_results": [{"url": "u"}]})
+    assert ok is False and "YT_DLP_PROXY" in detail
+
+
+def test_probe_message_blames_proxy_when_set(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.setenv("YT_DLP_PROXY", "http://user:secret@host:8080")
+    monkeypatch.setattr(yt, "probe_download_clients",
+                        lambda url, **k: [("cookies + tv", False, "unavailable")])
+    ok, detail = st._yt_client_probe_check(
+        {"yt_download_failed": True, "yt_results": [{"url": "u"}]})
+    assert ok is False
+    assert "proxy IP is ALSO blocked" in detail
+    assert "secret" not in detail        # credentials masked
+
+
 def test_self_test_failure_runs_probe(monkeypatch):
     _patch_all(monkeypatch, yt_dl_ok=False)
     report = st.run_self_test(do_downloads=True)

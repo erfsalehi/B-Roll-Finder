@@ -104,6 +104,24 @@ def _get_cookie_opts() -> dict:
     return {}
 
 
+def youtube_proxy() -> str:
+    """The proxy URL to route YouTube (yt-dlp) traffic through, or ''.
+
+    Datacenter/cloud IPs are routinely blocked by YouTube — every player client
+    comes back "This content isn't available" regardless of cookies. Routing ONLY
+    yt-dlp through a residential/mobile proxy fixes that without forcing Telegram
+    and the stock/LLM APIs through the same (often slow/metered) proxy. Set
+    ``YT_DLP_PROXY`` (e.g. ``http://user:pass@host:port`` or
+    ``socks5://host:port``); ``YOUTUBE_PROXY`` is accepted as an alias."""
+    return (os.getenv("YT_DLP_PROXY") or os.getenv("YOUTUBE_PROXY") or "").strip()
+
+
+def _youtube_proxy_opts() -> dict:
+    """yt-dlp ``proxy`` option for YouTube traffic, or ``{}`` when unset."""
+    p = youtube_proxy()
+    return {"proxy": p} if p else {}
+
+
 _sanitized_cookie_cache: dict = {}
 
 
@@ -457,6 +475,7 @@ def _fetch_full_info(url: str) -> dict:
         'ignore_no_formats_error': True,
         'allow_unplayable_formats': True,
         **_get_cookie_opts(),
+        **_youtube_proxy_opts(),
     }
     try:
         info = _extract_info_with_backoff(ydl_opts, url, process=False) or {}
@@ -588,6 +607,7 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
         'socket_timeout': 20,
         'extractor_args': _YT_EXTRACTOR_ARGS,
         **_get_cookie_opts(),
+        **_youtube_proxy_opts(),
     }
 
     try:
@@ -990,6 +1010,9 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         }],
         # Inject cookies (browser session or cookies.txt) — eliminates bot checks
         **({} if disable_cookies else _get_cookie_opts()),
+        # Route through a residential proxy when YT_DLP_PROXY is set — the only
+        # real fix when the host's datacenter IP is blocked by YouTube.
+        **_youtube_proxy_opts(),
     }
 
     try:
@@ -1132,6 +1155,9 @@ def probe_download_clients(url: str, per_timeout: int = 25) -> list:
             'socket_timeout': per_timeout,
             'extractor_args': ({'youtube': {'player_client': clients}}
                                if clients else {}),
+            # Honor YT_DLP_PROXY so re-running /test after setting a residential
+            # proxy actually probes through it.
+            **_youtube_proxy_opts(),
         }
         if use_cookies:
             ck = _get_cookie_opts()
