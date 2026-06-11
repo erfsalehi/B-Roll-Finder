@@ -104,20 +104,83 @@ def _get_cookie_opts() -> dict:
     return {}
 
 
-def youtube_proxies() -> list:
-    """All configured YouTube proxies, in order. Routing ONLY yt-dlp through a
-    residential/mobile proxy is the fix when the host's datacenter IP is blocked
-    by YouTube ("This content isn't available" on every client), without forcing
-    Telegram/stock/LLM traffic through the same (often slow/metered) proxy.
-
-    Set ``YT_DLP_PROXY`` to one proxy or a LIST (comma / whitespace / newline
-    separated) for backups — e.g.
-    ``http://user:pass@a:1, http://user:pass@b:1, socks5://c:2``. The pool is
-    round-robined per request (spreads load across free proxies' bandwidth caps)
-    and a download fails over to the next proxy when one is down. ``YOUTUBE_PROXY``
-    is accepted as an alias."""
+def _static_youtube_proxies() -> list:
+    """Proxies listed inline in ``YT_DLP_PROXY`` / ``YOUTUBE_PROXY``."""
     raw = os.getenv("YT_DLP_PROXY") or os.getenv("YOUTUBE_PROXY") or ""
     return [p.strip() for p in re.split(r"[\s,;]+", raw.strip()) if p.strip()]
+
+
+def _parse_proxy_lines(text: str) -> list:
+    """Parse a fetched proxy list (one per line). Accepts ``protocol://ip:port``
+    or a bare ``ip:port`` (assumed http). Skips blanks/comments."""
+    out = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if "://" not in s:
+            s = "http://" + s
+        out.append(s)
+    return out
+
+
+# Cache for a fetched proxy list (free lists churn, so refetch on a TTL).
+_proxy_url_cache = {"ts": 0.0, "list": []}
+_proxy_url_lock = threading.Lock()
+
+
+def _dynamic_youtube_proxies() -> list:
+    """Fetch the proxy list from ``YT_DLP_PROXY_URL`` (e.g. a ProxyScrape free
+    list), cached for ``YT_DLP_PROXY_URL_TTL`` seconds (default 600). On a fetch
+    error the last good list is reused. Returns ``[]`` when the URL is unset."""
+    url = (os.getenv("YT_DLP_PROXY_URL") or "").strip()
+    if not url:
+        return []
+    try:
+        ttl = float(os.getenv("YT_DLP_PROXY_URL_TTL", "600") or 600)
+    except ValueError:
+        ttl = 600.0
+    now = time.time()
+    with _proxy_url_lock:
+        if _proxy_url_cache["list"] and now - _proxy_url_cache["ts"] < ttl:
+            return _proxy_url_cache["list"]
+    try:
+        import requests
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        proxies = _parse_proxy_lines(r.text)
+    except Exception as e:
+        print(f"[yt-dlp] proxy-list fetch failed ({url}): {e}")
+        with _proxy_url_lock:
+            return list(_proxy_url_cache["list"])   # last good (maybe empty)
+    with _proxy_url_lock:
+        _proxy_url_cache["ts"] = now
+        _proxy_url_cache["list"] = proxies
+    print(f"[yt-dlp] fetched {len(proxies)} proxies from {url}")
+    return proxies
+
+
+def youtube_proxies() -> list:
+    """All YouTube proxies to use, in order — inline (``YT_DLP_PROXY`` /
+    ``YOUTUBE_PROXY``) first, then any fetched from ``YT_DLP_PROXY_URL`` —
+    de-duplicated. Routing ONLY yt-dlp through a residential/mobile proxy is the
+    fix when the host's datacenter IP is blocked by YouTube ("This content isn't
+    available" on every client), without forcing Telegram/stock/LLM traffic
+    through the same (often slow/metered) proxy.
+
+    ``YT_DLP_PROXY`` takes one proxy or a LIST (comma / whitespace / newline
+    separated). ``YT_DLP_PROXY_URL`` points at a text list (one ``protocol://ip:port``
+    per line). The combined pool is round-robined per request (spreads load), and
+    a download fails over to the next proxy on a connection error — or, when the
+    pool is large, on a YouTube block too (so it hops past blocked IPs). With an
+    untrusted free list, set ``YT_DOWNLOAD_NO_COOKIES=1`` so your YouTube session
+    cookies aren't sent through random proxies."""
+    seen, out = set(), []
+    for p in _static_youtube_proxies() + _dynamic_youtube_proxies():
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
 
 
 def youtube_proxy() -> str:
@@ -167,6 +230,17 @@ _YT_PROXY_FAILOVER_MARKERS = (
 
 def _is_proxy_failover_error(low: str) -> bool:
     return any(m in low for m in _YT_PROXY_FAILOVER_MARKERS)
+
+
+# A YouTube playback block ("This content isn't available" / "Video unavailable").
+# When there's a POOL of proxies we also fail over on these — a blocked proxy IP
+# should be skipped for the next one. With a single proxy we don't (rotation + the
+# reselect repair loop handle it, and cycling a dead video would just be slow).
+_YT_BLOCK_MARKERS = ("content isn", "video unavailable", "not available on this app")
+
+
+def _is_block_error(low: str) -> bool:
+    return any(m in low for m in _YT_BLOCK_MARKERS)
 
 
 _sanitized_cookie_cache: dict = {}
@@ -1119,13 +1193,15 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         err_str = str(e)
         low = err_str.lower()
 
-        # Proxy failover: if this attempt went through a proxy that's down/capped
-        # /unreachable, retry the SAME video through the next untried backup proxy.
-        # Capped (YT_PROXY_MAX_FAILOVER, default 2) so a flaky pool can't stall one
-        # clip forever. Block errors aren't failed over here — rotation + the
-        # reselect repair loop handle a proxy whose IP got blocked.
+        # Proxy failover: if this attempt's proxy is down/capped/unreachable —
+        # or (with a multi-proxy pool) its IP got YouTube-blocked — retry the SAME
+        # video through the next untried proxy. Capped by YT_PROXY_MAX_FAILOVER
+        # (default 2) so a flaky/free pool can't stall one clip forever. A single
+        # proxy never block-fails-over (rotation + the reselect repair loop cover
+        # that, and cycling a dead video would just be slow).
         proxies = youtube_proxies()
-        if chosen_proxy and len(proxies) > 1 and _is_proxy_failover_error(low):
+        if (chosen_proxy and len(proxies) > 1
+                and (_is_proxy_failover_error(low) or _is_block_error(low))):
             tried = task_state.setdefault('_proxies_tried', [])
             if chosen_proxy not in tried:
                 tried.append(chosen_proxy)

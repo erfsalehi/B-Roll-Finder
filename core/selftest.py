@@ -270,15 +270,22 @@ def _mask_proxy(url: str) -> str:
 def _youtube_proxy_check():
     from core.youtube import youtube_proxies
     ps = youtube_proxies()
+    src = "from YT_DLP_PROXY_URL list" if os.getenv("YT_DLP_PROXY_URL", "").strip() else ""
     if not ps:
+        extra = " (URL fetched 0 — list empty/unreachable)" if src else ""
         return None, ("not set — fine unless YouTube blocks this host's IP; then set "
-                      "YT_DLP_PROXY to a residential proxy")
+                      "YT_DLP_PROXY to a residential proxy" + extra)
+    # Untrusted free list + cookies + nocheckcertificate = cookie-theft risk.
+    cookie_warn = ""
+    if src and os.getenv("YT_DOWNLOAD_NO_COOKIES", "").strip().lower() not in ("1", "true", "yes", "on"):
+        cookie_warn = "  ⚠️ set YT_DOWNLOAD_NO_COOKIES=1 — untrusted proxies shouldn't see your cookies"
     shown = ", ".join(_mask_proxy(p) for p in ps[:4])
     if len(ps) > 4:
         shown += f", +{len(ps) - 4} more"
-    if len(ps) == 1:
-        return True, f"YT_DLP_PROXY = {shown}"
-    return True, f"{len(ps)} proxies (round-robin + failover): {shown}"
+    label = "1 proxy" if len(ps) == 1 else f"{len(ps)} proxies (round-robin + failover)"
+    if src:
+        label += f" {src}"
+    return (False, label + ": " + shown + cookie_warn) if cookie_warn else (True, f"{label}: {shown}")
 
 
 def run_self_test(do_downloads: bool = True, quality: str = "360",

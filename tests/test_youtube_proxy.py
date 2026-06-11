@@ -6,6 +6,7 @@ import core.youtube as yt
 
 def test_youtube_proxies_parsing(monkeypatch):
     monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
     monkeypatch.setenv("YT_DLP_PROXY", "http://a:1, http://b:2\n socks5://c:3 ;http://d:4")
     assert yt.youtube_proxies() == ["http://a:1", "http://b:2", "socks5://c:3", "http://d:4"]
     assert yt.youtube_proxy() == "http://a:1"
@@ -34,6 +35,52 @@ def test_youtube_proxy_opts(monkeypatch):
     assert yt._youtube_proxy_opts() == {}
     assert yt._youtube_proxy_opts("http://x:1") == {"proxy": "http://x:1"}
     assert yt._youtube_proxy_opts("") == {}
+
+
+# ── dynamic proxy list (YT_DLP_PROXY_URL) ─────────────────────────────────────
+
+def test_parse_proxy_lines():
+    text = "http://1.2.3.4:8080\nsocks5://5.6.7.8:1080\n# a comment\n\n9.10.11.12:3128\n"
+    assert yt._parse_proxy_lines(text) == [
+        "http://1.2.3.4:8080", "socks5://5.6.7.8:1080", "http://9.10.11.12:3128"]
+
+
+def test_dynamic_proxies_fetch_merge_and_cache(monkeypatch):
+    import requests
+    monkeypatch.setenv("YT_DLP_PROXY", "http://static:1")
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setattr(yt, "_proxy_url_cache", {"ts": 0.0, "list": []})
+
+    calls = {"n": 0}
+
+    class _R:
+        text = "http://static:1\nhttp://dyn:2\n"   # static dup is de-duped
+        def raise_for_status(self):
+            pass
+
+    def _get(url, timeout=20):
+        calls["n"] += 1
+        return _R()
+    monkeypatch.setattr(requests, "get", _get)
+
+    assert yt.youtube_proxies() == ["http://static:1", "http://dyn:2"]
+    yt.youtube_proxies()                     # within TTL → served from cache
+    assert calls["n"] == 1
+
+
+def test_dynamic_proxies_fetch_error_is_safe(monkeypatch):
+    import requests
+    monkeypatch.delenv("YT_DLP_PROXY", raising=False)
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setattr(yt, "_proxy_url_cache", {"ts": 0.0, "list": []})
+
+    def _boom(*a, **k):
+        raise Exception("list host down")
+    monkeypatch.setattr(requests, "get", _boom)
+
+    assert yt.youtube_proxies() == []        # no crash, no last-good → empty
 
 
 class _FakeYDL:
@@ -78,6 +125,32 @@ def test_download_video_fails_over_to_backup_proxy(monkeypatch, tmp_path):
     assert ts["status"] == "completed"
     assert _FakeYDL._used == ["http://A:1", "http://B:1"]   # A failed → B
     assert os.path.exists(out) and os.path.getsize(out) > 0
+
+
+def test_download_video_fails_over_on_block_with_pool(monkeypatch, tmp_path):
+    # A multi-proxy pool hops past a proxy whose IP is YouTube-blocked.
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
+    monkeypatch.setenv("YT_DLP_PROXY", "http://A:1, http://B:1")
+    monkeypatch.setattr(yt, "_proxy_rr_index", 0)
+    _FakeYDL._dead = set()      # not a connection error — a block error:
+
+    class _BlockYDL(_FakeYDL):
+        def download(self, urls):
+            proxy = self.opts.get("proxy")
+            _FakeYDL._used.append(proxy)
+            if proxy == "http://A:1":
+                raise Exception("ERROR: [youtube] X: Video unavailable. "
+                                "This content isn't available.")
+            with open(self.opts["outtmpl"], "wb") as f:
+                f.write(b"ok")
+    _FakeYDL._used = []
+    monkeypatch.setattr(yt.yt_dlp, "YoutubeDL", _BlockYDL)
+
+    ts: dict = {}
+    yt.download_video("https://y/1", str(tmp_path / "v.mp4"), "360", ts, no_audio=True)
+    assert ts["status"] == "completed"
+    assert _FakeYDL._used == ["http://A:1", "http://B:1"]
 
 
 def test_download_video_proxy_failover_capped(monkeypatch, tmp_path):
