@@ -1287,6 +1287,29 @@ def _config_has_downloadable_format(info: dict) -> bool:
     return False
 
 
+def probe_proxy(test_url: str, proxy: str, timeout: int = 10) -> tuple:
+    """Quick liveness + YouTube-playability check of ONE proxy. Cookie-less on
+    purpose — never send the YouTube session through an untrusted (e.g. free-list)
+    proxy. Returns ``(ok, detail)``; ``ok`` means the proxy reached YouTube and a
+    downloadable format came back."""
+    opts = {
+        'logger': _QuietLogger(),
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'socket_timeout': timeout,
+        'extractor_args': {},
+        'nocheckcertificate': True,
+        'proxy': proxy,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(test_url, download=False)
+        return (_config_has_downloadable_format(info or {}), "ok")
+    except Exception as e:
+        return (False, (str(e).strip().splitlines() or ["?"])[-1][:120])
+
+
 def probe_download_clients(url: str, per_timeout: int = 25) -> list:
     """Diagnostic: try resolving a YouTube video's formats under several
     cookie/player-client combinations and report which actually yield a

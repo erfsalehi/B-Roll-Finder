@@ -55,6 +55,9 @@ def _patch_all(monkeypatch, *, yt_dl_ok=True, ffmpeg=True, pexels_key=True):
     # rollup in the generic-path tests.
     monkeypatch.setattr(st, "_ytdlp_version_check", lambda: (True, "fresh"))
     monkeypatch.setattr(st, "_ytdlp_update_check", lambda: (True, "last ran today"))
+    # The free-list health check is skipped unless YT_DLP_PROXY_URL is set; keep
+    # the generic-path tests deterministic regardless of the dev's shell env.
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
 
 
 def _by_name(report):
@@ -229,6 +232,40 @@ def test_self_test_failure_runs_probe(monkeypatch):
     report = st.run_self_test(do_downloads=True)
     names = {r["name"] for r in report["results"]}
     assert "YouTube client probe" in names      # probe runs on download failure
+
+
+def test_dynamic_proxy_health_skipped_when_no_url(monkeypatch):
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
+    ok, detail = st._dynamic_proxy_health_check({})
+    assert ok is None and "skipped" in detail
+
+
+def test_dynamic_proxy_health_reports_working(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setattr(yt, "_dynamic_youtube_proxies",
+                        lambda: ["http://a:1", "http://b:2", "http://c:3"])
+    monkeypatch.setattr(yt, "probe_proxy",
+                        lambda url, p, timeout=10: (p == "http://b:2", "x"))
+    ok, detail = st._dynamic_proxy_health_check({"yt_results": [{"url": "https://y/1"}]})
+    assert ok is True and "1/3" in detail
+
+
+def test_dynamic_proxy_health_reports_all_dead(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setattr(yt, "_dynamic_youtube_proxies", lambda: ["http://a:1", "http://b:2"])
+    monkeypatch.setattr(yt, "probe_proxy", lambda url, p, timeout=10: (False, "dead"))
+    ok, detail = st._dynamic_proxy_health_check({})
+    assert ok is False and "0/2" in detail
+
+
+def test_dynamic_proxy_health_empty_list(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setattr(yt, "_dynamic_youtube_proxies", lambda: [])
+    ok, detail = st._dynamic_proxy_health_check({})
+    assert ok is False and "0 proxies" in detail
 
 
 # ── bot wiring ────────────────────────────────────────────────────────────────

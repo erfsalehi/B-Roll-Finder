@@ -168,6 +168,53 @@ def _ytdlp_update_check():
     return True, detail
 
 
+def _dynamic_proxy_health_check(state):
+    """When a free/dynamic proxy list is configured (YT_DLP_PROXY_URL), sample it
+    and test each proxy against YouTube so the report shows whether 'the new way'
+    actually works and how many of the pool are usable. Skipped when no list URL
+    is set."""
+    if not os.getenv("YT_DLP_PROXY_URL", "").strip():
+        return None, "skipped (YT_DLP_PROXY_URL not set)"
+    import concurrent.futures
+    import random
+    from core.youtube import _dynamic_youtube_proxies, probe_proxy
+
+    pool = _dynamic_youtube_proxies()
+    if not pool:
+        return False, "fetched 0 proxies from the list (empty or unreachable)"
+
+    results = state.get("yt_results") or []
+    # A real B-roll hit if we have one, else yt-dlp's classic always-up test video.
+    test_url = (results[0].get("url") if results
+                else "https://www.youtube.com/watch?v=BaW_jenozKc")
+
+    try:
+        sample_n = int(os.getenv("PROXY_HEALTH_SAMPLE", "20") or 20)
+    except ValueError:
+        sample_n = 20
+    sample = pool if len(pool) <= sample_n else random.sample(pool, sample_n)
+
+    working = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+        futs = {ex.submit(probe_proxy, test_url, p): p for p in sample}
+        for f in concurrent.futures.as_completed(futs):
+            try:
+                ok, _ = f.result()
+            except Exception:
+                ok = False
+            if ok:
+                working.append(futs[f])
+
+    n, s = len(working), len(sample)
+    if working:
+        return True, (f"{n}/{s} sampled proxies can download YouTube (pool size "
+                      f"{len(pool)}) — the free-list path works. e.g. "
+                      f"{_mask_proxy(working[0])}")
+    return False, (f"0/{s} sampled proxies could reach YouTube (pool size {len(pool)}) "
+                   "— this free list isn't usable right now; a residential proxy "
+                   "(YT_DLP_PROXY) is the reliable fix")
+
+
 def _yt_search_check(state):
     from core.director_search import search_youtube_classic
     errs: list = []
@@ -325,6 +372,8 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
         _run("YouTube search (yt-dlp)", lambda: _yt_search_check(state), critical=True)
         _run("YouTube cookies", _cookie_check, critical=False)
         _run("YouTube proxy", _youtube_proxy_check, critical=False)
+        _run("Free proxy-list health", lambda: _dynamic_proxy_health_check(state),
+             critical=False)
         if do_downloads:
             _run("Pexels download", lambda: _pexels_download_check(state, tmp_dir),
                  critical=bool(os.getenv("PEXELS_API_KEY")))

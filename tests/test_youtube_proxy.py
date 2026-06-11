@@ -127,6 +127,28 @@ def test_download_video_fails_over_to_backup_proxy(monkeypatch, tmp_path):
     assert os.path.exists(out) and os.path.getsize(out) > 0
 
 
+def test_probe_proxy_ok_and_fail(monkeypatch):
+    class _OkYDL:
+        def __init__(self, opts):
+            self.opts = opts
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def extract_info(self, u, download=False):
+            return {"formats": [{"url": "http://f", "vcodec": "avc1", "height": 720}]}
+    monkeypatch.setattr(yt.yt_dlp, "YoutubeDL", _OkYDL)
+    ok, _ = yt.probe_proxy("https://y/1", "http://A:1")
+    assert ok is True
+
+    class _BadYDL(_OkYDL):
+        def extract_info(self, u, download=False):
+            raise Exception("Unable to connect to proxy: timed out")
+    monkeypatch.setattr(yt.yt_dlp, "YoutubeDL", _BadYDL)
+    ok, detail = yt.probe_proxy("https://y/1", "http://A:1")
+    assert ok is False and "timed out" in detail
+
+
 def test_download_video_fails_over_on_block_with_pool(monkeypatch, tmp_path):
     # A multi-proxy pool hops past a proxy whose IP is YouTube-blocked.
     monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
