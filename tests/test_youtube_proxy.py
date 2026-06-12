@@ -127,6 +127,52 @@ def test_download_video_fails_over_to_backup_proxy(monkeypatch, tmp_path):
     assert os.path.exists(out) and os.path.getsize(out) > 0
 
 
+def test_next_proxy_uses_pool_when_active(monkeypatch):
+    import core.proxy_pool as pp
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setattr(pp, "get_proxy", lambda: "http://pooled:1")
+    assert yt._next_youtube_proxy() == "http://pooled:1"
+
+
+def test_download_failover_pool_mode_marks_dead(monkeypatch, tmp_path):
+    import core.proxy_pool as pp
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.delenv("YT_DLP_PROXY", raising=False)
+    monkeypatch.setattr(yt, "youtube_proxies", lambda: [])    # avoid real list fetch
+    monkeypatch.setattr(pp, "pool_active", lambda: True)
+
+    seq = iter(["http://P1", "http://P2"])
+    monkeypatch.setattr(pp, "get_proxy", lambda: next(seq, "http://P2"))
+    dead = []
+    monkeypatch.setattr(pp, "mark_dead", lambda p: dead.append(p))
+
+    used = []
+
+    class _FakeYDL:
+        def __init__(self, opts):
+            self.opts = opts
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def extract_info(self, u, download=False):
+            return {}
+        def download(self, urls):
+            p = self.opts.get("proxy")
+            used.append(p)
+            if p == "http://P1":
+                raise Exception("Unable to connect to proxy: timed out")
+            with open(self.opts["outtmpl"], "wb") as f:
+                f.write(b"ok")
+    monkeypatch.setattr(yt.yt_dlp, "YoutubeDL", _FakeYDL)
+
+    ts: dict = {}
+    yt.download_video("https://y/1", str(tmp_path / "v.mp4"), "360", ts, no_audio=True)
+    assert ts["status"] == "completed"
+    assert dead == ["http://P1"]                 # bad proxy evicted from pool
+    assert used == ["http://P1", "http://P2"]    # failed over to a pooled proxy
+
+
 def test_probe_proxy_ok_and_fail(monkeypatch):
     class _OkYDL:
         def __init__(self, opts):

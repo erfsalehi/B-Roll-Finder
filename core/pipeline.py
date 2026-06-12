@@ -1090,6 +1090,13 @@ def finalize_project(shots: list, project_name: str, quality: str = "1080",
     /refine may have changed the selection. Returns ``{download, xml_path,
     validation}``."""
     key = groq_key or os.getenv("GROQ_API_KEY")
+    # Make sure a pool of validated proxies is ready before downloading through it.
+    if os.getenv("YT_DLP_PROXY_URL", "").strip():
+        try:
+            from core import proxy_pool
+            proxy_pool.ensure_working()
+        except Exception as e:
+            errors.append(f"proxy pool: {e}")
     validation = enforce_timeline(shots, groq_key=key,
                                   video_topic=video_topic, errors=errors)
     ensure_youtube_coverage(shots, groq_key=key, video_topic=video_topic, errors=errors)
@@ -1196,6 +1203,20 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
                 progress_callback(step, total, label)
             except Exception:
                 pass
+
+    # 0 — Validate a pool of working proxies BEFORE anything hits YouTube, so
+    # search/download use known-good IPs instead of timing out on dead ones (only
+    # when a dynamic proxy list is configured).
+    if os.getenv("YT_DLP_PROXY_URL", "").strip():
+        try:
+            from core import proxy_pool
+            _p(1, "Finding working proxies")
+            n = len(proxy_pool.ensure_working(progress=lambda lbl: _p(1, lbl)))
+            if n == 0:
+                errors.append("proxy pool: found 0 working proxies — YouTube "
+                              "downloads will likely fail (try /proxies refresh)")
+        except Exception as e:
+            errors.append(f"proxy pool: {e}")
 
     # 1 — Transcribe
     _p(1, "Transcribing voiceover")

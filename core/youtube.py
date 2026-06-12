@@ -194,8 +194,12 @@ _proxy_rr_index = 0
 
 
 def _next_youtube_proxy() -> str:
-    """Round-robin one proxy from the pool (spreads load across backups). '' if
-    none configured."""
+    """Pick the proxy for the next request. With a dynamic list (pool mode) this
+    serves a *validated* working proxy; otherwise it round-robins the inline list
+    so a single static pool still spreads load. '' if none configured."""
+    from core import proxy_pool
+    if proxy_pool.pool_active():
+        return proxy_pool.get_proxy()
     ps = youtube_proxies()
     if not ps:
         return ""
@@ -236,7 +240,8 @@ def _is_proxy_failover_error(low: str) -> bool:
 # When there's a POOL of proxies we also fail over on these — a blocked proxy IP
 # should be skipped for the next one. With a single proxy we don't (rotation + the
 # reselect repair loop handle it, and cycling a dead video would just be slow).
-_YT_BLOCK_MARKERS = ("content isn", "video unavailable", "not available on this app")
+_YT_BLOCK_MARKERS = ("content isn", "video unavailable", "not available on this app",
+                     "sign in to confirm", "confirm you")
 
 
 def _is_block_error(low: str) -> bool:
@@ -1199,21 +1204,34 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         # (default 2) so a flaky/free pool can't stall one clip forever. A single
         # proxy never block-fails-over (rotation + the reselect repair loop cover
         # that, and cycling a dead video would just be slow).
+        from core import proxy_pool
+        pool_mode = proxy_pool.pool_active()
         proxies = youtube_proxies()
-        if (chosen_proxy and len(proxies) > 1
+        if (chosen_proxy and (pool_mode or len(proxies) > 1)
                 and (_is_proxy_failover_error(low) or _is_block_error(low))):
             tried = task_state.setdefault('_proxies_tried', [])
             if chosen_proxy not in tried:
                 tried.append(chosen_proxy)
-            untried = [p for p in proxies if p not in tried]
             try:
                 max_fail = int(os.getenv("YT_PROXY_MAX_FAILOVER", "2") or 2)
             except ValueError:
                 max_fail = 2
-            if untried and len(tried) <= max_fail:
-                nxt = untried[0]
+            # In pool mode, evict the failed proxy from the validated pool (which
+            # triggers a background top-up) and pull the next known-good one.
+            # Otherwise just step to the next untried inline proxy.
+            nxt = None
+            if pool_mode:
+                proxy_pool.mark_dead(chosen_proxy)
+                for _ in range(5):
+                    cand = proxy_pool.get_proxy()
+                    if cand and cand not in tried:
+                        nxt = cand
+                        break
+            else:
+                nxt = next((p for p in proxies if p not in tried), None)
+            if nxt and nxt not in tried and len(tried) <= max_fail:
                 print(f"[yt-dlp] {url}: proxy failed ({err_str.strip()[:70]}) — "
-                      "failing over to a backup proxy")
+                      "failing over to another proxy")
                 download_video(url, output_path, quality, task_state,
                                max_size_mb=max_size_mb, strict_quality=strict_quality,
                                normalize=normalize, no_audio=no_audio,
@@ -1287,11 +1305,17 @@ def _config_has_downloadable_format(info: dict) -> bool:
     return False
 
 
-def probe_proxy(test_url: str, proxy: str, timeout: int = 10) -> tuple:
-    """Quick liveness + YouTube-playability check of ONE proxy. Cookie-less on
-    purpose — never send the YouTube session through an untrusted (e.g. free-list)
-    proxy. Returns ``(ok, detail)``; ``ok`` means the proxy reached YouTube and a
-    downloadable format came back."""
+def probe_proxy(test_url: str, proxy: str, timeout: int = 10,
+                use_cookies: bool = False) -> tuple:
+    """Quick liveness + YouTube-playability check of ONE proxy. Returns
+    ``(ok, detail)``; ``ok`` means the proxy reached YouTube and a downloadable
+    format came back.
+
+    ``use_cookies`` defaults False so a casual probe never sends the YouTube
+    session through an untrusted proxy — but the validated-pool builder passes
+    True when downloads themselves use cookies, so a proxy that only works *with*
+    cookies (dodging the "Sign in to confirm you're not a bot" check) isn't
+    wrongly marked dead."""
     opts = {
         'logger': _QuietLogger(),
         'quiet': True,
@@ -1302,6 +1326,8 @@ def probe_proxy(test_url: str, proxy: str, timeout: int = 10) -> tuple:
         'nocheckcertificate': True,
         'proxy': proxy,
     }
+    if use_cookies:
+        opts.update(_get_cookie_opts())
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(test_url, download=False)

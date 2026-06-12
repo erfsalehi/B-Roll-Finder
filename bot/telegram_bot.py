@@ -419,6 +419,10 @@ def is_test_command(text: str) -> bool:
     return _command(text) in ("/test", "/selftest", "/preflight", "/check")
 
 
+def is_proxies_command(text: str) -> bool:
+    return _command(text) in ("/proxies", "/proxy")
+
+
 # ── reporting (per-shot + QA + errors) ───────────────────────────────────────
 
 def _shot_clip_info(shots: list) -> list:
@@ -1006,6 +1010,52 @@ def handle_logs(chat_id) -> None:
         pass
 
 
+def _format_proxy_stats() -> str:
+    from core import proxy_pool
+    if not proxy_pool.pool_active():
+        return ("No dynamic proxy list configured. Set YT_DLP_PROXY_URL (a free "
+                "proxy list) or YT_DLP_PROXY (your own proxies) to use proxies.")
+    s = proxy_pool.stats()
+    sample = ", ".join(_mask_proxy(p) for p in proxy_pool.working_snapshot()[:6])
+    lines = [
+        f"🛰 Proxy pool: {s['working']} working · {s['dead']} dead this session "
+        f"· {s['raw']} in list",
+    ]
+    if sample:
+        lines.append(f"working: {sample}")
+    lines.append("Use /proxies refresh to re-research the list for fresh working ones.")
+    return "\n".join(lines)
+
+
+def _mask_proxy(url: str) -> str:
+    import re
+    return re.sub(r"//[^@/]+@", "//***@", url or "")
+
+
+def handle_proxies(chat_id, text: str) -> None:
+    """Show the validated proxy pool, or (``/proxies refresh``) re-research the
+    list to (re)find working proxies."""
+    from core import proxy_pool
+    if not proxy_pool.pool_active():
+        send_message(chat_id, _format_proxy_stats())
+        return
+    if "refresh" in (text or "").lower() or "research" in (text or "").lower():
+        status = send_message(chat_id, "🔎 Researching the proxy list for working "
+                                       "proxies (this can take a minute)…")
+        msg_id = status.get("message_id")
+
+        def _p(label):
+            try:
+                edit_message(chat_id, msg_id, f"🔎 {label}")
+            except Exception:
+                pass
+        n = proxy_pool.refresh(progress=_p)
+        edit_message(chat_id, msg_id, f"✅ Proxy research done — {n} working proxy(ies).")
+        send_message(chat_id, _format_proxy_stats())
+        return
+    send_message(chat_id, _format_proxy_stats())
+
+
 def format_selftest(report: dict) -> str:
     """Render the preflight report: a headline verdict then one line per check."""
     ok = report.get("ok")
@@ -1060,6 +1110,7 @@ _BOT_COMMANDS = [
     ("settings", "Sources, counts, quality, QA, review gate"),
     ("status", "Is the bot online and ready?"),
     ("test", "Preflight: test yt-dlp/Pexels/LLM before a real run"),
+    ("proxies", "Show the working proxy pool (/proxies refresh to re-research)"),
     ("details", "Per-shot clip breakdown (pending project)"),
     ("download", "Fetch clips for the reviewed project"),
     ("refine", "Re-pick QA-flagged shots (or /refine 4 9)"),
@@ -1315,6 +1366,7 @@ _HELP = (
     "/status — am I online & ready\n"
     "/test — preflight: live-test LLM, transcription, Pexels + yt-dlp search and "
     "real downloads before a long run (/test quick = no downloads)\n"
+    "/proxies — show the validated proxy pool (/proxies refresh to re-research the list)\n"
     "/details — per-shot breakdown of the project awaiting review\n"
     "/download — fetch clips for the reviewed project\n"
     "/refine [shots] — re-pick QA-flagged shots (or named ones, e.g. /refine 4 9)\n"
@@ -1612,6 +1664,23 @@ def main() -> None:
                 threading.Thread(target=_job_thread,
                                  args=(handle_selftest, chat_id, text),
                                  daemon=True).start()
+                continue
+
+            if is_proxies_command(text):
+                # A refresh re-researches the list (slow) → run it off the poll
+                # loop and claim the busy slot; a plain view is instant.
+                if "refresh" in text.lower() or "research" in text.lower():
+                    if _BUSY.get("active"):
+                        send_message(chat_id, f"⏳ Busy with '{_BUSY.get('project')}'. "
+                                              "Refresh proxies once it's idle.")
+                        continue
+                    _BUSY.update(active=True, project="proxy research",
+                                 cancel=threading.Event(), started=time.time())
+                    threading.Thread(target=_job_thread,
+                                     args=(handle_proxies, chat_id, text),
+                                     daemon=True).start()
+                else:
+                    handle_proxies(chat_id, text)
                 continue
 
             if is_cookies_command(text):

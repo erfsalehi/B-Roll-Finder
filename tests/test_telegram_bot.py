@@ -64,6 +64,21 @@ def test_using_local_bot_api(monkeypatch):
     assert tb._using_local_bot_api() is True
 
 
+def test_is_proxies_command():
+    assert tb.is_proxies_command("/proxies")
+    assert tb.is_proxies_command("/proxies refresh")
+    assert tb.is_proxies_command("/proxy")
+    assert not tb.is_proxies_command("/test")
+
+
+def test_proxy_stats_inactive(monkeypatch):
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
+    import core.proxy_pool as pp
+    pp._reset()
+    msg = tb._format_proxy_stats()
+    assert "No dynamic proxy list" in msg
+
+
 def test_call_surfaces_telegram_description(monkeypatch):
     import pytest
 
