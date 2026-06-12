@@ -1094,7 +1094,7 @@ def finalize_project(shots: list, project_name: str, quality: str = "1080",
     if os.getenv("YT_DLP_PROXY_URL", "").strip():
         try:
             from core import proxy_pool
-            proxy_pool.ensure_working()
+            proxy_pool.ensure_working(should_cancel=should_cancel)
         except Exception as e:
             errors.append(f"proxy pool: {e}")
     validation = enforce_timeline(shots, groq_key=key,
@@ -1211,7 +1211,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         try:
             from core import proxy_pool
             _p(1, "Finding working proxies")
-            n = len(proxy_pool.ensure_working(progress=lambda lbl: _p(1, lbl)))
+            n = len(proxy_pool.ensure_working(progress=lambda lbl: _p(1, lbl),
+                                              should_cancel=should_cancel))
             if n == 0:
                 errors.append("proxy pool: found 0 working proxies — YouTube "
                               "downloads will likely fail (try /proxies refresh)")

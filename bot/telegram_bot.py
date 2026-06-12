@@ -1045,16 +1045,28 @@ def handle_proxies(chat_id, text: str) -> None:
         return
     if "refresh" in (text or "").lower() or "research" in (text or "").lower():
         status = send_message(chat_id, "🔎 Researching the proxy list for working "
-                                       "proxies (this can take a minute)…")
+                                       "proxies — searching until it finds enough. "
+                                       "/cancel to stop.")
         msg_id = status.get("message_id")
 
+        last = {"t": 0.0}
+
         def _p(label):
+            # Throttle edits so a fast scan doesn't trip Telegram's rate limit.
+            now = time.time()
+            if now - last["t"] < 2.0:
+                return
+            last["t"] = now
             try:
-                edit_message(chat_id, msg_id, f"🔎 {label}")
+                edit_message(chat_id, msg_id, f"🔎 {label} · /cancel to stop")
             except Exception:
                 pass
-        n = proxy_pool.refresh(progress=_p)
-        edit_message(chat_id, msg_id, f"✅ Proxy research done — {n} working proxy(ies).")
+
+        n = proxy_pool.refresh(progress=_p, should_cancel=_should_cancel())
+        verdict = (f"✅ Proxy research done — {n} working proxy(ies)." if n
+                   else "⚠️ Stopped — no working proxies found yet. Try again later "
+                        "(/proxies refresh); free lists vary a lot by the hour.")
+        edit_message(chat_id, msg_id, verdict)
         send_message(chat_id, _format_proxy_stats())
         return
     send_message(chat_id, _format_proxy_stats())

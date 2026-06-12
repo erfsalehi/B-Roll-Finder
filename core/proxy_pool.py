@@ -58,8 +58,15 @@ def _default_test_url() -> str:
         "https://www.youtube.com/watch?v=BaW_jenozKc"
 
 
-def _use_cookies() -> bool:
-    return os.getenv("YT_DOWNLOAD_NO_COOKIES", "").strip().lower() not in \
+def _validate_with_cookies() -> bool:
+    """Whether to send cookies when VALIDATING a proxy. Off by default on purpose:
+    a logged-in (cookie'd) session through a random free/datacenter proxy gets
+    bot-flagged far more aggressively than an anonymous request — empirically
+    cookie-less validation finds working proxies where cookie'd finds none. The
+    actual downloads still use cookies (which only help, e.g. dodging the
+    "Sign in to confirm you're not a bot" check). Set PROXY_VALIDATE_COOKIES=1 to
+    override."""
+    return os.getenv("PROXY_VALIDATE_COOKIES", "").strip().lower() in \
         ("1", "true", "yes", "on")
 
 
@@ -75,15 +82,20 @@ def _raw_proxies() -> list:
     return out
 
 
-def research(need: int = None, test_url: str = None, progress=None) -> int:
-    """Probe raw proxies (concurrently, with cookies when downloads use them)
-    until the pool holds ``need`` working ones — or ``PROXY_RESEARCH_MAX`` checks
-    are spent / the list is exhausted. Serialized so parallel callers don't all
-    research at once. Returns how many new working proxies were added."""
+def research(need: int = None, test_url: str = None, progress=None,
+             should_cancel=None, max_checks: int = None) -> int:
+    """Probe raw proxies (concurrently) until the pool holds ``need`` working ones
+    — scanning the WHOLE list by default (free lists are mostly dead, so a low cap
+    would give up before finding any). ``max_checks`` caps the scan (0/None =
+    unlimited); ``should_cancel()`` stops it early (so the user can /cancel a long
+    search). Serialized so parallel callers don't dogpile. Returns how many new
+    working proxies were added."""
     if not pool_active():
         return 0
     need = need or target_size()
     test_url = test_url or _default_test_url()
+    if max_checks is None:
+        max_checks = _cfg_int("PROXY_RESEARCH_MAX", 0)   # 0 → scan everything
 
     with _research_lock:
         with _lock:
@@ -92,19 +104,22 @@ def research(need: int = None, test_url: str = None, progress=None) -> int:
             known = set(_working) | set(_dead)
         candidates = [p for p in _raw_proxies() if p not in known]
         random.shuffle(candidates)
-        candidates = candidates[:_cfg_int("PROXY_RESEARCH_MAX", 200)]
+        if max_checks and max_checks > 0:
+            candidates = candidates[:max_checks]
         if not candidates:
             return 0
 
         from core.youtube import probe_proxy
         workers = max(1, _cfg_int("PROXY_VALIDATE_WORKERS", 25))
         timeout = _cfg_int("PROXY_VALIDATE_TIMEOUT", 10)
-        use_cookies = _use_cookies()
+        use_cookies = _validate_with_cookies()
         added = checked = 0
+        have = len(_working)
         it = iter(candidates)
         ex = concurrent.futures.ThreadPoolExecutor(max_workers=workers,
                                                    thread_name_prefix="proxyval")
         pending: dict = {}
+        cancelled = False
 
         def _submit_more():
             while len(pending) < workers:
@@ -116,7 +131,7 @@ def research(need: int = None, test_url: str = None, progress=None) -> int:
 
         try:
             _submit_more()
-            while pending:
+            while pending and not cancelled:
                 done, _ = concurrent.futures.wait(
                     pending, return_when=concurrent.futures.FIRST_COMPLETED)
                 for f in done:
@@ -140,7 +155,8 @@ def research(need: int = None, test_url: str = None, progress=None) -> int:
                             progress(f"Testing proxies… {checked} checked, {have} working")
                         except Exception:
                             pass
-                if have >= need:
+                if have >= need or (should_cancel and should_cancel()):
+                    cancelled = should_cancel and should_cancel()
                     break
                 _submit_more()
         finally:
@@ -148,28 +164,37 @@ def research(need: int = None, test_url: str = None, progress=None) -> int:
         return added
 
 
-def ensure_working(min_count: int = None, test_url: str = None, progress=None) -> list:
+def ensure_working(min_count: int = None, test_url: str = None, progress=None,
+                   should_cancel=None) -> list:
     """Guarantee at least ``min_count`` (default PROXY_POOL_SIZE) validated
-    proxies before a run touches YouTube. Returns the working snapshot."""
+    proxies before a run touches YouTube — searching the whole list until found or
+    ``should_cancel()`` fires. Returns the working snapshot."""
     if not pool_active():
         return []
     min_count = min_count or target_size()
     with _lock:
         have = len(_working)
     if have < min_count:
-        research(min_count, test_url, progress)
+        research(min_count, test_url, progress, should_cancel=should_cancel)
     return working_snapshot()
 
 
+# Lazy/background research (mid-download top-ups) is bounded so a single clip can
+# never hang scanning thousands of proxies — the explicit ensure/refresh paths
+# (user-visible, cancellable) do the exhaustive search.
+def _background_max() -> int:
+    return _cfg_int("PROXY_BACKGROUND_MAX", 80)
+
+
 def get_proxy() -> str:
-    """Round-robin one validated proxy; lazily research if the pool is empty.
-    Returns '' when pool mode is off or nothing validated."""
+    """Round-robin one validated proxy; lazily research (bounded) if the pool is
+    empty. Returns '' when pool mode is off or nothing validated."""
     if not pool_active():
         return ""
     with _lock:
         empty = not _working
     if empty:
-        research()
+        research(max_checks=_background_max())
     global _rr
     with _lock:
         if not _working:
@@ -190,18 +215,19 @@ def mark_dead(proxy: str) -> None:
         _dead.add(proxy)
         low = len(_working) < target_size()
     if low and pool_active():
-        threading.Thread(target=lambda: research(), daemon=True,
-                         name="ProxyResearch").start()
+        threading.Thread(target=lambda: research(max_checks=_background_max()),
+                         daemon=True, name="ProxyResearch").start()
 
 
-def refresh(progress=None) -> int:
+def refresh(progress=None, should_cancel=None) -> int:
     """Forget everything (working + dead) and re-research from scratch — for a
-    manual /proxies refresh. Returns the new working count."""
+    manual /proxies refresh. Scans until it finds a full pool or ``should_cancel``
+    fires. Returns the new working count."""
     with _lock:
         _working.clear()
         _dead.clear()
         _last_validated.clear()
-    research(progress=progress)
+    research(progress=progress, should_cancel=should_cancel)
     return len(working_snapshot())
 
 

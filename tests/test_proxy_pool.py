@@ -76,6 +76,88 @@ def test_refresh_clears_and_reresearches(monkeypatch):
     assert set(pp.working_snapshot()) == set(good)
 
 
+def test_research_validates_cookieless_by_default(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.delenv("PROXY_VALIDATE_COOKIES", raising=False)
+    monkeypatch.setattr(pp, "_raw_proxies", lambda: ["http://g1"])
+    import core.youtube as yt
+
+    def _probe(url, p, timeout=10, use_cookies=False):
+        seen["uc"] = use_cookies
+        return (True, "ok")
+    monkeypatch.setattr(yt, "probe_proxy", _probe)
+    pp._reset()
+    pp.research(1)
+    assert seen["uc"] is False          # cookie-less validation (high yield)
+
+
+def test_research_uses_cookies_when_opted_in(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setenv("PROXY_VALIDATE_COOKIES", "1")
+    monkeypatch.setattr(pp, "_raw_proxies", lambda: ["http://g1"])
+    import core.youtube as yt
+
+    def _probe(url, p, timeout=10, use_cookies=False):
+        seen["uc"] = use_cookies
+        return (True, "ok")
+    monkeypatch.setattr(yt, "probe_proxy", _probe)
+    pp._reset()
+    pp.research(1)
+    assert seen["uc"] is True
+
+
+def test_research_stops_on_cancel(monkeypatch):
+    bad = [f"http://b{i}" for i in range(100)]
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.delenv("PROXY_RESEARCH_MAX", raising=False)
+    monkeypatch.setattr(pp, "_raw_proxies", lambda: bad)
+    import core.youtube as yt
+    calls = {"n": 0}
+
+    def _probe(url, p, timeout=10, use_cookies=False):
+        calls["n"] += 1
+        return (False, "dead")
+    monkeypatch.setattr(yt, "probe_proxy", _probe)
+    pp._reset()
+    added = pp.research(5, should_cancel=lambda: True)   # cancel immediately
+    assert added == 0
+    assert calls["n"] < 100               # did NOT scan the whole list
+
+
+def test_research_scans_whole_list_by_default(monkeypatch):
+    # One good proxy hidden at the end of a long dead list — found because there's
+    # no low cap any more (PROXY_RESEARCH_MAX defaults to unlimited).
+    bad = [f"http://b{i}" for i in range(60)]
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.delenv("PROXY_RESEARCH_MAX", raising=False)
+    monkeypatch.setattr(pp, "_raw_proxies", lambda: bad + ["http://gOOD"])
+    import core.youtube as yt
+    monkeypatch.setattr(yt, "probe_proxy",
+                        lambda url, p, timeout=10, use_cookies=False: (p == "http://gOOD", ""))
+    pp._reset()
+    pp.research(1)
+    assert pp.working_snapshot() == ["http://gOOD"]
+
+
+def test_lazy_research_is_bounded(monkeypatch):
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setenv("PROXY_BACKGROUND_MAX", "10")
+    bad = [f"http://b{i}" for i in range(50)]
+    monkeypatch.setattr(pp, "_raw_proxies", lambda: bad)
+    import core.youtube as yt
+    calls = {"n": 0}
+
+    def _probe(url, p, timeout=10, use_cookies=False):
+        calls["n"] += 1
+        return (False, "dead")
+    monkeypatch.setattr(yt, "probe_proxy", _probe)
+    pp._reset()
+    assert pp.get_proxy() == ""            # none work
+    assert calls["n"] <= 12                # bounded near PROXY_BACKGROUND_MAX, not 50
+
+
 def test_stats_shape(monkeypatch):
     good = ["http://g1", "http://g2"]
     bad = ["http://b1"]
