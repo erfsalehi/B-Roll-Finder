@@ -1017,13 +1017,17 @@ def _format_proxy_stats() -> str:
                 "proxy list) or YT_DLP_PROXY (your own proxies) to use proxies.")
     s = proxy_pool.stats()
     sample = ", ".join(_mask_proxy(p) for p in proxy_pool.working_snapshot()[:6])
-    lines = [
-        f"🛰 Proxy pool: {s['working']} working · {s['dead']} dead this session "
-        f"· {s['raw']} in list",
-    ]
-    if sample:
-        lines.append(f"working: {sample}")
-    lines.append("Use /proxies refresh to re-research the list for fresh working ones.")
+    if s["working"]:
+        lines = [f"✅ Proxy pool ready — {s['working']} working · {s['dead']} dead "
+                 f"this session · {s['raw']} in list"]
+        if sample:
+            lines.append(f"working: {sample}")
+        lines.append("Downloads will use these. /proxies refresh re-tests the list.")
+    else:
+        lines = [f"⚠️ No proxies validated yet — {s['dead']} tested-dead · "
+                 f"{s['raw']} fetched from the list",
+                 "The pool builds itself when a project starts (the 'Finding "
+                 "working proxies' step). /proxies refresh tests it right now."]
     return "\n".join(lines)
 
 
@@ -1667,17 +1671,21 @@ def main() -> None:
                 continue
 
             if is_proxies_command(text):
-                # A refresh re-researches the list (slow) → run it off the poll
-                # loop and claim the busy slot; a plain view is instant.
-                if "refresh" in text.lower() or "research" in text.lower():
+                from core import proxy_pool as _pp
+                # Research (slow) when the user asks for a refresh OR the pool is
+                # still empty (so a bare /proxies actually tests + reports instead
+                # of showing a useless "0 working"). A populated view is instant.
+                _empty = _pp.pool_active() and _pp.stats().get("working", 0) == 0
+                if _pp.pool_active() and ("refresh" in text.lower()
+                                          or "research" in text.lower() or _empty):
                     if _BUSY.get("active"):
                         send_message(chat_id, f"⏳ Busy with '{_BUSY.get('project')}'. "
-                                              "Refresh proxies once it's idle.")
+                                              "Check proxies once it's idle.")
                         continue
                     _BUSY.update(active=True, project="proxy research",
                                  cancel=threading.Event(), started=time.time())
                     threading.Thread(target=_job_thread,
-                                     args=(handle_proxies, chat_id, text),
+                                     args=(handle_proxies, chat_id, "refresh"),
                                      daemon=True).start()
                 else:
                     handle_proxies(chat_id, text)

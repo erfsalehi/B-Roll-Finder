@@ -79,6 +79,28 @@ def test_proxy_stats_inactive(monkeypatch):
     assert "No dynamic proxy list" in msg
 
 
+def test_proxy_stats_empty_pool_explains(monkeypatch):
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    import core.proxy_pool as pp
+    pp._reset()
+    monkeypatch.setattr(pp, "_raw_proxies", lambda: ["http://a:1", "http://b:2"])
+    msg = tb._format_proxy_stats()
+    assert "No proxies validated yet" in msg      # not a bare "0 working"
+
+
+def test_proxy_stats_ready_when_populated(monkeypatch):
+    monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    import core.proxy_pool as pp
+    pp._reset()
+    monkeypatch.setattr(pp, "_raw_proxies", lambda: ["http://a:1"])
+    pp._working.append("http://a:1")
+    try:
+        msg = tb._format_proxy_stats()
+        assert "ready" in msg.lower() and "1 working" in msg
+    finally:
+        pp._reset()
+
+
 def test_call_surfaces_telegram_description(monkeypatch):
     import pytest
 
