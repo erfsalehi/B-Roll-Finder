@@ -232,36 +232,56 @@ def _yt_search_check(state):
     return True, f"{len(results)} result(s) via yt-dlp"
 
 
-def _yt_download_check(state, out_dir, quality="360", attempts=3):
-    """Download the shortest YouTube results — the single most failure-prone
-    step (cookies, format selection, Deno nsig, anti-bot). Passes if at least one
-    of ``attempts`` clips downloads, mirroring the pipeline's repair philosophy
-    (one dead video shouldn't condemn the whole capability)."""
+def _download_one_with_timeout(url, out, quality, timeout):
+    """Run download_video in a daemon thread and give up after ``timeout`` s, so a
+    slow free proxy (or failover through several) can't hang the preflight. On
+    timeout we flag the task cancelled (the download's progress hook aborts at the
+    next chunk) and move on. Returns ``(ok, detail, secs)``."""
+    import threading
+    import time
     from core.youtube import download_video
+
+    ts: dict = {}
+    t0 = time.time()
+    th = threading.Thread(
+        target=lambda: download_video(url, out, quality, ts, no_audio=True),
+        daemon=True)
+    th.start()
+    th.join(timeout)
+    secs = round(time.time() - t0, 1)
+    if th.is_alive():
+        ts["status"] = "cancelled"            # ask the download to abort
+        return False, f"timed out after {timeout}s (free proxies are slow)", secs
+    if os.path.exists(out) and os.path.getsize(out) > _MIN_BYTES:
+        return True, f"{os.path.getsize(out) // 1024} KB", secs
+    return False, ts.get("error_msg", "no file produced")[:140], secs
+
+
+def _yt_download_check(state, out_dir, quality="360", attempts=3):
+    """Download the shortest YouTube results — the single most failure-prone step
+    (cookies, format selection, Deno nsig, anti-bot, slow proxies). Each attempt
+    is time-boxed (SELFTEST_DOWNLOAD_TIMEOUT, default 100s) and we STOP at the
+    first success, so the preflight stays bounded even when downloads go through
+    slow free proxies. Passes if any clip downloads."""
     results = (state.get("yt_results") or [])[:attempts]
     if not results:
         return None, "no YouTube result to download (skipped)"
-    oks, fails = [], []
+    try:
+        per_timeout = int(os.getenv("SELFTEST_DOWNLOAD_TIMEOUT", "100") or 100)
+    except ValueError:
+        per_timeout = 100
+    fails = []
     for i, cand in enumerate(results):
         out = os.path.join(out_dir, f"yt_test_{i}.mp4")
-        ts: dict = {}
         title = (cand.get("title") or cand.get("url") or "?")[:40]
-        try:
-            download_video(cand["url"], out, quality, ts, no_audio=True)
-        except Exception as e:
-            fails.append(f"{title}: {type(e).__name__}: {e}")
-            continue
-        if os.path.exists(out) and os.path.getsize(out) > _MIN_BYTES:
-            oks.append(f"{title} ({os.path.getsize(out) // 1024} KB)")
-        else:
-            fails.append(f"{title}: {ts.get('error_msg', 'no file produced')}")
-    if oks:
-        detail = f"{len(oks)}/{len(results)} downloaded — {oks[0]}"
-        if fails:
-            detail += f"  ·  {len(fails)} failed (e.g. {fails[0][:120]})"
-        return True, detail
+        ok, detail, secs = _download_one_with_timeout(cand["url"], out, quality, per_timeout)
+        if ok:
+            extra = f"  ·  {len(fails)} failed first" if fails else ""
+            slow = "  ⚠️ slow — real projects will take a while" if secs > 45 else ""
+            return True, f"downloaded {title} ({detail}, {secs}s){extra}{slow}"
+        fails.append(f"{title}: {detail}")
     state["yt_download_failed"] = True
-    return False, "all download attempts failed — " + ("; ".join(fails)[:300] or "unknown")
+    return False, "no clip downloaded — " + ("; ".join(fails)[:300] or "unknown")
 
 
 def _yt_client_probe_check(state):
