@@ -6,6 +6,8 @@ import core.proxy_pool as pp
 def _setup(monkeypatch, good, bad, size=3):
     monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
     monkeypatch.setenv("PROXY_POOL_SIZE", str(size))
+    # Fixed validation video (no network in tests).
+    monkeypatch.setenv("PROXY_TEST_URL", "http://testvid")
     monkeypatch.setattr(pp, "_raw_proxies", lambda: list(good) + list(bad))
     import core.youtube as yt
 
@@ -79,6 +81,7 @@ def test_refresh_clears_and_reresearches(monkeypatch):
 def test_research_validates_cookieless_by_default(monkeypatch):
     seen = {}
     monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setenv("PROXY_TEST_URL", "http://testvid")
     monkeypatch.delenv("PROXY_VALIDATE_COOKIES", raising=False)
     monkeypatch.setattr(pp, "_raw_proxies", lambda: ["http://g1"])
     import core.youtube as yt
@@ -95,6 +98,7 @@ def test_research_validates_cookieless_by_default(monkeypatch):
 def test_research_uses_cookies_when_opted_in(monkeypatch):
     seen = {}
     monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setenv("PROXY_TEST_URL", "http://testvid")
     monkeypatch.setenv("PROXY_VALIDATE_COOKIES", "1")
     monkeypatch.setattr(pp, "_raw_proxies", lambda: ["http://g1"])
     import core.youtube as yt
@@ -111,6 +115,7 @@ def test_research_uses_cookies_when_opted_in(monkeypatch):
 def test_research_stops_on_cancel(monkeypatch):
     bad = [f"http://b{i}" for i in range(100)]
     monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setenv("PROXY_TEST_URL", "http://testvid")
     monkeypatch.delenv("PROXY_RESEARCH_MAX", raising=False)
     monkeypatch.setattr(pp, "_raw_proxies", lambda: bad)
     import core.youtube as yt
@@ -131,6 +136,7 @@ def test_research_scans_whole_list_by_default(monkeypatch):
     # no low cap any more (PROXY_RESEARCH_MAX defaults to unlimited).
     bad = [f"http://b{i}" for i in range(60)]
     monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setenv("PROXY_TEST_URL", "http://testvid")
     monkeypatch.delenv("PROXY_RESEARCH_MAX", raising=False)
     monkeypatch.setattr(pp, "_raw_proxies", lambda: bad + ["http://gOOD"])
     import core.youtube as yt
@@ -143,6 +149,7 @@ def test_research_scans_whole_list_by_default(monkeypatch):
 
 def test_lazy_research_is_bounded(monkeypatch):
     monkeypatch.setenv("YT_DLP_PROXY_URL", "http://list")
+    monkeypatch.setenv("PROXY_TEST_URL", "http://testvid")
     monkeypatch.setenv("PROXY_BACKGROUND_MAX", "10")
     bad = [f"http://b{i}" for i in range(50)]
     monkeypatch.setattr(pp, "_raw_proxies", lambda: bad)
@@ -156,6 +163,50 @@ def test_lazy_research_is_bounded(monkeypatch):
     pp._reset()
     assert pp.get_proxy() == ""            # none work
     assert calls["n"] <= 12                # bounded near PROXY_BACKGROUND_MAX, not 50
+
+
+def test_proxy_plays_any_skips_restricted_video(monkeypatch):
+    # First validation video is restricted (block), second plays → proxy WORKS.
+    import core.youtube as yt
+    calls = []
+
+    def _probe(url, p, timeout=10, use_cookies=False):
+        calls.append(url)
+        if url == "v1":
+            return (False, "ERROR: [youtube] X: This content isn't available")
+        return (True, "ok")
+    monkeypatch.setattr(yt, "probe_proxy", _probe)
+    assert pp._proxy_plays_any(["v1", "v2"], "http://p", 10, False) is True
+    assert calls == ["v1", "v2"]        # tried the next video after the block
+
+
+def test_proxy_plays_any_stops_on_dead_proxy(monkeypatch):
+    # A connection failure means the PROXY is dead — don't waste more videos on it.
+    import core.youtube as yt
+    calls = []
+
+    def _probe(url, p, timeout=10, use_cookies=False):
+        calls.append(url)
+        return (False, "Unable to connect to proxy: timed out")
+    monkeypatch.setattr(yt, "probe_proxy", _probe)
+    assert pp._proxy_plays_any(["v1", "v2", "v3"], "http://p", 10, False) is False
+    assert calls == ["v1"]              # stopped at the first connection error
+
+
+def test_resolve_test_urls_env_override(monkeypatch):
+    monkeypatch.setenv("PROXY_TEST_URL", "http://a, http://b")
+    assert pp._resolve_test_urls() == ["http://a", "http://b"]
+
+
+def test_resolve_test_urls_fetches_fresh(monkeypatch):
+    monkeypatch.delenv("PROXY_TEST_URL", raising=False)
+    pp.reset_test_urls()
+    monkeypatch.setattr(pp, "_fetch_candidate_urls",
+                        lambda n=4: ["http://fresh1", "http://fresh2"])
+    try:
+        assert pp._resolve_test_urls() == ["http://fresh1", "http://fresh2"]
+    finally:
+        pp.reset_test_urls()
 
 
 def test_stats_shape(monkeypatch):

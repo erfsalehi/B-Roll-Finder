@@ -23,6 +23,7 @@ Env knobs: ``PROXY_POOL_SIZE`` (5), ``PROXY_VALIDATE_WORKERS`` (25),
 import concurrent.futures
 import os
 import random
+import re
 import threading
 import time
 
@@ -52,10 +53,92 @@ def target_size() -> int:
     return max(1, _cfg_int("PROXY_POOL_SIZE", 5))
 
 
-def _default_test_url() -> str:
-    # yt-dlp's classic, long-lived public test video — a stable validation target.
-    return (os.getenv("PROXY_TEST_URL") or "").strip() or \
-        "https://www.youtube.com/watch?v=BaW_jenozKc"
+# Search terms used to pull FRESH, currently-playable validation videos. Plain
+# B-roll terms (not "documentary"/"full episode", which surface restricted
+# uploads). A validation target must be freely playable, or every proxy "fails"
+# it — which is exactly why a single stale hardcoded test video found 0 working.
+_TEST_SEARCH_TERMS = ["city street walk", "drone city 4k", "street traffic timelapse",
+                      "walking tour 4k", "aerial coastline"]
+
+# Error substrings that mean the PROXY is dead/unreachable (vs. the video being
+# restricted). On these we stop testing more videos for that proxy and drop it;
+# on a per-video block we just try the next validation video.
+_PROXY_DEAD_MARKERS = (
+    "proxy", "timed out", "timeout", "connection", "unable to connect",
+    "cannot connect", "failed to connect", "tunnel", "refused", "reset",
+    "econnreset", "getaddrinfo", "name resolution", "ssl", "eof occurred",
+    "max retries", "remote end closed",
+)
+
+_test_urls_cache = {"urls": [], "ts": 0.0}
+_test_url_lock = threading.Lock()
+
+
+def _fetch_candidate_urls(n: int = 4) -> list:
+    """Pull a few currently-available video URLs via a DIRECT yt-dlp search
+    (proxy explicitly disabled — search isn't IP-blocked, and routing this through
+    the pool would recurse). These are the freshest possible validation targets."""
+    import yt_dlp
+    from core.youtube import _QuietLogger
+    term = random.choice(_TEST_SEARCH_TERMS)
+    opts = {
+        "logger": _QuietLogger(), "quiet": True, "no_warnings": True,
+        "extract_flat": True, "skip_download": True, "socket_timeout": 20,
+        "proxy": "",   # never route the validation-video lookup through a proxy
+    }
+    urls = []
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{n}:{term}", download=False)
+        for e in (info.get("entries") or []):
+            vid = e.get("id") or e.get("url") or ""
+            if vid:
+                urls.append(vid if str(vid).startswith("http")
+                            else f"https://www.youtube.com/watch?v={vid}")
+    except Exception as e:
+        print(f"[proxy] couldn't fetch fresh validation videos: {e}")
+    return urls
+
+
+def _resolve_test_urls() -> list:
+    """The list of videos proxies are validated against — a manual override
+    (``PROXY_TEST_URL``, comma/space list) or fresh search results, cached ~1h.
+    Trying several means one restricted clip can't condemn the whole pool."""
+    env = (os.getenv("PROXY_TEST_URL") or "").strip()
+    if env:
+        return [u for u in re.split(r"[\s,;]+", env) if u]
+    now = time.time()
+    with _test_url_lock:
+        if _test_urls_cache["urls"] and now - _test_urls_cache["ts"] < 3600:
+            return list(_test_urls_cache["urls"])
+    urls = _fetch_candidate_urls()
+    if not urls:   # last resort if a direct search failed
+        urls = ["https://www.youtube.com/watch?v=BaW_jenozKc"]
+    with _test_url_lock:
+        _test_urls_cache["urls"] = urls
+        _test_urls_cache["ts"] = now
+    return urls
+
+
+def _proxy_plays_any(test_urls: list, proxy: str, timeout: int, use_cookies: bool) -> bool:
+    """True if ``proxy`` can play AT LEAST ONE of the validation videos. A
+    per-video restriction makes us try the next video; a proxy/connection failure
+    drops the proxy immediately (no point trying more videos through a dead one)."""
+    from core.youtube import probe_proxy
+    for url in test_urls:
+        ok, detail = probe_proxy(url, proxy, timeout, use_cookies)
+        if ok:
+            return True
+        if any(m in (detail or "").lower() for m in _PROXY_DEAD_MARKERS):
+            return False
+    return False
+
+
+def reset_test_urls() -> None:
+    """Forget the cached validation videos (so the next research refetches)."""
+    with _test_url_lock:
+        _test_urls_cache["urls"] = []
+        _test_urls_cache["ts"] = 0.0
 
 
 def _validate_with_cookies() -> bool:
@@ -93,7 +176,9 @@ def research(need: int = None, test_url: str = None, progress=None,
     if not pool_active():
         return 0
     need = need or target_size()
-    test_url = test_url or _default_test_url()
+    # Validate against FRESH, currently-playable videos (several, so one
+    # restricted clip can't fail every proxy). An explicit test_url overrides.
+    test_urls = [test_url] if test_url else _resolve_test_urls()
     if max_checks is None:
         max_checks = _cfg_int("PROXY_RESEARCH_MAX", 0)   # 0 → scan everything
 
@@ -109,7 +194,6 @@ def research(need: int = None, test_url: str = None, progress=None,
         if not candidates:
             return 0
 
-        from core.youtube import probe_proxy
         workers = max(1, _cfg_int("PROXY_VALIDATE_WORKERS", 25))
         timeout = _cfg_int("PROXY_VALIDATE_TIMEOUT", 10)
         use_cookies = _validate_with_cookies()
@@ -127,7 +211,7 @@ def research(need: int = None, test_url: str = None, progress=None,
                     p = next(it)
                 except StopIteration:
                     return
-                pending[ex.submit(probe_proxy, test_url, p, timeout, use_cookies)] = p
+                pending[ex.submit(_proxy_plays_any, test_urls, p, timeout, use_cookies)] = p
 
         try:
             _submit_more()
@@ -138,7 +222,7 @@ def research(need: int = None, test_url: str = None, progress=None,
                     p = pending.pop(f)
                     checked += 1
                     try:
-                        ok = bool(f.result()[0])
+                        ok = bool(f.result())
                     except Exception:
                         ok = False
                     with _lock:
@@ -227,6 +311,7 @@ def refresh(progress=None, should_cancel=None) -> int:
         _working.clear()
         _dead.clear()
         _last_validated.clear()
+    reset_test_urls()   # re-fetch fresh validation videos too
     research(progress=progress, should_cancel=should_cancel)
     return len(working_snapshot())
 
