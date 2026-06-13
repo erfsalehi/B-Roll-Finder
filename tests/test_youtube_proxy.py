@@ -37,6 +37,19 @@ def test_youtube_proxy_opts(monkeypatch):
     assert yt._youtube_proxy_opts("") == {}
 
 
+def test_search_goes_direct_by_default(monkeypatch):
+    # Search must NOT use a proxy by default — only playback is IP-blocked, and
+    # routing search through free proxies makes it time out.
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
+    monkeypatch.setenv("YT_DLP_PROXY", "http://p:1")
+    monkeypatch.delenv("YT_SEARCH_USE_PROXY", raising=False)
+    assert yt._search_proxy_opts() == {}                 # direct
+    monkeypatch.setenv("YT_SEARCH_USE_PROXY", "1")
+    monkeypatch.setattr(yt, "_proxy_rr_index", 0)
+    assert yt._search_proxy_opts() == {"proxy": "http://p:1"}   # opt-in
+
+
 # ── dynamic proxy list (YT_DLP_PROXY_URL) ─────────────────────────────────────
 
 def test_parse_proxy_lines():

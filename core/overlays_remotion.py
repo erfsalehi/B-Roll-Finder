@@ -71,8 +71,11 @@ def extract_overlay_highlights(segments: list = None, script_text: str = "",
 
     client = Groq(api_key=groq_key) if (groq_key and Groq) else None
     try:
+        # Overlays are cosmetic — allow_fallback so a DeepSeek/provider hiccup
+        # degrades to Groq instead of dropping overlays entirely (paid-only mode).
         res = _call_llm_json(client, system_prompt, user_content,
-                             temperature=0.4, max_tokens=2000, tier="smart")
+                             temperature=0.4, max_tokens=2000, tier="smart",
+                             allow_fallback=True)
     except Exception as e:
         print(f"[overlays] highlight extraction failed: {e}")
         return []

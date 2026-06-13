@@ -218,6 +218,19 @@ def _youtube_proxy_opts(proxy=None) -> dict:
     return {"proxy": proxy} if proxy else {}
 
 
+def _search_proxy_opts() -> dict:
+    """Proxy option for SEARCH/metadata listing — empty by default.
+
+    Only YouTube *playback/download* is blocked on a datacenter IP; the flat
+    ytsearch listing works fine direct, and routing it through slow free proxies
+    just makes it time out (the very failures seen in the wild). So search goes
+    DIRECT unless ``YT_SEARCH_USE_PROXY`` is set, for the rare host whose IP is
+    search-blocked too."""
+    if os.getenv("YT_SEARCH_USE_PROXY", "").strip().lower() in ("1", "true", "yes", "on"):
+        return _youtube_proxy_opts()
+    return {}
+
+
 # Error substrings (lower-cased) that mean the PROXY itself failed (down, capped,
 # unreachable) rather than the video — so we should fail over to a backup proxy.
 # Deliberately excludes the "content isn't available" block class: that's handled
@@ -733,7 +746,7 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
         'socket_timeout': 20,
         'extractor_args': _YT_EXTRACTOR_ARGS,
         **_get_cookie_opts(),
-        **_youtube_proxy_opts(),
+        **_search_proxy_opts(),   # search goes direct unless YT_SEARCH_USE_PROXY
     }
 
     try:

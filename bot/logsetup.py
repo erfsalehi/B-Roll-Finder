@@ -24,13 +24,27 @@ _PREV_PATH = LOG_PATH + ".prev"
 _MAX_BYTES = 5 * 1024 * 1024  # 5 MB per file
 
 
+class _DropScriptRunContext(logging.Filter):
+    """Drops Streamlit's 'missing ScriptRunContext!' records. A filter (not just a
+    level bump) is used because Streamlit RESETS its loggers' levels to WARNING
+    when it's imported — which happens AFTER bot startup (lazily, inside a job),
+    undoing a plain setLevel. A filter attached to the named logger singleton
+    survives that reset and keeps dropping the record whatever the level."""
+    def filter(self, record):
+        try:
+            return "ScriptRunContext" not in record.getMessage()
+        except Exception:
+            return True
+
+
 def silence_noisy_loggers() -> None:
     """Quiet third-party log spam that's meaningless in the bot/headless context.
 
     Streamlit emits a WARNING ('missing ScriptRunContext!') every time one of its
     functions runs in a worker thread outside a Streamlit script run — which the
-    bot's background job threads trip constantly. It's pure noise here and was a
-    big chunk of what cluttered /logs, so pin those loggers to ERROR."""
+    bot's background job threads trip constantly. Pure noise here and a big chunk
+    of what cluttered /logs."""
+    flt = _DropScriptRunContext()
     for name in (
         "streamlit",
         "streamlit.runtime.scriptrunner_utils.script_run_context",
@@ -38,7 +52,10 @@ def silence_noisy_loggers() -> None:
         "streamlit.runtime.state.session_state_proxy",
     ):
         try:
-            logging.getLogger(name).setLevel(logging.ERROR)
+            lg = logging.getLogger(name)
+            lg.setLevel(logging.ERROR)
+            if not any(isinstance(f, _DropScriptRunContext) for f in lg.filters):
+                lg.addFilter(flt)
         except Exception:
             pass
 

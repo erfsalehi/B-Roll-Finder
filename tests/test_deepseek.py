@@ -290,6 +290,30 @@ def test_llm_json_falls_back_to_groq_when_deepseek_fails(monkeypatch):
     assert kw._call_llm_json(None, "sys", "user") == {"who": "groq"}
 
 
+def test_llm_json_no_fallback_raises_in_paid_only_mode(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    monkeypatch.setenv("DEEPSEEK_NO_FALLBACK", "1")
+    monkeypatch.setenv("GROQ_API_KEY", "g")
+    monkeypatch.setattr(kw, "_call_deepseek_json",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("empty content")))
+    monkeypatch.setattr(kw, "_call_groq_json",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fall back")))
+    with pytest.raises(ValueError):
+        kw._call_llm_json(None, "sys", "user")
+
+
+def test_llm_json_allow_fallback_overrides_paid_only(monkeypatch):
+    # Non-critical callers (overlays) pass allow_fallback=True so a DeepSeek hiccup
+    # degrades to Groq even in paid-only mode.
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    monkeypatch.setenv("DEEPSEEK_NO_FALLBACK", "1")
+    monkeypatch.setenv("GROQ_API_KEY", "g")
+    monkeypatch.setattr(kw, "_call_deepseek_json",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("empty content")))
+    monkeypatch.setattr(kw, "_call_groq_json", lambda *a, **k: {"who": "groq"})
+    assert kw._call_llm_json(None, "sys", "user", allow_fallback=True) == {"who": "groq"}
+
+
 def test_llm_json_skips_deepseek_when_no_key(monkeypatch):
     # No DeepSeek key → _call_deepseek_json must never be invoked.
     monkeypatch.setenv("GROQ_API_KEY", "g")

@@ -368,7 +368,7 @@ def _call_deepseek_str(system_prompt: str, user_content: str,
 
 def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
                    temperature: float = 0.7, max_tokens: int = 2000,
-                   tier: str = "fast") -> dict:
+                   tier: str = "fast", allow_fallback: bool = False) -> dict:
     """
     Provider priority: DeepSeek (if a key is set) → Groq (cycling keys) →
     OpenRouter. DeepSeek is a paid, higher-quality tier, so it leads when
@@ -377,6 +377,10 @@ def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
     ``tier`` selects the DeepSeek model: "fast" (flash, default — loops) or
     "smart" (pro + reasoning — once-per-video global passes). It's ignored by
     the Groq/OpenRouter fallbacks, which have their own model config.
+
+    ``allow_fallback`` lets a NON-CRITICAL caller (e.g. cosmetic text overlays)
+    fall back to the free providers even in paid-only mode, so a transient
+    DeepSeek/provider hiccup degrades that feature instead of failing it.
     """
     import groq
     import os
@@ -386,7 +390,7 @@ def _call_llm_json(client: Groq, system_prompt: str, user_content: str,
         try:
             return _call_deepseek_json(system_prompt, user_content, temperature, max_tokens, tier=tier)
         except Exception as e:
-            if _deepseek_no_fallback():
+            if _deepseek_no_fallback() and not allow_fallback:
                 print(f"DeepSeek call failed ({type(e).__name__}: {e}); NOT falling back (paid-only mode).")
                 raise
             print(f"DeepSeek call failed ({type(e).__name__}: {e}); falling back to Groq/OpenRouter.")
