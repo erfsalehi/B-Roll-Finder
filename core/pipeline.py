@@ -1254,6 +1254,14 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     if not shots:
         raise RuntimeError("No shots were generated.")
 
+    # Mark where the speaker resumes after each silence so the FCPXML can start a
+    # fresh sub-clip on those beats (instead of an even shot-duration / N split).
+    try:
+        from core.timing import attach_speech_onsets
+        attach_speech_onsets(shots, segments)
+    except Exception as e:
+        errors.append(f"speech onsets: {e}")
+
     # 5 — Fetch
     _p(5, "Fetching candidates")
     try:

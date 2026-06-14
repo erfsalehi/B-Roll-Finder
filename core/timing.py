@@ -150,6 +150,75 @@ def chunk_segments_by_duration(segments: list, target_duration: float = 120.0,
     return chunks
 
 
+def speech_onsets_from_segments(segments: list, min_silence: float = 0.35) -> list:
+    """Absolute times (seconds) where the speaker resumes after a silence.
+
+    A silence is a gap ≥ ``min_silence`` between one spoken word and the next;
+    the *end* of that gap — the start of the next word — is a speech onset. These
+    are the natural points to start a fresh b-roll clip so a visible cut lands
+    exactly when the narration picks back up.
+
+    Prefers per-word timings (``segment['words']`` from Whisper word
+    granularity); falls back to segment boundaries when words are absent. Returns
+    a sorted list of onset times, including the very first word/segment start.
+    """
+    if not segments:
+        return []
+
+    # Flatten words across segments, time-ordered.
+    words = []
+    for s in segments:
+        for w in (s.get("words") or []):
+            if w.get("start") is None:
+                continue
+            try:
+                words.append((float(w["start"]), float(w.get("end", w["start"]))))
+            except (TypeError, ValueError):
+                continue
+    words.sort()
+
+    onsets = []
+    if words:
+        onsets.append(words[0][0])
+        prev_end = words[0][1]
+        for start, end in words[1:]:
+            if start - prev_end >= min_silence:
+                onsets.append(start)
+            prev_end = max(prev_end, end)
+    else:
+        # No word timing — use segment starts that follow a real pause.
+        prev_end = None
+        for s in segments:
+            try:
+                st, en = float(s["start"]), float(s["end"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if prev_end is None or st - prev_end >= min_silence:
+                onsets.append(st)
+            prev_end = en
+
+    # De-dupe and sort (defensive against overlapping word lists).
+    return sorted(set(round(o, 4) for o in onsets))
+
+
+def attach_speech_onsets(shots: list, segments: list,
+                         min_silence: float = 0.35) -> list:
+    """Annotate each shot with the speech onsets that fall inside its voice range
+    (``shot['speech_onsets']``), so :func:`core.output.generate_fcpxml` can begin
+    a new sub-clip whenever the speaker resumes. Mutates and returns ``shots``."""
+    onsets = speech_onsets_from_segments(segments, min_silence)
+    for s in shots:
+        try:
+            st = float(s.get("timestamp", 0))
+            en = float(s.get("end_timestamp", st))
+        except (TypeError, ValueError):
+            s["speech_onsets"] = []
+            continue
+        # Interior onsets only — the shot's own start/end are already boundaries.
+        s["speech_onsets"] = [o for o in onsets if st < o < en]
+    return shots
+
+
 def parse_script_to_slots(script_text: str, duration_seconds: float, intro_duration: float = 30.0, intro_interval: float = 1.0, body_interval: float = 2.0, start_offset: float = 0.0) -> list[dict]:
     """
     Parses a full script into timestamped slots based on average words per second.

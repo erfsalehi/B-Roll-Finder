@@ -1,4 +1,5 @@
 import os
+import random
 from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape
@@ -7,6 +8,62 @@ from core.ffmpeg_utils import get_video_metadata
 
 def _xml_attr(value) -> str:
     return escape(str(value), {'"': "&quot;"})
+
+
+def _thin_evenly(values: list, k: int) -> list:
+    """Keep ``k`` of ``values`` spread as evenly as possible across the list
+    (used when a shot has more speech onsets than it has clips to start)."""
+    if k <= 0 or not values:
+        return []
+    if len(values) <= k:
+        return list(values)
+    if k == 1:
+        return [values[len(values) // 2]]
+    step = (len(values) - 1) / (k - 1)
+    idxs = sorted({round(i * step) for i in range(k)})
+    return [values[i] for i in idxs]
+
+
+def _clip_boundaries(start_sec: float, end_sec: float, num_clips: int,
+                     onsets: list, rng: random.Random) -> list:
+    """Cut points splitting ``[start_sec, end_sec]`` into ``num_clips`` sub-clips.
+
+    Speech onsets (silence-end times) inside the range become forced cut points,
+    so a fresh clip begins exactly when the speaker resumes. Any remaining cuts
+    are placed at random interior points of the widest runs — so the clips no
+    longer all share the same width (the old shot-duration / N grid). ``rng`` is
+    seeded per-shot by the caller, so placement is stable across re-renders.
+
+    Returns ``num_clips + 1`` strictly-ascending times from ``start_sec`` to
+    ``end_sec``.
+    """
+    if num_clips <= 1 or end_sec <= start_sec:
+        return [start_sec, end_sec]
+
+    span = end_sec - start_sec
+    # Don't let any sub-clip collapse to a sliver.
+    min_clip = min(0.4, span / (num_clips * 2.0))
+    needed = num_clips - 1                       # internal cut count
+
+    forced = sorted({round(o, 4) for o in (onsets or [])
+                     if start_sec + min_clip < o < end_sec - min_clip})
+    if len(forced) > needed:
+        # More onsets than clip slots — keep a well-spread subset.
+        forced = sorted(_thin_evenly(forced, needed))
+
+    boundaries = sorted([start_sec] + forced + [end_sec])
+    # Add the remaining cuts at random points inside the current widest run, so
+    # the leftover (non-onset) clips get varied, non-uniform durations.
+    while len(boundaries) - 1 < num_clips:
+        widest_w, widest_k = max(
+            (boundaries[k + 1] - boundaries[k], k)
+            for k in range(len(boundaries) - 1)
+        )
+        lo, hi = boundaries[widest_k], boundaries[widest_k + 1]
+        margin = min(min_clip, widest_w / 3.0)
+        cut = rng.uniform(lo + margin, hi - margin) if hi - lo > 2 * margin else (lo + hi) / 2.0
+        boundaries.insert(widest_k + 1, cut)
+    return boundaries
 
 
 def _get_premiere_safe_pathurl(filepath: str) -> str:
@@ -432,17 +489,25 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
         if next_start < voice_end:
             voice_end = next_start
 
-        voice_duration_sec = voice_end - start_sec
-        if voice_duration_sec <= 0:
-            voice_duration_sec = 1.0
+        # Guarantee a positive span so the sub-clip boundary split always yields
+        # one cut point per clip (a degenerate zero/negative-length shot would
+        # otherwise collapse the boundary list and mis-index the clips).
+        if voice_end - start_sec <= 0:
+            voice_end = start_sec + 1.0
 
         sel = shot.get("selected_results", [])
         if not sel:
             continue
 
-        # Distribute the voice range evenly across selected candidates.
         num_clips = len(sel)
-        clip_duration_sec = voice_duration_sec / num_clips
+        # Cut points within the shot: a new clip begins at each speech onset (the
+        # end of a silence) so the visible switch lands when the speaker resumes;
+        # the remaining cuts fall at random interior points instead of an even
+        # grid. Seed the RNG per-shot so placement is deterministic across
+        # re-renders of the same timeline.
+        onsets = [float(o) - time_offset for o in (shot.get("speech_onsets") or [])]
+        rng = random.Random(f"{shot.get('slot_id', 'X')}|{round(start_sec, 3)}|{num_clips}")
+        boundaries = _clip_boundaries(start_sec, voice_end, num_clips, onsets, rng)
 
         for res_idx, res in enumerate(sel):
             url = res.get("url")
@@ -453,7 +518,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             # start_frame and end_frame to absolute seconds (not start+duration)
             # so adjacent sub-clips touch exactly on the same frame and the
             # shot's total length matches the voice down to one frame.
-            clip_start_sec = start_sec + (res_idx * clip_duration_sec)
+            clip_start_sec = boundaries[res_idx]
             is_last_clip = (res_idx == num_clips - 1)
             if is_last_clip:
                 # Stretch the last pick of this shot across the silence
@@ -463,7 +528,8 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
                 # so this just ends on the voice — no extension.
                 clip_end_sec = next_start
             else:
-                clip_end_sec = clip_start_sec + clip_duration_sec
+                clip_end_sec = boundaries[res_idx + 1]
+            clip_duration_sec = max(0.1, clip_end_sec - clip_start_sec)
 
             start_frame     = sec_to_frames(clip_start_sec, fps_exact)
             end_frame       = sec_to_frames(clip_end_sec,   fps_exact)
