@@ -789,6 +789,11 @@ def _run_download(chat_id) -> None:
     def _p(done, total):
         edit_message(chat_id, msg_id, f"⬇️ {proj}: downloaded {done}/{total} clip(s)…")
 
+    def _status(label):
+        # Surface the pre-download proxy-validation phase (otherwise a silent,
+        # possibly minute-long wait on a free proxy list).
+        edit_message(chat_id, msg_id, f"⬇️ {proj}: {label}")
+
     try:
         with bot_settings.apply_env(settings):
             fin = finalize_project(pend["shots"], proj, quality=str(settings.get("quality", 1080)),
@@ -796,7 +801,7 @@ def _run_download(chat_id) -> None:
                                    overlays=result.get("overlays"),
                                    sfx_list=result.get("sfx_list"),
                                    video_topic=pend.get("topic", ""),
-                                   errors=pend.get("errors"))
+                                   errors=pend.get("errors"), status=_status)
     except PipelineCancelled:
         send_message(chat_id, f"⏹ Cancelled '{proj}'.")
         return

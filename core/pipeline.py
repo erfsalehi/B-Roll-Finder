@@ -1083,18 +1083,23 @@ def finalize_project(shots: list, project_name: str, quality: str = "1080",
                      should_cancel=None, progress=None,
                      overlays: list = None, sfx_list: list = None,
                      groq_key: str = None, video_topic: str = "",
-                     errors: list = None) -> dict:
+                     errors: list = None, status=None) -> dict:
     """Download the selected clips and (re)write the FCPXML — the back half of the
     pipeline, split out so the bot's review gate can run it after the user
     approves (or after a /refine). Re-runs boundary enforcement first, since a
-    /refine may have changed the selection. Returns ``{download, xml_path,
-    validation}``."""
+    /refine may have changed the selection. ``status`` (optional) is a label sink
+    used to surface the proxy-validation phase, which is otherwise silent. Returns
+    ``{download, xml_path, validation}``."""
     key = groq_key or os.getenv("GROQ_API_KEY")
     # Make sure a pool of validated proxies is ready before downloading through it.
+    # Time-boxed inside ensure_working so a mostly-dead free list can't stall here;
+    # `status` surfaces live progress so /download doesn't look frozen meanwhile.
     if os.getenv("YT_DLP_PROXY_URL", "").strip():
         try:
             from core import proxy_pool
-            proxy_pool.ensure_working(should_cancel=should_cancel)
+            if status:
+                status("finding working proxies…")
+            proxy_pool.ensure_working(progress=status, should_cancel=should_cancel)
         except Exception as e:
             errors.append(f"proxy pool: {e}")
     validation = enforce_timeline(shots, groq_key=key,
@@ -1204,10 +1209,16 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
             except Exception:
                 pass
 
-    # 0 — Validate a pool of working proxies BEFORE anything hits YouTube, so
-    # search/download use known-good IPs instead of timing out on dead ones (only
-    # when a dynamic proxy list is configured).
-    if os.getenv("YT_DLP_PROXY_URL", "").strip():
+    # 0 — Validate a pool of working proxies BEFORE downloading, so downloads use
+    # known-good IPs instead of timing out on dead ones. Only the *download* stage
+    # routes through the (slow, free) proxy pool — YouTube search goes direct, the
+    # HD filter uses the Data API, and ranking/selection are LLM-only. So a
+    # review-gate run (download=False), which stops after selection, never needs
+    # the pool; it's validated lazily at /download time (finalize_project). Running
+    # it up front there would just block the user's selection run for minutes on
+    # proxies it won't use. Gated on `download` so we only pay that cost when this
+    # run actually pulls clips.
+    if download and os.getenv("YT_DLP_PROXY_URL", "").strip():
         try:
             from core import proxy_pool
             _p(1, "Finding working proxies")

@@ -16,8 +16,10 @@ Flow:
 
 Env knobs: ``PROXY_POOL_SIZE`` (5), ``PROXY_VALIDATE_WORKERS`` (25),
 ``PROXY_VALIDATE_TIMEOUT`` (10s), ``PROXY_RESEARCH_MAX`` (200 checks/research),
-``PROXY_TEST_URL`` (validation video). Pool mode is active whenever
-``YT_DLP_PROXY_URL`` is set.
+``PROXY_RESEARCH_MAX_SECONDS`` (0 = unlimited; time box for a single research
+scan), ``PROXY_ENSURE_MAX_SECONDS`` (120s; time box for the pre-download
+``ensure_working`` so a dead list can't stall a /download), ``PROXY_TEST_URL``
+(validation video). Pool mode is active whenever ``YT_DLP_PROXY_URL`` is set.
 """
 
 import concurrent.futures
@@ -166,13 +168,15 @@ def _raw_proxies() -> list:
 
 
 def research(need: int = None, test_url: str = None, progress=None,
-             should_cancel=None, max_checks: int = None) -> int:
+             should_cancel=None, max_checks: int = None,
+             max_seconds: float = None) -> int:
     """Probe raw proxies (concurrently) until the pool holds ``need`` working ones
     — scanning the WHOLE list by default (free lists are mostly dead, so a low cap
     would give up before finding any). ``max_checks`` caps the scan (0/None =
-    unlimited); ``should_cancel()`` stops it early (so the user can /cancel a long
-    search). Serialized so parallel callers don't dogpile. Returns how many new
-    working proxies were added."""
+    unlimited); ``max_seconds`` time-boxes it (0/None = unlimited) so a mostly-dead
+    list can't stall a download forever; ``should_cancel()`` stops it early (so the
+    user can /cancel a long search). Serialized so parallel callers don't dogpile.
+    Returns how many new working proxies were added."""
     if not pool_active():
         return 0
     need = need or target_size()
@@ -181,6 +185,9 @@ def research(need: int = None, test_url: str = None, progress=None,
     test_urls = [test_url] if test_url else _resolve_test_urls()
     if max_checks is None:
         max_checks = _cfg_int("PROXY_RESEARCH_MAX", 0)   # 0 → scan everything
+    if max_seconds is None:
+        max_seconds = float(_cfg_int("PROXY_RESEARCH_MAX_SECONDS", 0))  # 0 → no limit
+    deadline = (time.monotonic() + max_seconds) if max_seconds and max_seconds > 0 else None
 
     with _research_lock:
         with _lock:
@@ -242,6 +249,11 @@ def research(need: int = None, test_url: str = None, progress=None,
                 if have >= need or (should_cancel and should_cancel()):
                     cancelled = should_cancel and should_cancel()
                     break
+                if deadline and time.monotonic() >= deadline:
+                    # Time box hit — stop scanning (downloads fall back to direct/
+                    # cookie-less rather than block the user for minutes on a
+                    # mostly-dead free list).
+                    break
                 _submit_more()
         finally:
             ex.shutdown(wait=False, cancel_futures=True)
@@ -249,17 +261,24 @@ def research(need: int = None, test_url: str = None, progress=None,
 
 
 def ensure_working(min_count: int = None, test_url: str = None, progress=None,
-                   should_cancel=None) -> list:
+                   should_cancel=None, max_seconds: float = None) -> list:
     """Guarantee at least ``min_count`` (default PROXY_POOL_SIZE) validated
-    proxies before a run touches YouTube — searching the whole list until found or
-    ``should_cancel()`` fires. Returns the working snapshot."""
+    proxies before a download routes through the pool. Time-boxed by
+    ``max_seconds`` (default ``PROXY_ENSURE_MAX_SECONDS`` = 120s; 0 = unlimited) so
+    a mostly-dead free list can't silently stall a /download — when it runs out of
+    time we proceed with whatever validated (downloads then fall back to
+    direct/cookie-less). ``should_cancel()`` stops it early. Returns the working
+    snapshot."""
     if not pool_active():
         return []
     min_count = min_count or target_size()
+    if max_seconds is None:
+        max_seconds = float(os.getenv("PROXY_ENSURE_MAX_SECONDS", "120") or 120)
     with _lock:
         have = len(_working)
     if have < min_count:
-        research(min_count, test_url, progress, should_cancel=should_cancel)
+        research(min_count, test_url, progress, should_cancel=should_cancel,
+                 max_seconds=max_seconds)
     return working_snapshot()
 
 
