@@ -21,6 +21,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -36,10 +37,79 @@ _CACHE_DIR = os.path.join(_REPO_ROOT, ".cache", "overlay_clips")
 _VALID_ANIM = {"title_card", "stat_pop", "money_count", "lower_third", "pop"}
 _VALID_SFX = {"swoosh", "ding", "thud", "none"}
 
+# A title is the full hook/heading line spoken verbatim — it can run long, so it
+# gets a generous cap. Every other overlay is a short phrase/figure.
+_TITLE_TYPES = {"title", "heading"}
+_TITLE_TEXT_CAP = 200
+_OTHER_TEXT_CAP = 80
+
 
 def _load_prompt() -> str:
     with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
         return f.read()
+
+
+def _norm_token(s: str) -> str:
+    """Lowercase, strip everything but letters/digits — so the overlay's display
+    text ("$4,999", "10,000 MILES", "Title-Case") matches the spoken word tokens
+    ("4999", "10000", "miles") regardless of case, punctuation, or currency."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _flatten_words(segments: list) -> list:
+    """All per-word timings across segments, time-sorted, normalized token cached.
+    Each entry: {'tok': str, 'start': float, 'end': float}. Empty when the
+    transcription carried no word-level timestamps."""
+    words = []
+    for s in (segments or []):
+        for w in (s.get("words") or []):
+            tok = _norm_token(w.get("word", ""))
+            if not tok or w.get("start") is None:
+                continue
+            try:
+                words.append({"tok": tok, "start": float(w["start"]),
+                              "end": float(w.get("end", w["start"]))})
+            except (TypeError, ValueError):
+                continue
+    words.sort(key=lambda x: x["start"])
+    return words
+
+
+def _align_to_words(text: str, words: list, hint_start: float,
+                    hint_end: float) -> tuple | None:
+    """Snap an overlay's (start, end) to the exact span of the spoken words that
+    make up ``text``. ``words`` is from :func:`_flatten_words`; ``hint_start`` /
+    ``hint_end`` are the LLM's approximate times, used to pick the right
+    occurrence when a phrase repeats. Returns ``(start, end)`` or ``None`` when no
+    confident match is found (caller then keeps the LLM's times)."""
+    toks = [_norm_token(t) for t in text.split()]
+    toks = [t for t in toks if t]
+    if not toks or not words:
+        return None
+
+    n = len(words)
+    first, last = toks[0], toks[-1]
+    # Candidate start positions: words matching the first token, ranked by how
+    # close they sit to the LLM's hinted start (disambiguates a repeated phrase).
+    starts = [i for i in range(n) if words[i]["tok"] == first]
+    if not starts:
+        return None
+    i = min(starts, key=lambda k: abs(words[k]["start"] - hint_start))
+    start_t = words[i]["start"]
+
+    # End: the last token, searched within a window allowing a few ASR
+    # insertions/splits beyond the literal token count.
+    span_end = min(n, i + len(toks) + 6)
+    end_idxs = [k for k in range(i, span_end) if words[k]["tok"] == last]
+    if end_idxs:
+        end_t = words[end_idxs[-1]]["end"]
+    else:
+        # No clean tail match — assume the phrase runs contiguously from i.
+        end_t = words[min(n - 1, i + len(toks) - 1)]["end"]
+
+    if end_t <= start_t:
+        end_t = start_t + max(0.4, hint_end - hint_start)
+    return start_t, end_t
 
 
 def extract_overlay_highlights(segments: list = None, script_text: str = "",
@@ -80,6 +150,10 @@ def extract_overlay_highlights(segments: list = None, script_text: str = "",
         print(f"[overlays] highlight extraction failed: {e}")
         return []
 
+    # Per-word timings (when available) let us snap each overlay to the exact
+    # moment its words are spoken instead of trusting the LLM's eyeballed times.
+    words = _flatten_words(segments)
+
     out = []
     for h in (res.get("overlays") or []):
         text = (h.get("text") or "").strip()
@@ -92,11 +166,18 @@ def extract_overlay_highlights(segments: list = None, script_text: str = "",
             continue
         if end <= start:
             end = start + 3
+        otype = (h.get("type") or "title")
+        # Titles/headings keep the full line verbatim; short overlays stay short.
+        cap = _TITLE_TEXT_CAP if otype in _TITLE_TYPES else _OTHER_TEXT_CAP
+        # Snap to the spoken words so the overlay appears/disappears on-beat.
+        aligned = _align_to_words(text, words, start, end)
+        if aligned:
+            start, end = aligned
         anim = h.get("anim") if h.get("anim") in _VALID_ANIM else "title_card"
         sfx = h.get("sfx") if h.get("sfx") in _VALID_SFX else "none"
         out.append({
-            "text": text[:80],
-            "type": (h.get("type") or "title"),
+            "text": text[:cap],
+            "type": otype,
             "anim": anim,
             "sfx": sfx,
             "start": start,
@@ -121,6 +202,20 @@ def extract_overlay_highlights(segments: list = None, script_text: str = "",
             continue                               # crowding rule: prose only
         deduped.append(o)
         last_end, last_start = o["end"], o["start"]
+
+    # The fade-out eats the clip's final frames, so without a tail the text
+    # starts vanishing while the word is still being said. Hold each overlay a
+    # beat past its last word — but never into the next overlay's start, so a
+    # number-dense run stays clean.
+    try:
+        end_pad = float(os.getenv("OVERLAY_END_PAD_SEC", "0.35"))
+    except (TypeError, ValueError):
+        end_pad = 0.35
+    if end_pad > 0:
+        for idx, o in enumerate(deduped):
+            ceiling = (deduped[idx + 1]["start"] if idx + 1 < len(deduped)
+                       else o["end"] + end_pad)
+            o["end"] = min(o["end"] + end_pad, max(o["end"], ceiling - 0.05))
     return deduped
 
 
@@ -192,7 +287,7 @@ def _props_for(h: dict, fps: int, color: str, accent: str) -> dict:
 # Bump when Overlay.tsx visuals change. The render cache is keyed by props, NOT
 # by the component source, so a style change wouldn't otherwise invalidate
 # previously-rendered clips — they'd be reused with the OLD look.
-_STYLE_VERSION = "3"
+_STYLE_VERSION = "4"
 
 
 def _cache_key(props: dict) -> str:

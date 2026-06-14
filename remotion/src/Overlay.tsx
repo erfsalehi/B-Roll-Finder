@@ -62,6 +62,18 @@ export const DEFAULT_PROPS: OverlayProps = {
 
 const FONT = `${MONTSERRAT}, "Arial Black", "Helvetica Neue", Arial, sans-serif`;
 
+// Titles are now the FULL spoken title line (not a 1-5 word card), so they can
+// run long. Scale the font down as the text grows so a whole-sentence title
+// still fits the card instead of overflowing the frame.
+function fitFontSize(text: string, big: number, small: number): number {
+  const len = (text || '').trim().length;
+  if (len <= 22) return big;
+  if (len >= 90) return small;
+  // Linear ramp between the short-title and long-title sizes.
+  const t = (len - 22) / (90 - 22);
+  return Math.round(big + (small - big) * t);
+}
+
 // Title/action-safe margins for the 1920×1080 canvas (~6%), so edge-anchored
 // overlays (e.g. the lower third) never hug the frame border in a 1080p edit.
 const SAFE_X = 120;
@@ -127,7 +139,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
             style={{
               fontFamily: FONT,
               fontWeight: 900,
-              fontSize: 104,
+              fontSize: fitFontSize(text, 104, 52),
               lineHeight: 1.06,
               color,
               textShadow: TEXT_SHADOW,
@@ -212,7 +224,8 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
           }}
         >
           <span
-            style={{fontFamily: FONT, fontWeight: 800, fontSize: 64, color,
+            style={{fontFamily: FONT, fontWeight: 800,
+                    fontSize: fitFontSize(text, 64, 40), color,
                     textShadow: TEXT_SHADOW, ...STROKED}}
           >
             {text}

@@ -15,22 +15,37 @@ Capture the number WITH its unit and any +/- or range (e.g. "5,000–6,000 KM",
 "2.6 L", "10,000 MILES"). Do not round or paraphrase the figure.
 
 ALSO capture (lower priority than numbers):
-  • HEADINGS / TITLES — section titles, the core claim, the hook.
+  • TITLE — the video's main title / hook line. Output it as type "title".
+  • HEADINGS — section titles or the core claim of a part. Type "heading".
   • STANDOUT PHRASES — a punchy 1-4 word emphasis the narrator stresses, or a
     key named thing (a product, place, technique) central to the point.
 
+VERBATIM IS MANDATORY. Every overlay's "text" must be the EXACT words spoken in
+the narration — a literal, contiguous slice of the transcript, same words in the
+same order. Do NOT paraphrase, summarize, reorder, add, or drop words. (You may
+change letter case and keep punctuation as below — that's it.) This is what lets
+the overlay be matched to the audio and timed to the voice.
+
+TITLES — the title must be the FULL title line, word for word as it is spoken.
+Never shorten it, never summarize it, never reword it, even if it is a long
+phrase or a whole sentence. Capture the complete title exactly as narrated.
+
 Rules:
-- Overlay TEXT must be SHORT: 1-5 words, the exact words/figure spoken. UPPERCASE
-  stats/money/numbers/emphasis; Title-Case headings/titles.
-- Use the provided timestamps. start = when the phrase begins; end = a beat after
-  it finishes (about 2-4s on screen). Two overlays may sit close together (e.g.
-  three stats in a row) — that's fine and expected for number-dense narration —
-  but they must NOT overlap in time: each overlay's start must be at or after the
-  previous overlay's end.
+- For NON-title overlays (stats, money, numbers, headings, emphasis), keep the
+  text SHORT: 1-5 words / the figure, still the exact words spoken. Titles are
+  exempt from the length limit — give the whole title.
+- Case: UPPERCASE stats/money/numbers/emphasis; Title-Case headings; for a
+  "title", keep it as a normal title line (Title Case is fine) but with the exact
+  spoken words.
+- Use the provided timestamps. start = when the FIRST word of the phrase is
+  spoken; end = when the LAST word finishes (the exact spoken window — do not pad
+  it; the renderer adds its own tail). Two overlays may sit close together (e.g.
+  three stats in a row) — that's fine and expected — but they must NOT overlap in
+  time: each overlay's start must be at or after the previous overlay's end.
 - Caption EVERY concrete number/stat/measure/price. For prose, be selective: pick
-  the strongest headings and emphasis phrases, skip filler, conjunctions, and
-  full sentences. It is better to include a real number than to skip it for
-  spacing.
+  the title, the strongest headings, and emphasis phrases; skip filler,
+  conjunctions, and full sentences (other than the title). It is better to
+  include a real number than to skip it for spacing.
 
 For each overlay choose:
 - "type": one of "title" | "heading" | "stat" | "money" | "number" | "emphasis"
