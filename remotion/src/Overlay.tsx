@@ -19,13 +19,24 @@ function countUp(text: string, progress: number): string {
   const m = text.match(/[\d,]+(?:\.\d+)?/);
   if (!m || m.index === undefined) return text;
   const numStr = m[0];
+  const hadGrouping = numStr.includes(',');
   const target = parseFloat(numStr.replace(/,/g, ''));
   if (!isFinite(target)) return text;
   const decimals = (numStr.split('.')[1] || '').length;
+  // A year (bare 4-digit integer like 2026) is a label, not a quantity: never
+  // add a thousands separator (2,026 is wrong) and never count up to it — render
+  // the text exactly as written.
+  const isYear =
+    !hadGrouping && decimals === 0 && /^\d{4}$/.test(numStr) &&
+    target >= 1000 && target <= 2999;
+  if (isYear) return text;
   const val = target * Math.max(0, Math.min(1, progress));
+  // Only group thousands when the source already did (10,000 / $4,999) — so we
+  // never invent commas that weren't written.
   const formatted = val.toLocaleString('en-US', {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
+    useGrouping: hadGrouping,
   });
   return text.slice(0, m.index) + formatted + text.slice(m.index + numStr.length);
 }
@@ -92,6 +103,10 @@ const STROKED: React.CSSProperties = {
   WebkitTextStroke: TEXT_STROKE,
   paintOrder: 'stroke',
 };
+// All overlay copy renders in CAPS for a punchy, consistent kinetic-type look —
+// non-destructive (the underlying verbatim text is unchanged, only displayed
+// uppercased).
+const UPPER: React.CSSProperties = {textTransform: 'uppercase'};
 
 export const Overlay: React.FC<OverlayProps> = (props) => {
   const {text, anim, sfx, color, accent} = props;
@@ -145,6 +160,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
               textShadow: TEXT_SHADOW,
               letterSpacing: -1,
               ...STROKED,
+              ...UPPER,
             }}
           >
             {text}
@@ -191,6 +207,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
               fontSize: 150,
               color: accent,
               letterSpacing: -2,
+              ...UPPER,
             }}
           >
             {countUp(text, enter)}
@@ -226,7 +243,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
           <span
             style={{fontFamily: FONT, fontWeight: 800,
                     fontSize: fitFontSize(text, 64, 40), color,
-                    textShadow: TEXT_SHADOW, ...STROKED}}
+                    textShadow: TEXT_SHADOW, ...STROKED, ...UPPER}}
           >
             {text}
           </span>
@@ -255,6 +272,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
           textShadow: `0 6px 22px rgba(0,0,0,0.8), 0 0 40px ${accent}`,
           letterSpacing: -2,
           ...STROKED,
+          ...UPPER,
         }}
       >
         {text}

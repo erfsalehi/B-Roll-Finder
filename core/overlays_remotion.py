@@ -143,8 +143,10 @@ def extract_overlay_highlights(segments: list = None, script_text: str = "",
     try:
         # Overlays are cosmetic — allow_fallback so a DeepSeek/provider hiccup
         # degrades to Groq instead of dropping overlays entirely (paid-only mode).
+        # Generous token budget so a long video's many overlays aren't truncated
+        # mid-JSON (we'd rather over-caption and prune than miss items).
         res = _call_llm_json(client, system_prompt, user_content,
-                             temperature=0.4, max_tokens=2000, tier="smart",
+                             temperature=0.4, max_tokens=6000, tier="smart",
                              allow_fallback=True)
     except Exception as e:
         print(f"[overlays] highlight extraction failed: {e}")
@@ -189,9 +191,9 @@ def extract_overlay_highlights(segments: list = None, script_text: str = "",
     # on screen, so they're exempt from the spacing rule (kept unless they truly
     # overlap another overlay in time).
     try:
-        min_gap = float(os.getenv("OVERLAY_MIN_GAP_SEC", "3"))
+        min_gap = float(os.getenv("OVERLAY_MIN_GAP_SEC", "1.5"))
     except (TypeError, ValueError):
-        min_gap = 3.0
+        min_gap = 1.5
     keep_close = {"stat", "number", "money"}
     out.sort(key=lambda o: o["start"])
     deduped, last_end, last_start = [], -1.0, -1e9
@@ -287,7 +289,7 @@ def _props_for(h: dict, fps: int, color: str, accent: str) -> dict:
 # Bump when Overlay.tsx visuals change. The render cache is keyed by props, NOT
 # by the component source, so a style change wouldn't otherwise invalidate
 # previously-rendered clips — they'd be reused with the OLD look.
-_STYLE_VERSION = "4"
+_STYLE_VERSION = "5"
 
 
 def _cache_key(props: dict) -> str:
@@ -437,6 +439,47 @@ def render_overlay_clips(highlights: list, out_dir: str, fps: int = 30,
                 results.append(r)
     results.sort(key=lambda t: t[0])
     return [ov for _, ov in results]
+
+
+_ANIM_FOR_TYPE = {
+    "title": "title_card", "heading": "title_card", "stat": "stat_pop",
+    "number": "stat_pop", "money": "money_count", "emphasis": "pop",
+}
+_SFX_FOR_ANIM = {
+    "title_card": "swoosh", "stat_pop": "ding", "money_count": "ding", "pop": "thud",
+}
+
+
+def render_one_overlay(text: str, duration_sec: float, out_dir: str,
+                       otype: str = None, fps: int = 30) -> dict | None:
+    """Render a SINGLE, manually-specified overlay (no LLM extraction) to a
+    transparent ProRes .mov. Used by the bot's "give me an overlay for this exact
+    text + duration" command. Auto-classifies the animation from the content when
+    ``otype`` isn't given (a figure/%/currency → stat pill; else a title card).
+    Returns the overlay dict (``filepath`` set) or None on failure."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if otype not in _ANIM_FOR_TYPE:
+        # Short text containing a number/%/currency reads best as a stat pop;
+        # anything else as a title card.
+        if re.search(r"[\$£€%]|\d", text) and len(text.split()) <= 6:
+            otype = "stat"
+        else:
+            otype = "title"
+    anim = _ANIM_FOR_TYPE.get(otype, "title_card")
+    sfx = _SFX_FOR_ANIM.get(anim, "none")
+    try:
+        dur = max(0.4, float(duration_sec))
+    except (TypeError, ValueError):
+        dur = 4.0
+    cap = _TITLE_TEXT_CAP if otype in _TITLE_TYPES else _OTHER_TEXT_CAP
+    h = {"text": text[:cap], "type": otype, "anim": anim, "sfx": sfx,
+         "start": 0.0, "end": dur, "emphasis": "high"}
+    color = os.getenv("OVERLAY_TEXT_COLOR", "#FFD60A").strip() or "#FFD60A"
+    accent = os.getenv("OVERLAY_ACCENT_COLOR", "#FFD400").strip() or "#FFD400"
+    rendered = render_overlay_clips([h], out_dir, fps=fps, color=color, accent=accent)
+    return rendered[0] if rendered else None
 
 
 def build_overlays(out_dir: str, segments: list = None, script_text: str = "",

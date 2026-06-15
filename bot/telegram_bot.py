@@ -812,6 +812,64 @@ def handle_overlay_only(chat_id, file_id: str, suggested_name: str) -> dict:
     return result
 
 
+def is_overlay_text_command(text: str) -> bool:
+    return _command(text) in ("/overlaytext", "/textoverlay", "/overlaytxt")
+
+
+def _parse_overlay_text_args(text: str):
+    """Pull ``(duration_sec, content)`` from a /overlaytext command. The first
+    token is read as the duration when numeric ('/overlaytext 4 CAR BATTERY' →
+    (4.0, 'CAR BATTERY')); otherwise duration defaults to 4s and the whole body is
+    the text. Returns ``(None, "")`` when no text was given."""
+    parts = text.split(maxsplit=1)
+    body = parts[1].strip() if len(parts) > 1 else ""
+    if not body:
+        return None, ""
+    head = body.split(maxsplit=1)
+    try:
+        dur = float(head[0])
+    except ValueError:
+        return 4.0, body                      # no leading number → all text
+    content = head[1].strip() if len(head) > 1 else ""
+    if content:
+        return dur, content
+    return 4.0, head[0]                        # only a bare number → use it as text
+
+
+def handle_overlay_text(chat_id, text: str) -> None:
+    """Render ONE animated text overlay from a user-supplied text + duration and
+    send back the transparent ProRes clip (drop it on your timeline anywhere).
+    Stateless — no audio/project needed."""
+    from core.overlays_remotion import render_one_overlay, remotion_available
+    dur, content = _parse_overlay_text_args(text)
+    if not content:
+        send_message(chat_id,
+                     "Usage: /overlaytext <seconds> <text>\n"
+                     "e.g. /overlaytext 4 CHECK YOUR CAR BATTERY\n"
+                     "(seconds optional — defaults to 4. Text is shown in CAPS; "
+                     "a figure like \"200AH\" animates as a stat.)")
+        return
+    if not remotion_available():
+        send_message(chat_id, "The overlay renderer isn't installed on this server yet.")
+        return
+    status = send_message(chat_id, f"🅰️ Rendering overlay ({dur:g}s): \"{content[:60]}\"…")
+    msg_id = (status or {}).get("message_id")
+    out_dir = os.path.join(".cache", "manual_overlays")
+    try:
+        ov = render_one_overlay(content, dur, out_dir)
+    except Exception as e:
+        send_message(chat_id, f"❌ Overlay render failed: {e}")
+        return
+    if not ov or not os.path.exists(ov.get("filepath", "")):
+        send_message(chat_id, "❌ Couldn't render that overlay (see logs).")
+        return
+    if msg_id:
+        edit_message(chat_id, msg_id, f"🅰️ Overlay ready ({dur:g}s).")
+    send_document(chat_id, ov["filepath"],
+                  caption=f"Overlay · {dur:g}s · transparent ProRes 4444 (.mov) — "
+                          "drop on your top video track.")
+
+
 def _run_download(chat_id) -> None:
     """Review gate → /download: fetch the approved selection and deliver."""
     pend = _PENDING.get(chat_id)
@@ -1214,6 +1272,7 @@ _BOT_COMMANDS = [
     ("cancel", "Stop the running job / discard pending"),
     ("forcestop", "Hard stop + restart the bot"),
     ("zip", "Bundle a finished project (link + attach)"),
+    ("overlaytext", "Render one overlay clip: /overlaytext 4 YOUR TEXT"),
     ("links", "Source links per shot (re-download empty shots)"),
     ("cleanup", "Show disk usage / delete a project"),
     ("logs", "Export the bot logs as a file"),
@@ -1516,6 +1575,7 @@ _HELP = (
     "🎬 Send a voice message or audio file and I'll build the B-roll project.\n"
     "/settings — choose sources, counts, quality, QA, review gate, text overlays\n"
     "/overlay — next voice file → animated text-overlays only (no footage)\n"
+    "/overlaytext <secs> <text> — render ONE overlay clip for exact text + duration\n"
     "/status — am I online & ready\n"
     "/test — preflight: live-test LLM, transcription, Pexels + yt-dlp search and "
     "real downloads before a long run (/test quick = no downloads)\n"
@@ -1766,6 +1826,18 @@ def main() -> None:
 
             if is_settings_command(text):
                 send_settings(chat_id)
+                continue
+
+            if is_overlay_text_command(text):
+                if _BUSY.get("active"):
+                    send_message(chat_id, f"⏳ Busy with '{_BUSY.get('project')}'. "
+                                          "Try /overlaytext once it's idle.")
+                    continue
+                _BUSY.update(active=True, project="overlay text",
+                             cancel=threading.Event(), started=time.time())
+                threading.Thread(target=_job_thread,
+                                 args=(handle_overlay_text, chat_id, text),
+                                 daemon=True).start()
                 continue
 
             if is_overlay_command(text):

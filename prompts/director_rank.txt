@@ -29,9 +29,14 @@ CRITICAL RULES:
    - Searching for "screwdriver" often returns "CPU socket" or "motherboard" because they are technical. This is IRRELEVANT unless the script is about computers.
    - Searching for "market" often returns "vegetable stand" when the script is about "stock market". This is IRRELEVANT.
 5. ZERO TOLERANCE FOR NOISE:
-   Stock libraries (especially Pixabay) often return random "Featured" videos (nature, coffee, animals) when a query has no hits. 
+   Stock libraries (especially Pixabay) often return random "Featured" videos (nature, coffee, animals) when a query has no hits.
    If a candidate looks like a generic stock video that doesn't match the intent, mark "irrelevant": true.
    **It is much better to mark everything as irrelevant than to show a single wrong clip.**
+5b. WRONG-DOMAIN OBJECTS ARE IRRELEVANT. A clip can show the right *kind* of object but from the wrong domain for this video's topic — that is IRRELEVANT, not a partial match.
+   - Topic "car batteries": a phone battery, AA/AAA batteries, a battery icon, or a laptop battery are all IRRELEVANT even though they are "batteries". Only automotive/car batteries qualify.
+   - Topic "stock market": a vegetable market or a bull in a field is IRRELEVANT.
+   - Topic "espresso grinder": an angle grinder throwing sparks is IRRELEVANT.
+   Judge every candidate against the OVERALL VIDEO TOPIC, not just the shot's keyword. If the subject belongs to a different domain than the topic, mark "irrelevant": true.
 6. ORIENTATION TIE-BREAKER — when two candidates have similar relevance, prefer **horizontal** clips
    over vertical or square ones. Vertical clips require cropping or letterboxing in standard
    16:9 video. Promote horizontal candidates above otherwise-equal vertical ones.

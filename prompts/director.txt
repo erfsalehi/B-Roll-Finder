@@ -67,6 +67,12 @@ G. NO VISUAL REPETITION across adjacent shots in this chunk. If the previous sho
 
 H. RESPECT THE OVERALL VIDEO TOPIC (when given above). If the script says "tool", "shot", "market", "bank", or any ambiguous noun, disambiguate using the topic. A "tool" in a car video is a wrench; in a software video, a debugger window.
 
+I. ANCHOR AMBIGUOUS OBJECTS TO THE TOPIC'S DOMAIN — THIS IS MANDATORY. Many objects exist in several unrelated domains and a bare query pulls the wrong one. Always prepend the topic's domain qualifier so the search can't drift.
+   - Topic "car batteries": "battery" -> "car battery" / "automotive battery 12V" / "car battery terminals corrosion". NEVER bare "battery" (returns phone/AA batteries), NEVER "phone battery" or "battery icon".
+   - Topic "home espresso": "grinder" -> "coffee grinder burr" (not "angle grinder sparks").
+   - Topic "stock market": "bull" -> "bull market stock chart" (not "bull animal field").
+   Rule of thumb: if a stranger reading ONE of your queries in isolation could picture the wrong subject, it is under-qualified — add the domain word from the topic.
+
 ==================================================
 JSON SCHEMA
 ==================================================

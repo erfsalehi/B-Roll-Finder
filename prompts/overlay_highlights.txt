@@ -14,6 +14,15 @@ or price spoken in the narration should get its own overlay. This includes:
 Capture the number WITH its unit and any +/- or range (e.g. "5,000–6,000 KM",
 "2.6 L", "10,000 MILES"). Do not round or paraphrase the figure.
 
+UNITS ARE MANDATORY. If the narration gives a measurement, the overlay MUST keep
+its unit — never output a bare number for a measured quantity. "12 volts" ->
+"12V", "200 amp hours" -> "200AH", "five liters" -> "5 L", "sixty miles per hour"
+-> "60 MPH". A figure with no unit is only allowed for a true count ("3 STEPS").
+
+YEARS ARE NOT QUANTITIES — write them with NO thousands separator: "2026" (never
+"2,026"), "2019" (never "2,019"), "in 1998". Thousands separators are ONLY for
+large quantities and money ("10,000 MILES", "$4,999", "1,200 HOURS").
+
 ALSO capture (lower priority than numbers):
   • TITLE — the video's main title / hook line. Output it as type "title".
   • HEADINGS — section titles or the core claim of a part. Type "heading".
@@ -34,18 +43,24 @@ Rules:
 - For NON-title overlays (stats, money, numbers, headings, emphasis), keep the
   text SHORT: 1-5 words / the figure, still the exact words spoken. Titles are
   exempt from the length limit — give the whole title.
-- Case: UPPERCASE stats/money/numbers/emphasis; Title-Case headings; for a
-  "title", keep it as a normal title line (Title Case is fine) but with the exact
-  spoken words.
+- Case: every overlay is displayed in ALL CAPS on screen (the renderer enforces
+  this), so don't worry about casing — just give the exact spoken words. This
+  applies to titles, headings, stats, money, numbers, and emphasis alike.
 - Use the provided timestamps. start = when the FIRST word of the phrase is
   spoken; end = when the LAST word finishes (the exact spoken window — do not pad
   it; the renderer adds its own tail). Two overlays may sit close together (e.g.
   three stats in a row) — that's fine and expected — but they must NOT overlap in
   time: each overlay's start must be at or after the previous overlay's end.
-- Caption EVERY concrete number/stat/measure/price. For prose, be selective: pick
-  the title, the strongest headings, and emphasis phrases; skip filler,
-  conjunctions, and full sentences (other than the title). It is better to
-  include a real number than to skip it for spacing.
+- Caption EVERY concrete number/stat/measure/price.
+- BE COMPREHENSIVE — lean toward INCLUDING more, not less. Beyond numbers, also
+  capture: key named entities (products, brands, models, places, people,
+  techniques, materials), the core noun/term of each point, comparisons
+  ("BEFORE", "AFTER", "VS"), and any word the narrator clearly stresses. When in
+  doubt whether something is overlay-worthy, INCLUDE it — extra overlays are easy
+  to delete in the edit, but a missed key term is gone. Aim for a steady rhythm of
+  overlays across the whole video, not just a few.
+- Still skip pure filler: conjunctions, articles, and whole explanatory sentences
+  (the title is the only full-sentence overlay allowed).
 
 For each overlay choose:
 - "type": one of "title" | "heading" | "stat" | "money" | "number" | "emphasis"
