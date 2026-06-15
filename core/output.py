@@ -367,7 +367,7 @@ def clip_filename(slot_id, footage_num: int, matched_query: str, seen_filenames:
     return filename
 
 
-def zip_project(project_name: str, out_path: str = None) -> dict:
+def zip_project(project_name: str, out_path: str = None, progress=None) -> dict:
     """Bundle a project's downloaded clips + FCPXML into one .zip for transfer
     (e.g. download from the server to your editing machine).
 
@@ -375,6 +375,10 @@ def zip_project(project_name: str, out_path: str = None) -> dict:
     layout, so unzipping recreates ``<project>/director/*.mp4`` + the XML. Returns
     ``{path, size_bytes, files}``. Raises FileNotFoundError if the project folder
     doesn't exist yet.
+
+    ``progress(done, total)`` (optional) is called after each file is written, so
+    a caller can surface the otherwise-silent bundling of a large (multi-GB,
+    hundreds-of-clips) project.
     """
     import zipfile
     proj = _safe_for_fs(project_name, 50)
@@ -383,18 +387,115 @@ def zip_project(project_name: str, out_path: str = None) -> dict:
         raise FileNotFoundError(f"No downloaded project at {proj_dir}")
 
     out_path = out_path or os.path.join("downloads", f"{proj}.zip")
+    out_abs = os.path.abspath(out_path)
+
+    # Collect the file list up front so we know the total for progress reporting
+    # (and so we never zip the output zip into itself).
+    members = []
+    for root, _dirs, names in os.walk(proj_dir):
+        for name in names:
+            fp = os.path.join(root, name)
+            if os.path.abspath(fp) == out_abs:
+                continue
+            members.append(fp)
+    total = len(members)
+
     files = 0
     # ZIP_DEFLATED barely shrinks already-compressed mp4s but keeps the bundle
     # to a single portable file; allowZip64 handles multi-GB projects.
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
-        for root, _dirs, names in os.walk(proj_dir):
-            for name in names:
-                fp = os.path.join(root, name)
-                if os.path.abspath(fp) == os.path.abspath(out_path):
-                    continue  # never zip the zip itself
-                z.write(fp, os.path.relpath(fp, "downloads"))
-                files += 1
+        for fp in members:
+            z.write(fp, os.path.relpath(fp, "downloads"))
+            files += 1
+            if progress:
+                try:
+                    progress(files, total)
+                except Exception:
+                    pass
     return {"path": out_path, "size_bytes": os.path.getsize(out_path), "files": files}
+
+
+def _dl_link(c: dict) -> str:
+    """Best human-openable source link for a candidate (watch/page URL preferred
+    over a direct file URL, which can expire)."""
+    return (c.get("page_url") or c.get("url") or "").strip()
+
+
+def _dl_title(c: dict) -> str:
+    return (c.get("title") or c.get("matched_query") or "Untitled").strip()
+
+
+def _dl_shot_label(shot: dict) -> str:
+    sid = shot.get("slot_id", "?")
+    desc = (shot.get("shot_intent") or shot.get("text") or "").strip().replace("\n", " ")
+    if len(desc) > 90:
+        desc = desc[:87] + "..."
+    return (f"[Shot {sid}] {desc}").rstrip()
+
+
+def build_download_links_txt(shots: list, project_name: str = "",
+                             max_per_empty: int = 10) -> str:
+    """A plain-text manifest of each shot's source links (title — link, one per
+    line), so a user can manually re-download any shot whose footage failed to
+    download. Shots that ended with NO footage are listed first with their full
+    candidate pool (``video_results``); a second section lists the sources
+    actually used in every shot. Pure/deterministic — safe to unit-test."""
+    import datetime
+
+    shots = shots or []
+    active = [s for s in shots
+              if s.get("priority") != "none" and not s.get("skipped")]
+    empty = [s for s in active if not s.get("selected_results")]
+
+    out = []
+    out.append(f"# Download links - {project_name}".rstrip())
+    out.append(f"# {len(active)} shot(s): {len(active) - len(empty)} with footage, "
+               f"{len(empty)} with NONE")
+    out.append(f"# generated {datetime.datetime.now():%Y-%m-%d %H:%M}")
+    out.append("# To recover an empty shot: open a link below, download the clip, and")
+    out.append("# drop the file into this project's director/ folder (then re-import the XML).")
+    out.append("")
+
+    if empty:
+        out.append("=" * 64)
+        out.append("SHOTS WITH NO FOOTAGE - re-download one clip per shot")
+        out.append("=" * 64)
+        for s in empty:
+            out.append("")
+            out.append(_dl_shot_label(s))
+            seen, n = set(), 0
+            for c in (s.get("video_results") or []):
+                link = _dl_link(c)
+                if not link or link in seen:
+                    continue
+                seen.add(link)
+                out.append(f"  [{c.get('source') or '?'}] {_dl_title(c)} - {link}")
+                n += 1
+                if n >= max_per_empty:
+                    break
+            if n == 0:
+                out.append("  (no candidate links were captured — try /redo for this shot)")
+        out.append("")
+
+    out.append("=" * 64)
+    out.append("ALL SHOTS - sources used in the timeline")
+    out.append("=" * 64)
+    for s in active:
+        out.append("")
+        out.append(_dl_shot_label(s))
+        sel = s.get("selected_results") or []
+        if not sel:
+            out.append("  (no footage - see the re-download section above)")
+            continue
+        seen = set()
+        for c in sel:
+            link = _dl_link(c)
+            if not link or link in seen:
+                continue
+            seen.add(link)
+            out.append(f"  [{c.get('source') or '?'}] {_dl_title(c)} - {link}")
+
+    return "\n".join(out).rstrip() + "\n"
 
 
 def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None,

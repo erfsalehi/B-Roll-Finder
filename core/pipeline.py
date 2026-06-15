@@ -1076,6 +1076,15 @@ def write_fcpxml(shots: list, project_name: str, overlays: list = None,
     os.makedirs(os.path.dirname(xml_path), exist_ok=True)
     with open(xml_path, "w", encoding="utf-8") as f:
         f.write(xml)
+    # Source-link manifest alongside the XML (rides along in the zip): lets the
+    # user manually re-download any shot whose footage failed to download.
+    try:
+        from core.output import build_download_links_txt
+        links_path = os.path.join(os.path.dirname(xml_path), "download_links.txt")
+        with open(links_path, "w", encoding="utf-8") as f:
+            f.write(build_download_links_txt(shots, project_name))
+    except Exception:
+        pass
     return xml_path
 
 
@@ -1391,10 +1400,14 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # YouTube clip that 404s at download time is replaced by a live one.
     if download:
         _p(10, "Downloading clips")
+        # Surface per-clip progress on the same step line (the _progress_logger
+        # rewrites it in place + throttles), so a long download of a big project
+        # isn't a silent "Downloading clips" with no movement.
         state.download = download_and_repair(
             shots, project_name, quality=cap_quality(quality),
             groq_key=key, video_topic=topic, errors=errors,
-            should_cancel=should_cancel)
+            should_cancel=should_cancel,
+            progress=lambda done, total: _p(10, f"Downloading clips · {done}/{total}"))
         state.attempts["repaired"] = state.download.get("repaired", 0)
         state.attempts["dropped"] = (state.attempts.get("dropped", 0)
                                      + state.download.get("dropped", 0))

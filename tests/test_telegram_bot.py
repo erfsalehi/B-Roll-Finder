@@ -198,7 +198,7 @@ def test_handle_zip_uses_last_project(monkeypatch):
     monkeypatch.setitem(tb._LAST, "project", "lastproj")
     import core.output
     monkeypatch.setattr(core.output, "zip_project",
-                        lambda name, out_path=None: {"path": f"downloads/{name}.zip",
+                        lambda name, out_path=None, progress=None: {"path": f"downloads/{name}.zip",
                                                      "size_bytes": 2048, "files": 3})
     tb.handle_zip(123, "/zip")
     assert any("lastproj" in m for m in sent)

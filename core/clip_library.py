@@ -13,14 +13,28 @@ import sqlite3
 import numpy as np
 from datetime import datetime
 
+# Default lives under .cache/, which the Docker deploy mounts as a persistent
+# volume — so the accumulated library already survives redeploys and /cleanup
+# (which only touches downloads/). Override with CLIP_LIBRARY_DB to pin it to an
+# explicit server path (e.g. a dedicated data volume).
 _DB_PATH = os.path.join(os.path.dirname(__file__), '..', '.cache', 'clip_library.db')
+
+
+def _db_path() -> str:
+    """Resolve the Clip Library DB location at call time: ``CLIP_LIBRARY_DB`` env
+    (absolute path on the server) wins; otherwise the module default (kept as a
+    plain attribute so tests can monkeypatch it)."""
+    return os.getenv("CLIP_LIBRARY_DB", "").strip() or _DB_PATH
 
 
 # ── DB bootstrap ────────────────────────────────────────────────────────────
 
 def _conn() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
-    c = sqlite3.connect(_DB_PATH)
+    path = _db_path()
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    c = sqlite3.connect(path)
     c.row_factory = sqlite3.Row
     return c
 

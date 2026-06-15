@@ -205,6 +205,22 @@ def extract_library_doc(message: dict):
     return None, None
 
 
+def extract_xml_doc(message: dict):
+    """Return ``(file_id, name)`` for an exported FCP7 XML upload — a ``.xml``
+    document, or any document sent with an ``/import`` / ``/learn`` caption — so
+    the bot can learn the editor's preferred trims from it. Else ``(None, None)``."""
+    if not isinstance(message, dict):
+        return None, None
+    doc = message.get("document")
+    if not doc:
+        return None, None
+    name = (doc.get("file_name") or "").lower()
+    caption = (message.get("caption") or "").lower().strip()
+    if name.endswith(".xml") or caption.startswith("/import") or caption.startswith("/learn"):
+        return doc["file_id"], doc.get("file_name") or "timeline.xml"
+    return None, None
+
+
 def project_name_from(suggested_name: str, fallback: str = "") -> str:
     base = os.path.splitext(os.path.basename(suggested_name or ""))[0].strip()
     return (base or fallback or "voice")[:50]
@@ -521,13 +537,26 @@ def deliver_project(chat_id, project: str) -> None:
     upload cap, and always provide a signed download link (when the file server
     is up) plus the scp path."""
     from core.output import zip_project
+    # Bundling a big project (hundreds of clips, multi-GB) takes a while and is
+    # otherwise silent — show a live "zipping N/total" line on one edited message.
+    zip_status = send_message(chat_id, f"📦 Zipping '{project}'…") or {}
+    zip_msg_id = zip_status.get("message_id")
+    _zip_state = {"last": 0.0}
+
+    def _zip_progress(done, total):
+        now = time.time()
+        if done < total and now - _zip_state["last"] < 3.0:
+            return  # throttle so we don't trip Telegram's edit rate limit
+        _zip_state["last"] = now
+        edit_message(chat_id, zip_msg_id, f"📦 Zipping '{project}'… {done}/{total} file(s)")
+
     try:
-        res = zip_project(project)
+        res = zip_project(project, progress=_zip_progress)
     except FileNotFoundError:
-        send_message(chat_id, f"(No files to bundle for '{project}'.)")
+        edit_message(chat_id, zip_msg_id, f"(No files to bundle for '{project}'.)")
         return
     except Exception as e:
-        send_message(chat_id, f"(Couldn't zip '{project}': {e})")
+        edit_message(chat_id, zip_msg_id, f"(Couldn't zip '{project}': {e})")
         return
 
     abs_path = os.path.abspath(res["path"])
@@ -670,6 +699,15 @@ def _deliver_completed(chat_id, proj, result) -> None:
     if xml_path and os.path.exists(xml_path):
         send_document(chat_id, xml_path, caption=f"{proj} — Premiere XML")
     send_shots_srt(chat_id, proj, result.get("shots") or [])
+    # If any shot ended with no footage, surface the source-link manifest up front
+    # so the user can re-download those by hand (it's also bundled in the zip).
+    shots = result.get("shots") or []
+    empty = [s for s in shots if s.get("priority") != "none"
+             and not s.get("skipped") and not s.get("selected_results")]
+    links_path = _links_file_path(proj)
+    if empty and os.path.exists(links_path):
+        send_document(chat_id, links_path,
+                      caption=f"⚠️ {len(empty)} shot(s) have no footage — links to re-download them")
     deliver_project(chat_id, proj)
 
 
@@ -983,6 +1021,43 @@ def handle_library_upload(chat_id, file_id: str, name: str) -> None:
         "Imported clips are re-downloaded from their source URL when selected.")
 
 
+def handle_xml_upload(chat_id, file_id: str, name: str) -> None:
+    """Learn the editor's preferred trims from an exported (and Premiere-edited)
+    FCP7 XML: each clip's in/out is recorded against the Clip Library so future
+    projects reuse your cut points. Writes to the persistent DB; idempotent."""
+    import tempfile
+    from core.xml_reimport import ingest_reimported_xml
+    tmp = os.path.join(tempfile.gettempdir(), f"reimport_{int(time.time())}.xml")
+    try:
+        download_telegram_file(file_id, tmp)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't download the XML: {e}")
+        return
+    try:
+        s = ingest_reimported_xml(tmp)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't parse '{name}': {e}")
+        return
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    lines = [
+        f"✅ Learned trims from '{name}':",
+        f"• clips parsed: {s['parsed']} ({s['video']} video)",
+        f"• matched to library: {s['matched']}  ·  new rows: {s['created']}",
+        f"• preferred trims recorded: {s['recorded']}",
+    ]
+    if s.get("skipped_non_video"):
+        lines.append(f"• skipped audio/SFX: {s['skipped_non_video']}")
+    if s.get("unmatched"):
+        n = len(s["unmatched"])
+        lines.append(f"• unresolved: {n} (e.g. {', '.join(s['unmatched'][:3])})")
+    lines.append("These cut points will be reused when the same footage is picked again.")
+    send_message(chat_id, "\n".join(lines))
+
+
 def handle_forcestop(chat_id) -> None:
     """Hard stop: signal cancel, then exit the process so a wedged worker (stuck
     in a blocking network call /cancel can't interrupt) is killed for sure. Under
@@ -1139,6 +1214,7 @@ _BOT_COMMANDS = [
     ("cancel", "Stop the running job / discard pending"),
     ("forcestop", "Hard stop + restart the bot"),
     ("zip", "Bundle a finished project (link + attach)"),
+    ("links", "Source links per shot (re-download empty shots)"),
     ("cleanup", "Show disk usage / delete a project"),
     ("logs", "Export the bot logs as a file"),
     ("cookies", "How to upload YouTube cookies.txt"),
@@ -1284,6 +1360,49 @@ def is_zip_command(text: str) -> bool:
     return _command(text) in ("/zip", "/package", "/bundle")
 
 
+def is_links_command(text: str) -> bool:
+    return _command(text) in ("/links", "/sources")
+
+
+def _links_file_path(name: str) -> str:
+    from core.output import _safe_for_fs
+    return os.path.join("downloads", _safe_for_fs(name, 50), "download_links.txt")
+
+
+def handle_links(chat_id, text: str) -> None:
+    """Send the per-shot 'title — source link' manifest so the user can manually
+    re-download any shot that ended with no footage. Reads the file written next
+    to the project XML; if it isn't on disk yet (e.g. a project still awaiting
+    /download), builds it on the fly from the pending project's shots.
+    ``/links <name>`` targets a specific project; bare /links uses the last one."""
+    from core.output import build_download_links_txt
+    parts = text.strip().split(maxsplit=1)
+    name = parts[1].strip() if len(parts) > 1 else ""
+    pend = _PENDING.get(chat_id)
+    if not name:
+        name = (pend or {}).get("project") or _LAST.get("project") or ""
+    if not name:
+        send_message(chat_id, "No project yet. Send a voice file, or /links <project-name>.")
+        return
+
+    path = _links_file_path(name)
+    if not os.path.exists(path):
+        # Not downloaded yet — build from the pending project's in-memory shots.
+        shots = pend.get("shots") if (pend and pend.get("project") == name) else None
+        if not shots:
+            send_message(chat_id, f"No links file for '{name}' yet — it's written when the "
+                                  "project's XML is built. Run /download or re-send the audio.")
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(build_download_links_txt(shots, name))
+        except Exception as e:
+            send_message(chat_id, f"(Couldn't build links for '{name}': {e})")
+            return
+    send_document(chat_id, path, caption=f"{name} — source links (title + link per shot)")
+
+
 def _human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":
@@ -1326,10 +1445,22 @@ def _project_disk_usage() -> list:
     return sorted(out, key=lambda x: x[1], reverse=True)
 
 
+def _library_kept_note() -> str:
+    """One-liner reassuring that cleanup frees video files only — the Clip Library
+    DB (semantic reuse + learned trims) lives outside downloads/ and is kept."""
+    try:
+        from core.clip_library import get_library_stats
+        n = get_library_stats().get("total", 0)
+        return f"📚 Clip Library kept ({n} clip(s)) — only video files were removed."
+    except Exception:
+        return "📚 Clip Library kept — only video files were removed."
+
+
 def handle_cleanup(chat_id, text: str) -> None:
     """Disk management. ``/cleanup`` lists projects + sizes; ``/cleanup <name>``
     deletes that project's folder (and its .zip); ``/cleanup all`` clears every
-    downloaded project. Frees space on the always-on server."""
+    downloaded project. The Clip Library DB lives outside downloads/ and is always
+    preserved. Frees space on the always-on server."""
     import shutil as _shutil
     parts = text.strip().split(maxsplit=1)
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1345,6 +1476,7 @@ def handle_cleanup(chat_id, text: str) -> None:
         for name, b in usage[:25]:
             lines.append(f"  • {name} — {_human_size(b)}")
         lines.append("\nDelete one: /cleanup <name>   ·   delete all: /cleanup all")
+        lines.append(_library_kept_note())
         send_message(chat_id, "\n".join(lines))
         return
 
@@ -1358,7 +1490,7 @@ def handle_cleanup(chat_id, text: str) -> None:
                     os.remove(zp)
                 except OSError:
                     pass
-        send_message(chat_id, f"🗑 Cleared {len(usage)} project(s).")
+        send_message(chat_id, f"🗑 Cleared {len(usage)} project(s). " + _library_kept_note())
         return
 
     # Delete a single named project (guard against path traversal).
@@ -1377,7 +1509,7 @@ def handle_cleanup(chat_id, text: str) -> None:
             pass
     if _LAST.get("project") == arg:
         _LAST["project"] = None
-    send_message(chat_id, f"🗑 Deleted '{arg}'.")
+    send_message(chat_id, f"🗑 Deleted '{arg}'. " + _library_kept_note())
 
 
 _HELP = (
@@ -1395,9 +1527,12 @@ _HELP = (
     "/cancel — stop the running job (graceful; or discard a pending one)\n"
     "/forcestop — hard stop + restart the bot (when /cancel won't catch)\n"
     "/zip [name] — bundle a finished project (link + attach)\n"
+    "/links [name] — per-shot source links (title + link) to manually re-download empty shots\n"
     "/cleanup [name|all] — list or delete downloaded projects (free disk)\n"
     "/logs — export the bot logs as a file\n"
-    "/cookies — how to give me YouTube cookies (or just send cookies.txt)"
+    "/cookies — how to give me YouTube cookies (or just send cookies.txt)\n"
+    "📥 Send an exported .xml (after editing in Premiere) to teach me your preferred "
+    "trims — I'll reuse those cut points when the same footage comes up again."
 )
 
 
@@ -1667,6 +1802,10 @@ def main() -> None:
                 handle_zip(chat_id, text)
                 continue
 
+            if is_links_command(text):
+                handle_links(chat_id, text)
+                continue
+
             if is_cleanup_command(text):
                 handle_cleanup(chat_id, text)
                 continue
@@ -1722,6 +1861,12 @@ def main() -> None:
             lfid, lname = extract_library_doc(msg)
             if lfid:
                 handle_library_upload(chat_id, lfid, lname)
+                continue
+
+            # An exported FCP7 XML upload — learn the editor's preferred trims.
+            xfid, xname = extract_xml_doc(msg)
+            if xfid:
+                handle_xml_upload(chat_id, xfid, xname)
                 continue
 
             # Review-gate actions: need a pending project and a free worker.

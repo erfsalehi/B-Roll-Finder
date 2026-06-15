@@ -84,7 +84,7 @@ def test_deliver_project_links_and_attaches_small(monkeypatch):
     try:
         import core.output
         monkeypatch.setattr(core.output, "zip_project",
-                            lambda name: {"path": f"downloads/{name}.zip",
+                            lambda name, progress=None: {"path": f"downloads/{name}.zip",
                                           "size_bytes": 10 * 1024 * 1024, "files": 5})
         tb.deliver_project(99, "small_proj")
     finally:
@@ -101,7 +101,7 @@ def test_deliver_project_large_skips_attach(monkeypatch):
     monkeypatch.setitem(tb._FILESERVER, "port", 8770)
     import core.output
     monkeypatch.setattr(core.output, "zip_project",
-                        lambda name: {"path": f"downloads/{name}.zip",
+                        lambda name, progress=None: {"path": f"downloads/{name}.zip",
                                       "size_bytes": 200 * 1024 * 1024, "files": 40})
     tb.deliver_project(99, "big_proj")
     assert any("/d/big_proj.zip?" in m for m in sent)      # link still provided
