@@ -34,6 +34,7 @@ OPTIONS = [
     {"key": "auto_fill",   "label": "Auto-fill empty shots", "type": "bool"},
     {"key": "review_gate", "label": "Pause to review", "type": "bool"},
     {"key": "overlays",    "label": "Text overlays",  "type": "bool",   "env": "ENABLE_TEXT_OVERLAYS"},
+    {"key": "extra_clips", "label": "Extra clips",    "type": "bool",   "env": "ENABLE_EXTRA_CLIPS"},
 ]
 
 _OPT_BY_KEY = {o["key"]: o for o in OPTIONS}
@@ -49,6 +50,7 @@ DEFAULTS = {
     "auto_fill": True,
     "review_gate": True,
     "overlays": True,
+    "extra_clips": True,
 }
 
 

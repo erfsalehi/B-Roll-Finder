@@ -1,0 +1,183 @@
+"""Extra contextual B-roll clips.
+
+After the narration timeline is built, we mine the script for the concrete
+car-domain entities it names and fetch a handful of generic, on-theme YouTube
+clips for each — spare footage the editor can swap in for any unwanted pick.
+
+Rules (per the product spec):
+  * BRAND   (e.g. Toyota)  -> the company, its logo, its manufacturing line
+  * MODEL   (e.g. Camry)   -> POV driving, test drive, review/introduction
+  * PART    (e.g. brakes)  -> "<part> explained" / how it works
+
+Each keyword pulls 2-3 YouTube videos (same filters as the main timeline: HD,
+landscape, no Shorts). They're appended AFTER the last narration shot as extra
+"shots" named ``Extra - <keyword>``. YouTube-only by design.
+"""
+
+import os
+
+from core.keywords import _call_llm_json
+
+try:
+    from groq import Groq
+except Exception:  # pragma: no cover - import guard
+    Groq = None
+
+
+_ENTITY_PROMPT = (
+    "You read a voiceover script and extract the concrete CAR-DOMAIN entities it "
+    "explicitly names, for sourcing extra stock footage. Return STRICT JSON only:\n"
+    '{"brands": [...], "models": [...], "parts": [...]}\n'
+    "- brands: car manufacturers/companies named (e.g. Toyota, Honda, BMW).\n"
+    "- models: specific car models named (e.g. Camry, Corolla, Model 3). Do NOT "
+    "include the brand word alone here.\n"
+    "- parts: specific car parts/components named (e.g. brake pads, transmission, "
+    "alternator, timing belt).\n"
+    "Only include things ACTUALLY mentioned in the script. Use the canonical name, "
+    "deduplicated, Title Case. Empty arrays are fine. No prose, JSON only."
+)
+
+
+def extract_extra_entities(script_text: str, api_key: str) -> dict:
+    """Pull ``{brands, models, parts}`` of named car entities from the script.
+    Returns empty lists on any failure."""
+    out = {"brands": [], "models": [], "parts": []}
+    if not api_key or not (script_text or "").strip():
+        return out
+    client = Groq(api_key=api_key) if Groq else None
+    try:
+        data = _call_llm_json(client, _ENTITY_PROMPT,
+                              f"SCRIPT:\n{script_text[:12000]}", tier="smart")
+    except Exception as e:
+        print(f"[extras] entity extraction failed: {e}")
+        return out
+    for k in out:
+        seen = set()
+        for v in (data.get(k) or []):
+            v = str(v).strip()
+            key = v.lower()
+            if v and key not in seen:
+                seen.add(key)
+                out[k].append(v)
+    return out
+
+
+def build_extra_keywords(entities: dict, max_keywords: int = None) -> list:
+    """Turn extracted entities into ``[{"keyword", "kind"}]`` search terms per the
+    brand/model/part rules. Capped at ``max_keywords`` (env EXTRA_MAX_KEYWORDS,
+    default 12) so a script naming dozens of things can't explode the fetch."""
+    if max_keywords is None:
+        try:
+            max_keywords = int(os.getenv("EXTRA_MAX_KEYWORDS", "12") or 12)
+        except ValueError:
+            max_keywords = 12
+
+    kws = []
+    for b in (entities.get("brands") or []):
+        kws += [
+            {"keyword": f"{b} cars company", "kind": "brand"},
+            {"keyword": f"{b} logo", "kind": "brand"},
+            {"keyword": f"{b} factory manufacturing line", "kind": "brand"},
+        ]
+    for m in (entities.get("models") or []):
+        kws += [
+            {"keyword": f"{m} pov driving", "kind": "model"},
+            {"keyword": f"{m} test drive", "kind": "model"},
+            {"keyword": f"{m} review introduction", "kind": "model"},
+        ]
+    for p in (entities.get("parts") or []):
+        kws += [
+            {"keyword": f"{p} explained", "kind": "part"},
+            {"keyword": f"how {p} works", "kind": "part"},
+        ]
+
+    # De-dup (case-insensitive) preserving order, then cap.
+    seen, deduped = set(), []
+    for k in kws:
+        key = k["keyword"].lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(k)
+    return deduped[:max(0, max_keywords)]
+
+
+def _extra_per_keyword() -> int:
+    try:
+        return max(1, int(os.getenv("EXTRA_PER_KEYWORD", "2") or 2))
+    except ValueError:
+        return 2
+
+
+def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
+                      start_slot_id: int = 1, start_sec: float = 0.0,
+                      clip_sec: float = None, min_height: int = 720) -> list:
+    """Build the extra "shots" to append after the timeline.
+
+    Extracts entities → keywords → fetches 2-3 HD landscape YouTube clips per
+    keyword (same filters as the main pipeline) → returns a list of shot dicts,
+    one per clip, placed back-to-back starting at ``start_sec``. Each is tagged
+    ``is_extra`` and ``extra_label='Extra - <keyword>'``. Returns ``[]`` when
+    extras are disabled, nothing is named, or no clips qualify."""
+    from core.director_search import search_youtube_classic, filter_youtube_sd_candidates
+    from core.pipeline import drop_shorts, drop_vertical, drop_long_videos
+
+    if errors is None:
+        errors = []
+    if clip_sec is None:
+        try:
+            clip_sec = float(os.getenv("EXTRA_CLIP_SEC", "6") or 6)
+        except ValueError:
+            clip_sec = 6.0
+
+    entities = extract_extra_entities(script_text, api_key)
+    keywords = build_extra_keywords(entities)
+    if not keywords:
+        return []
+
+    per_kw = _extra_per_keyword()
+    yt_api_key = os.getenv("YOUTUBE_API_KEY", "")
+
+    shots = []
+    slot = start_slot_id
+    cursor = float(start_sec)
+    for kw in keywords:
+        term = kw["keyword"]
+        # Fetch a buffer, filter, then keep the top per_kw.
+        probe = {"slot_id": f"EX-{slot}", "priority": "low",
+                 "search_queries": [term], "youtube_keywords": [term],
+                 "video_results": search_youtube_classic(term, num_results=per_kw * 2,
+                                                          errors=errors)}
+        if not probe["video_results"]:
+            continue
+        drop_shorts([probe])
+        drop_long_videos([probe])
+        drop_vertical([probe])
+        if yt_api_key:
+            try:
+                filter_youtube_sd_candidates([probe], api_key=yt_api_key)
+            except Exception as e:
+                errors.append(f"extras hd_filter '{term}': {e}")
+
+        picks = (probe.get("video_results") or [])[:per_kw]
+        for c in picks:
+            if not c.get("url"):
+                continue
+            c = dict(c)
+            c["matched_query"] = term
+            shots.append({
+                "slot_id": slot,
+                "timestamp": round(cursor, 3),
+                "end_timestamp": round(cursor + clip_sec, 3),
+                "priority": "low",
+                "is_extra": True,
+                "extra_keyword": term,
+                "extra_kind": kw["kind"],
+                "extra_label": f"Extra - {term}",
+                "search_queries": [term],
+                "shot_intent": f"extra B-roll: {term}",
+                "selected_results": [c],
+                "auto_selected": True,
+            })
+            slot += 1
+            cursor += clip_sec
+    return shots

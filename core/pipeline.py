@@ -584,8 +584,8 @@ def repick_failed_shots(shots: list, slot_ids, groq_key: str = None,
         errors = []
     blacklist = blacklist or set()
     want_ids = set(slot_ids)
-    targets = [s for s in shots
-               if s.get("slot_id") in want_ids and s.get("priority") != "none"]
+    targets = [s for s in shots if s.get("slot_id") in want_ids
+               and s.get("priority") != "none" and not s.get("is_extra")]
     if not targets:
         return 0
 
@@ -993,7 +993,8 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     if errors is None:
         errors = []
 
-    targets = [s for s in shots if s.get("slot_id") in by_slot and s.get("priority") != "none"]
+    targets = [s for s in shots if s.get("slot_id") in by_slot
+               and s.get("priority") != "none" and not s.get("is_extra")]
     if not targets:
         return 0
     if progress:
@@ -1414,6 +1415,26 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     _p(8, "Covering remaining empty shots")
     state.attempts["topic_filled"] = cover_empty_shots_with_topic(
         shots, video_topic=topic, groq_key=key, errors=errors)
+
+    # 8d — Extra contextual clips: mine the script for named brands / car models /
+    # parts and append a few generic on-theme YouTube clips per entity AFTER the
+    # timeline, as spare footage the editor can swap in for any unwanted pick.
+    # YouTube-only; same HD/landscape/no-Shorts filters. Gate ENABLE_EXTRA_CLIPS.
+    if _flag_default("ENABLE_EXTRA_CLIPS", True):
+        _p(8, "Fetching extra contextual clips")
+        try:
+            from core.extras import fetch_extra_shots
+            real = [s for s in shots if not s.get("is_extra")]
+            last_end = max((float(s.get("end_timestamp", s.get("timestamp", 0)) or 0)
+                            for s in real), default=0.0)
+            next_slot = max((int(s.get("slot_id", 0) or 0) for s in real), default=0) + 1
+            extra_shots = fetch_extra_shots(script_text, key, errors=errors,
+                                            start_slot_id=next_slot, start_sec=last_end)
+            if extra_shots:
+                shots.extend(extra_shots)
+                state.attempts["extras"] = len(extra_shots)
+        except Exception as e:
+            errors.append(f"extras: {e}")
 
     # 9 — QA review (optional)
     if run_qa:

@@ -244,7 +244,8 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
     failure returns an empty issue list with an explanatory ``overall``.
     """
     selected = [s for s in shots
-                if s.get("selected_results") and s.get("priority") != "none" and not s.get("skipped")]
+                if s.get("selected_results") and s.get("priority") != "none"
+                and not s.get("skipped") and not s.get("is_extra")]
     if len(selected) < 2:
         return {"overall": "Not enough selected shots to review yet.", "issues": [], "reviewed": len(selected)}
     if not api_key:

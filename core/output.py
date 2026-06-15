@@ -246,9 +246,15 @@ def generate_shots_srt(shots: list) -> str:
             end_val = start_val + 1.0
 
         slot_id = shot.get('slot_id', i)
+        # Extra (spare contextual) clips are labelled by their keyword so the SRT
+        # clearly separates the narration timeline from the appended extras.
+        if shot.get("is_extra"):
+            label = shot.get("extra_label") or f"Extra - {shot.get('extra_keyword', '')}"
+        else:
+            label = f"Shot {slot_id}"
         lines.append(str(i))
         lines.append(f"{format_srt_time(start_val)} --> {format_srt_time(end_val)}")
-        lines.append(f"Shot {slot_id}")
+        lines.append(label)
         lines.append("")
 
     return "\n".join(lines)
@@ -702,8 +708,11 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             clip_id = f"clip-{i}-{res_idx}"
 
             # ── Insert Clip on Timeline ──
+            # Extra (contextual spare) clips carry a readable "Extra - <keyword>"
+            # label so they're easy to spot in the Premiere bin/timeline.
+            clip_name = shot.get("extra_label") or asset_info["filename"]
             xml.append(f'              <clipitem id="{clip_id}">')
-            xml.append(f'                <name>{_xml_attr(asset_info["filename"])}</name>')
+            xml.append(f'                <name>{_xml_attr(clip_name)}</name>')
             xml.append(f'                <duration>{asset_info["media_dur_frames"]}</duration>')
             xml.append('                <rate>')
             xml.append(f'                  <timebase>{timebase}</timebase>')
