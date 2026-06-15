@@ -852,6 +852,62 @@ def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
     return still_empty_before - sum(1 for s in targets if not s.get("selected_results"))
 
 
+def cover_empty_shots_with_topic(shots: list, video_topic: str = "",
+                                 groq_key: str = None, errors: list = None,
+                                 pool_per_query: int = 3) -> int:
+    """Last-resort coverage: give a clip to every shot that STILL has none after
+    the normal fetch/repair passes (its niche queries genuinely returned nothing).
+
+    Builds a small pool of generic, ON-TOPIC Pexels stock from the video topic and
+    assigns it round-robin to the empty shots (so adjacent empties differ). Pexels
+    clips are HD/landscape and download from a direct URL, so they reliably clear
+    the boundary gate and the download step — turning a would-be black gap into
+    real, on-theme footage. Best-effort; returns how many shots were covered.
+    Disable with FILL_EMPTY_WITH_TOPIC=0."""
+    if not _flag_default("FILL_EMPTY_WITH_TOPIC", True):
+        return 0
+    empties = [s for s in shots
+               if s.get("priority") != "none" and not s.get("selected_results")]
+    if not empties:
+        return 0
+    pex_key = os.getenv("PEXELS_API_KEY", "")
+    if not pex_key:
+        return 0
+    if errors is None:
+        errors = []
+    from core.keywords import generate_fallback_queries
+    from core.stock_apis import search_pexels
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    queries = generate_fallback_queries(video_topic, key) or (
+        [video_topic.strip()] if video_topic and video_topic.strip() else [])
+    if not queries:
+        return 0
+
+    pool, seen = [], set()
+    for q in queries:
+        try:
+            for c in search_pexels(q, pex_key, pool_per_query, errors=errors):
+                ident = c.get("page_url") or c.get("url")
+                if ident and ident not in seen:
+                    seen.add(ident)
+                    pool.append(c)
+        except Exception as e:
+            errors.append(f"topic-fallback search '{q}': {e}")
+    if not pool:
+        return 0
+
+    covered = 0
+    for idx, s in enumerate(empties):
+        c = dict(pool[idx % len(pool)])
+        c["matched_query"] = f"(topic fallback: {video_topic[:40]})".strip()
+        s["selected_results"] = [c]
+        s["auto_selected"] = True
+        s["_topic_fallback"] = True
+        covered += 1
+    return covered
+
+
 def fill_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
                      errors: list = None, progress=None, passes: int = 2) -> int:
     """Aggressively get a clip onto EVERY shot that has none.
@@ -1351,6 +1407,13 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         _p(8, "Repairing empty shots")
         state.attempts["repair"] = repair_empty_shots(
             shots, groq_key=key, video_topic=topic, errors=errors)
+
+    # 8c — Topic fallback: any shot STILL empty (its niche queries genuinely
+    # returned nothing) gets a generic, on-topic Pexels clip so it carries real
+    # footage instead of relying on the render-time gap stretch.
+    _p(8, "Covering remaining empty shots")
+    state.attempts["topic_filled"] = cover_empty_shots_with_topic(
+        shots, video_topic=topic, groq_key=key, errors=errors)
 
     # 9 — QA review (optional)
     if run_qa:

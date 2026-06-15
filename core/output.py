@@ -498,6 +498,14 @@ def build_download_links_txt(shots: list, project_name: str = "",
     return "\n".join(out).rstrip() + "\n"
 
 
+def _shot_has_placeable_clip(shot: dict) -> bool:
+    """True when a shot will actually emit at least one clipitem — i.e. it carries
+    a selected result with a URL. Empty/dropped shots (failed fetch, all
+    candidates irrelevant, every download failed, boundary drops, or an
+    intentional talking-head ``priority: none``) return False."""
+    return any(c.get("url") for c in (shot.get("selected_results") or []))
+
+
 def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None,
                     sfx_list: list = None, time_offset: float = 0.0,
                     xml_dir: str = None) -> str:
@@ -524,6 +532,13 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
 
     fps_exact = 23.976
     timebase = 24  # Standard timebase for 23.98 in FCP7 XML
+
+    # Gap-free guarantee: stretch each shot's last clip across any following
+    # empty/dropped shots (to the next shot that actually places footage), and
+    # pull the first clip back to frame 0, so the b-roll track NEVER has a black
+    # hole — whatever caused a shot to come up empty. Disable with
+    # FCPXML_FILL_GAPS=0 to leave honest gaps for empty shots instead.
+    fill_gaps = os.getenv("FCPXML_FILL_GAPS", "1").strip().lower() not in ("0", "false", "no", "off")
 
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<!DOCTYPE xmeml>')
@@ -569,6 +584,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     seen_filenames = set()
     defined_files = set() # To track which files have already been injected
     max_end_frame = 0      # longest clip end across all tracks → sequence duration
+    first_clip_placed = False  # lead-in gap-fill: anchor the very first clip at 0
 
     # ── Timeline Math & Placement ──
     for i, shot in enumerate(shots):
@@ -579,13 +595,21 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
         # transitions land on the voice instead of drifting through silences.
         voice_end = float(shot.get('end_timestamp', start_sec + time_offset + 5)) - time_offset
 
-        # next_start: where the next shot's voice begins. Used to clamp a
-        # slightly-overlapping LLM answer and — more importantly — to extend
-        # the very last sub-clip across the trailing silence so the timeline
-        # has no gap before the next shot starts.
-        if i < len(shots) - 1:
-            next_start = float(shots[i+1].get('timestamp', voice_end + time_offset)) - time_offset
-        else:
+        # next_start: where the NEXT shot that actually places footage begins.
+        # With gap-fill on (default) we skip over empty/dropped shots so the
+        # current shot's final sub-clip stretches across them — guaranteeing the
+        # b-roll track has no holes, whatever left a shot empty (failed fetch, all
+        # candidates irrelevant, every download failed, boundary drops, or
+        # priority=none). The held clip just continues/freeze-frames over the gap;
+        # never a black slot. With gap-fill off we only ever reach the immediate
+        # next shot (honest gaps remain).
+        next_start = None
+        for j in range(i + 1, len(shots)):
+            if fill_gaps and not _shot_has_placeable_clip(shots[j]):
+                continue
+            next_start = float(shots[j].get('timestamp', voice_end + time_offset)) - time_offset
+            break
+        if next_start is None:
             next_start = voice_end
         if next_start < voice_end:
             voice_end = next_start
@@ -620,6 +644,12 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             # so adjacent sub-clips touch exactly on the same frame and the
             # shot's total length matches the voice down to one frame.
             clip_start_sec = boundaries[res_idx]
+            # Lead-in gap-fill: if the timeline opens with one or more empty shots,
+            # the first clip we actually place would start late, leaving a black
+            # hole at the head. Anchor that very first clip at frame 0 instead.
+            if fill_gaps and not first_clip_placed and clip_start_sec > 0:
+                clip_start_sec = 0.0
+            first_clip_placed = True
             is_last_clip = (res_idx == num_clips - 1)
             if is_last_clip:
                 # Stretch the last pick of this shot across the silence

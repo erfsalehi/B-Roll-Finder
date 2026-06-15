@@ -630,6 +630,34 @@ def generate_video_topic(script_text: str, api_key: str) -> str:
         print(f"Error generating video topic: {e}")
         return ""
 
+def generate_fallback_queries(video_topic: str, api_key: str, n: int = 4) -> list:
+    """Broad, evergreen B-roll search queries for the video's overall topic.
+
+    Used to rescue shots that found no specific footage — generic but ON-TOPIC
+    stock that fits anywhere in the video (e.g. for a car-maintenance video:
+    "mechanic working engine", "car service garage", "dashboard warning lights").
+    Returns up to ``n`` short visual queries, or ``[]`` on any failure."""
+    topic = (video_topic or "").strip()
+    if not api_key or not topic:
+        return []
+    client = Groq(api_key=api_key)
+    system_prompt = (
+        "Given a video's overall topic, output short generic stock-footage search "
+        "queries for EVERGREEN B-roll that fits anywhere in the video. Each query: "
+        "2-4 words, concrete and visual, clearly in the topic's domain (so a car "
+        "video never returns phones or AA batteries). Return STRICT JSON only: "
+        '{"queries": ["...", "..."]}'
+    )
+    try:
+        data = _call_llm_json(client, system_prompt,
+                              f"TOPIC: {topic}\nGive {n} queries.", tier="fast")
+        qs = [str(q).strip() for q in (data.get("queries") or []) if str(q).strip()]
+        return qs[:n]
+    except Exception as e:
+        print(f"Error generating fallback queries: {e}")
+        return []
+
+
 def generate_keywords_with_ai_chunking(script_text: str, wps: float, api_key: str, num_alternatives: int = 3, progress_callback=None, custom_instructions: str = "", start_offset: float = 0.0) -> list:
     if not api_key:
         raise ValueError("Groq API key is missing.")
