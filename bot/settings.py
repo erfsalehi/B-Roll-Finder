@@ -35,6 +35,7 @@ OPTIONS = [
     {"key": "review_gate", "label": "Pause to review", "type": "bool"},
     {"key": "overlays",    "label": "Text overlays",  "type": "bool",   "env": "ENABLE_TEXT_OVERLAYS"},
     {"key": "extra_clips", "label": "Extra clips",    "type": "bool",   "env": "ENABLE_EXTRA_CLIPS"},
+    {"key": "detailed_queries", "label": "Detailed queries", "type": "bool", "env": "ENABLE_DETAILED_QUERIES"},
 ]
 
 _OPT_BY_KEY = {o["key"]: o for o in OPTIONS}
@@ -51,6 +52,7 @@ DEFAULTS = {
     "review_gate": True,
     "overlays": True,
     "extra_clips": True,
+    "detailed_queries": False,
 }
 
 

@@ -166,6 +166,36 @@ def _build_context_block(video_topic: str, custom_instructions: str) -> str:
     return "\n\n".join(parts)
 
 
+def _detailed_queries_enabled() -> bool:
+    """Detailed-queries mode (per-chat /settings toggle → ENABLE_DETAILED_QUERIES).
+
+    When on, the Director is told to give a multi-subject shot one query per named
+    subject (not just angles on the dominant one), and a follow-up top-up pass
+    (:func:`expand_multisubject_queries`) backfills any subject the single call
+    still left uncovered."""
+    return os.getenv("ENABLE_DETAILED_QUERIES", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+_DETAILED_QUERIES_INSTRUCTION = (
+    "==================================================\n"
+    "DETAILED / MULTI-SUBJECT MODE (ON)\n"
+    "==================================================\n"
+    "When a single script_chunk names TWO OR MORE distinct physical subjects "
+    "(e.g. \"this affects the engine's timing chain, the turbo, AND the chassis\"), "
+    "do NOT collapse them onto one dominant subject. Instead:\n"
+    "  - Emit ONE dedicated search_query for EACH named subject (subject + part/action "
+    "+ setting), anchored to the overall video topic so ambiguous nouns resolve "
+    "correctly.\n"
+    "  - THEN, if room remains, add 1 angle query (setting / close-up / metaphor) as "
+    "usual.\n"
+    "  - You MAY return up to 6 search_queries for such a shot (the usual 2-3 cap is "
+    "lifted ONLY when the chunk genuinely spans several subjects). Never invent "
+    "subjects that aren't in the narration.\n"
+    "For an ordinary single-subject shot, behave EXACTLY as the standard rules say "
+    "(2-3 different-angle queries) — this mode changes nothing there."
+)
+
+
 _SEGMENT_CONTEXT_INSTRUCTION = (
     "SEGMENT CONTEXT AWARENESS:\n"
     "Some script chunks are prefixed with a line of the form\n"
@@ -182,12 +212,17 @@ _SEGMENT_CONTEXT_INSTRUCTION = (
 
 def _render_director_system_prompt(template: str, video_topic: str,
                                    custom_instructions: str,
-                                   context_aware: bool = False) -> str:
+                                   context_aware: bool = False,
+                                   detailed: bool = None) -> str:
     """Fill the director system-prompt template's optional placeholder blocks.
 
     Handles both ``{custom_instructions_block}`` and ``{segment_context_block}``,
     collapsing the surrounding blank lines when a block is empty so the prompt
     never carries a dangling placeholder or extra whitespace.
+
+    When ``detailed`` is on (defaults to the ENABLE_DETAILED_QUERIES env flag),
+    the multi-subject instruction is appended so a shot covering several subjects
+    gets one query per subject instead of angles on the dominant one.
     """
     custom_block = _build_context_block(video_topic, custom_instructions)
     if custom_block:
@@ -199,6 +234,11 @@ def _render_director_system_prompt(template: str, video_topic: str,
         out = out.replace("{segment_context_block}", _SEGMENT_CONTEXT_INSTRUCTION)
     else:
         out = out.replace("\n\n{segment_context_block}\n\n", "\n\n")
+
+    if detailed is None:
+        detailed = _detailed_queries_enabled()
+    if detailed:
+        out = out.rstrip() + "\n\n" + _DETAILED_QUERIES_INSTRUCTION
     return out
 
 
@@ -274,6 +314,116 @@ def ensure_shot_queries(shots: list, video_topic: str = "") -> list:
         else:
             s["search_queries"] = _fallback_queries(s, video_topic)
             s["queries_fallback"] = True
+    return shots
+
+
+# Boundaries that separate co-ordinate subjects within one chunk
+# ("the engine, the turbo, and the chassis").
+_SUBJECT_SPLIT_RE = _re.compile(r",|;|/|&|\band\b|\bplus\b", _re.IGNORECASE)
+
+
+def _count_distinct_subjects(text: str) -> int:
+    """Rough count of co-ordinate noun phrases in a chunk (split on commas / "and").
+
+    A part counts only if it carries a content word (>3 chars, not a stopword), so
+    "big, bold, bright" inflates less than a real subject list would. This is just
+    a cheap gate for the top-up pass — the LLM does the real multi-subject judgement
+    and only ADDS queries for genuinely uncovered subjects."""
+    parts = [p.strip() for p in _SUBJECT_SPLIT_RE.split(text or "") if p.strip()]
+    n = 0
+    for p in parts:
+        if any(w.lower() not in _QUERY_STOPWORDS and len(w) > 3
+               for w in _re.findall(r"[A-Za-z][A-Za-z'-]*", p)):
+            n += 1
+    return n
+
+
+def _detailed_max_queries() -> int:
+    try:
+        return max(2, int(os.getenv("DETAILED_MAX_QUERIES", "6")))
+    except ValueError:
+        return 6
+
+
+def expand_multisubject_queries(shots: list, api_key: str, video_topic: str = "",
+                                custom_instructions: str = "",
+                                progress_callback=None) -> list:
+    """Detailed-mode top-up: backfill a query for each subject a multi-subject shot
+    still has no footage angle for.
+
+    A cheap heuristic (:func:`_count_distinct_subjects`) flags shots whose narration
+    names MORE co-ordinate subjects than they got queries for; those are sent in ONE
+    batched LLM call that returns extra per-subject queries, merged in (deduped,
+    capped at DETAILED_MAX_QUERIES). No-op when no shot is under-covered, so an
+    ordinary single-subject video costs zero extra calls."""
+    if not api_key or not shots:
+        return shots
+
+    cap = _detailed_max_queries()
+    targets = []
+    for s in shots:
+        if s.get("priority") == "none":
+            continue
+        qs = [str(q).strip() for q in (s.get("search_queries") or []) if str(q).strip()]
+        subjects = _count_distinct_subjects(s.get("text", ""))
+        # Under-covered: more distinct subjects than current queries, and room to grow.
+        if subjects >= 2 and subjects > len(qs) and len(qs) < cap:
+            targets.append(s)
+
+    if not targets:
+        if progress_callback:
+            progress_callback(1.0)
+        return shots
+
+    client = Groq(api_key=api_key)
+    system_prompt = (
+        "You are a B-roll search director. Each item below is ONE shot whose narration "
+        "names MORE distinct physical subjects than it currently has search queries, so "
+        "some subjects have NO footage. For each item, output one SHORT (2-5 word), "
+        "concrete, visualizable stock-search query for EACH distinct physical subject "
+        "that is NOT already covered by its existing queries. Lead with the subject noun, "
+        "anchor every query to the overall video topic so ambiguous nouns resolve to the "
+        "right domain, and do NOT reword or repeat existing queries — only ADD queries for "
+        "uncovered subjects. If an item actually has only one real subject, return an empty "
+        'add_queries for it. Return STRICT JSON only: '
+        '{"shots": [{"slot_id": <int>, "add_queries": ["...", "..."]}]}'
+    )
+    if custom_instructions and custom_instructions.strip():
+        system_prompt += f"\n\nUSER STYLE NOTES: {custom_instructions.strip()}"
+
+    lines = []
+    if video_topic and video_topic.strip():
+        lines.append(f"OVERALL VIDEO TOPIC: {video_topic.strip()}\n")
+    for s in targets:
+        existing = " | ".join(str(q).strip() for q in (s.get("search_queries") or []) if str(q).strip())
+        lines.append(
+            f'slot_id {s.get("slot_id")}: "{s.get("text", "").strip()}"\n'
+            f"  existing queries: {existing or '(none)'}"
+        )
+    user_msg = "\n".join(lines)
+
+    try:
+        data = _call_llm_json(client, system_prompt, user_msg, temperature=0.4, max_tokens=1200)
+        by_id = {s.get("slot_id"): s for s in targets}
+        for item in data.get("shots", []):
+            tgt = by_id.get(item.get("slot_id"))
+            if not tgt:
+                continue
+            existing = [str(q).strip() for q in (tgt.get("search_queries") or []) if str(q).strip()]
+            seen = {q.lower() for q in existing}
+            for q in item.get("add_queries", []):
+                q = str(q).strip()
+                if q and q.lower() not in seen:
+                    existing.append(q)
+                    seen.add(q.lower())
+                    if len(existing) >= cap:
+                        break
+            tgt["search_queries"] = existing[:cap]
+    except Exception as e:
+        print(f"Error expanding multi-subject queries: {e}")
+
+    if progress_callback:
+        progress_callback(1.0)
     return shots
 
 
@@ -381,6 +531,8 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
         if progress_callback:
             progress_callback(min(1.0, (i + 1) / total_blocks))
 
+    if _detailed_queries_enabled():
+        expand_multisubject_queries(all_shots, api_key, video_topic, custom_instructions)
     ensure_shot_queries(all_shots, video_topic)
     return all_shots
 
@@ -508,6 +660,9 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
         if progress_callback:
             progress_callback((i + len(block)) / len(segments))
 
+    if _detailed_queries_enabled():
+        expand_multisubject_queries(all_shots, api_key, video_topic, custom_instructions,
+                                    progress_callback=progress_callback)
     ensure_shot_queries(all_shots, video_topic)
     return all_shots
 
