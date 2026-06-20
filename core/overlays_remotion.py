@@ -31,8 +31,47 @@ _REMOTION_DIR = os.path.join(_REPO_ROOT, "remotion")
 _PROMPT_PATH = os.path.join(_REPO_ROOT, "prompts", "overlay_highlights.txt")
 # Rendered clips are cached by their props hash so identical overlays (same text,
 # style, duration) — common across re-runs and /refine — are never re-rendered.
-# Lives under .cache (a persistent volume) and is NOT wiped by the disk-clear.
+# Lives under .cache (a persistent volume). These are transparent ProRes 4444
+# clips (large), and the cache only grows, so /cleanup can sweep it via
+# clear_overlay_cache().
 _CACHE_DIR = os.path.join(_REPO_ROOT, ".cache", "overlay_clips")
+
+
+def overlay_cache_dir() -> str:
+    """Absolute path of the rendered-overlay cache directory."""
+    return _CACHE_DIR
+
+
+def overlay_cache_size() -> int:
+    """Total bytes of cached overlay clips (0 if the cache doesn't exist)."""
+    total = 0
+    for root, _dirs, files in os.walk(_CACHE_DIR):
+        for fn in files:
+            try:
+                total += os.path.getsize(os.path.join(root, fn))
+            except OSError:
+                pass
+    return total
+
+
+def clear_overlay_cache() -> tuple:
+    """Delete every cached overlay clip. Returns ``(files_removed, bytes_freed)``.
+
+    Safe to call anytime: the cache is purely a render shortcut — a later job
+    re-renders any overlay it can't find here."""
+    removed = freed = 0
+    if not os.path.isdir(_CACHE_DIR):
+        return (0, 0)
+    for root, _dirs, files in os.walk(_CACHE_DIR):
+        for fn in files:
+            fp = os.path.join(root, fn)
+            try:
+                freed += os.path.getsize(fp)
+                os.remove(fp)
+                removed += 1
+            except OSError:
+                pass
+    return (removed, freed)
 
 _VALID_ANIM = {"title_card", "stat_pop", "money_count", "lower_third", "pop"}
 _VALID_SFX = {"swoosh", "ding", "thud", "none"}

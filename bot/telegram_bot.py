@@ -1516,27 +1516,46 @@ def _library_kept_note() -> str:
 
 
 def handle_cleanup(chat_id, text: str) -> None:
-    """Disk management. ``/cleanup`` lists projects + sizes; ``/cleanup <name>``
-    deletes that project's folder (and its .zip); ``/cleanup all`` clears every
-    downloaded project. The Clip Library DB lives outside downloads/ and is always
-    preserved. Frees space on the always-on server."""
+    """Disk management. ``/cleanup`` lists projects + sizes (plus the shared
+    overlay render cache); ``/cleanup <name>`` deletes that project's folder (and
+    its .zip); ``/cleanup all`` clears every downloaded project AND the overlay
+    cache; ``/cleanup overlays`` clears just the overlay render cache (the
+    cross-project ProRes cache that project deletes don't touch). The Clip Library
+    DB lives outside downloads/ and is always preserved. Frees space on the
+    always-on server."""
     import shutil as _shutil
     parts = text.strip().split(maxsplit=1)
     arg = parts[1].strip() if len(parts) > 1 else ""
     root = os.path.abspath("downloads")
 
+    try:
+        from core.overlays_remotion import overlay_cache_size, clear_overlay_cache
+    except Exception:
+        overlay_cache_size = lambda: 0
+        clear_overlay_cache = lambda: (0, 0)
+
     if not arg:
         usage = _project_disk_usage()
-        if not usage:
+        ov_bytes = overlay_cache_size()
+        if not usage and not ov_bytes:
             send_message(chat_id, "No downloaded projects on the server.")
             return
         total = sum(b for _, b in usage)
         lines = [f"💾 Downloads: {_human_size(total)} across {len(usage)} project(s)"]
         for name, b in usage[:25]:
             lines.append(f"  • {name} — {_human_size(b)}")
+        if ov_bytes:
+            lines.append(f"🅰️ Overlay render cache — {_human_size(ov_bytes)} "
+                         "(shared across projects; clear with /cleanup overlays)")
         lines.append("\nDelete one: /cleanup <name>   ·   delete all: /cleanup all")
         lines.append(_library_kept_note())
         send_message(chat_id, "\n".join(lines))
+        return
+
+    if arg.lower() == "overlays":
+        n, freed = clear_overlay_cache()
+        send_message(chat_id, f"🗑 Cleared overlay render cache "
+                              f"({n} clip(s), {_human_size(freed)} freed).")
         return
 
     if arg.lower() == "all":
@@ -1549,7 +1568,11 @@ def handle_cleanup(chat_id, text: str) -> None:
                     os.remove(zp)
                 except OSError:
                     pass
-        send_message(chat_id, f"🗑 Cleared {len(usage)} project(s). " + _library_kept_note())
+        ov_n, ov_freed = clear_overlay_cache()
+        msg = f"🗑 Cleared {len(usage)} project(s)"
+        if ov_n:
+            msg += f" + overlay cache ({_human_size(ov_freed)})"
+        send_message(chat_id, msg + ". " + _library_kept_note())
         return
 
     # Delete a single named project (guard against path traversal).
@@ -1588,7 +1611,7 @@ _HELP = (
     "/forcestop — hard stop + restart the bot (when /cancel won't catch)\n"
     "/zip [name] — bundle a finished project (link + attach)\n"
     "/links [name] — per-shot source links (title + link) to manually re-download empty shots\n"
-    "/cleanup [name|all] — list or delete downloaded projects (free disk)\n"
+    "/cleanup [name|all|overlays] — list/delete projects or clear the overlay cache (free disk)\n"
     "/logs — export the bot logs as a file\n"
     "/cookies — how to give me YouTube cookies (or just send cookies.txt)\n"
     "📥 Send an exported .xml (after editing in Premiere) to teach me your preferred "
