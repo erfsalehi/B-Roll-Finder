@@ -40,10 +40,14 @@ def _mock_stages(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_TEXT_OVERLAYS", "false")
 
     segs = [{"start": 0.0, "end": 2.0, "text": "hello world"}]
+    # Distinct, monotonic timestamps as the real director assigns — the
+    # pre-export evaluation gate rejects shots that collide on the same start.
     shots = [
         {"slot_id": 1, "priority": "medium", "duration_needed_sec": 5.0,
+         "timestamp": 0.0, "end_timestamp": 2.0,
          "video_results": [{"url": "a"}, {"url": "b"}], "selected_results": []},
         {"slot_id": 2, "priority": "medium", "duration_needed_sec": 5.0,
+         "timestamp": 2.0, "end_timestamp": 4.0,
          "video_results": [{"url": "c"}], "selected_results": []},
     ]
 

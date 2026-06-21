@@ -20,7 +20,8 @@ from core.output import (
     generate_keywords_txt, generate_youtube_txt, generate_srt,
     generate_transcription_srt, generate_shots_srt, generate_failed_downloads_txt,
     generate_fcpxml, generate_overlays_fcpxml, generate_shot_list_txt,
-    filter_overlays_for_shots, _safe_for_fs
+    filter_overlays_for_shots, _safe_for_fs,
+    evaluate_fcpxml, repair_fcpxml, evaluate_shot_timings, evaluate_srt,
 )
 from core.captions import (
     extract_highlights, create_text_overlay, get_available_fonts,
@@ -4194,15 +4195,28 @@ elif app_mode == "Director":
             # imported sequence has a giant empty gap at the head — which is
             # what showed shot 29's footage landing right after shot 23's.
             chunk_offset = float(shot_chunk[0].get("timestamp", 0.0)) if num_parts > 1 else 0.0
+            chunk_xml_dir = os.path.join("downloads", "director", proj_folder)
             xml_content = generate_fcpxml(
                 shot_chunk,
                 project_name=part_display_name,
                 overlays=chunk_overlays,
                 sfx_list=chunk_sfx,
                 time_offset=chunk_offset,
-                xml_dir=os.path.join("downloads", "director", proj_folder),
+                xml_dir=chunk_xml_dir,
             )
-            
+            # Evaluation round: catch a structurally broken timeline (bad clip
+            # ends, same-track overlaps, wrong sequence duration) and auto-repair
+            # it before the part is offered for download.
+            _eval = evaluate_fcpxml(xml_content, xml_dir=chunk_xml_dir, check_media=True)
+            if not _eval["ok"]:
+                _fixed = repair_fcpxml(xml_content)
+                if evaluate_fcpxml(_fixed, xml_dir=chunk_xml_dir)["ok"]:
+                    xml_content = _fixed
+                    st.info(f"Auto-repaired {len(_eval['errors'])} timeline issue(s) in {part_display_name}.")
+                else:
+                    st.warning(f"{part_display_name}: timeline has structural issues that "
+                               f"couldn't be auto-repaired — {'; '.join(_eval['errors'][:3])}")
+
             fname = "b_roll_sequence.xml" if num_parts == 1 else f"b_roll_sequence_part_{i+1}.xml"
             xml_parts.append({
                 "filename": fname,
@@ -4250,6 +4264,14 @@ elif app_mode == "Director":
         # each shot lands on the right line (silences included). Auto-saved
         # next to the XML for convenience.
         shots_srt = generate_shots_srt(st.session_state.director_shots)
+        # Evaluation round: flag corrupt source timing / a scrambled shot SRT
+        # (shots collapsing onto the same timestamp) before the project is shipped.
+        _tm = evaluate_shot_timings(st.session_state.director_shots)
+        _sr = evaluate_srt(shots_srt)
+        if not _tm["ok"] or not _sr["ok"]:
+            _msgs = (_tm["errors"] + _sr["errors"])[:4]
+            st.warning("Timing/SRT validation found issues (the shot timeline may be "
+                       "out of sync — consider re-running): " + "; ".join(_msgs))
         try:
             shots_srt_path = os.path.join("downloads", "director", proj_folder, "shots.srt")
             os.makedirs(os.path.dirname(shots_srt_path), exist_ok=True)

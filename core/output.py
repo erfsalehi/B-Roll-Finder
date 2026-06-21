@@ -1,5 +1,7 @@
 import os
 import random
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape
@@ -1092,6 +1094,311 @@ def _seq_timecode_lines(timebase: int) -> list:
         '          <displayformat>NDF</displayformat>',
         '        </timecode>',
     ]
+
+
+class TimelineXMLError(Exception):
+    """A generated FCPXML failed structural evaluation and couldn't be repaired."""
+
+
+class ProjectValidationError(Exception):
+    """A project's source timing (or a derived guide track) is structurally
+    corrupt, so the export was blocked before any faulty artifact shipped."""
+
+
+def evaluate_shot_timings(shots: list) -> dict:
+    """Validate the *source* shot timings before they're rendered into the XML
+    timeline and the shot SRT. This is the root-cause check: when a block of
+    shots loses its timing (every one collapsing to ``timestamp == 0``), both the
+    b-roll timeline and the SRT come out scrambled. Pure; returns
+    ``{"ok", "errors", "warnings", "stats"}``.
+
+    Hard errors:
+
+    * a shot with a missing / non-numeric / negative ``timestamp``;
+    * two or more distinct shots sharing the exact same start ``timestamp``
+      (a collision — in a healthy timeline every shot starts at a unique voice
+      onset; ``/extras`` get distinct cursor-based stamps, so this only fires on
+      genuinely lost timing).
+
+    Soft warnings: a shot whose ``end_timestamp <= timestamp`` (zero/negative
+    span — the SRT/clip math survives it via a 1-second floor, but it signals
+    bad timing)."""
+    errors: list = []
+    warnings: list = []
+    by_start: dict = {}
+    n = 0
+    for s in shots:
+        if s.get("priority") == "none":
+            continue
+        n += 1
+        sid = s.get("slot_id", "?")
+        ts = s.get("timestamp")
+        try:
+            ts = float(ts)
+        except (TypeError, ValueError):
+            errors.append(f"shot {sid}: missing/invalid timestamp ({ts!r})")
+            continue
+        if ts < 0:
+            errors.append(f"shot {sid}: negative timestamp ({ts})")
+            continue
+        end = s.get("end_timestamp")
+        try:
+            if end is not None and float(end) <= ts:
+                warnings.append(f"shot {sid}: end_timestamp {end} <= timestamp {ts}")
+        except (TypeError, ValueError):
+            warnings.append(f"shot {sid}: invalid end_timestamp ({end!r})")
+        by_start.setdefault(round(ts, 3), []).append(sid)
+
+    for ts, ids in sorted(by_start.items()):
+        if len(ids) > 1:
+            shown = ", ".join(str(i) for i in ids[:8])
+            more = "" if len(ids) <= 8 else f" (+{len(ids) - 8} more)"
+            errors.append(
+                f"{len(ids)} shots share start timestamp {ts}s - lost timing: {shown}{more}")
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings,
+            "stats": {"shots": n, "distinct_starts": len(by_start)}}
+
+
+_SRT_TS = re.compile(
+    r"^(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*$")
+
+
+def _srt_ms(h, m, s, ms):
+    return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(ms)
+
+
+def evaluate_srt(srt_text: str) -> dict:
+    """Validate an SRT (the shot guide track or a transcription). Pure; returns
+    ``{"ok", "errors", "warnings", "stats"}``.
+
+    Hard errors: a malformed timing line; a cue whose end is at or before its
+    start; cues out of chronological order or overlapping (a player can only show
+    one cue at a time — the 73 placeholder ``0 --> 1s`` cues from lost timing all
+    land here). Soft warning: non-sequential cue numbering."""
+    errors: list = []
+    warnings: list = []
+    blocks = [b for b in re.split(r"\n\s*\n", srt_text.strip()) if b.strip()]
+    cues = []  # (index, start_ms, end_ms)
+    for bi, block in enumerate(blocks, 1):
+        lines = [ln for ln in block.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            errors.append(f"block {bi}: too few lines to be a cue")
+            continue
+        try:
+            idx = int(lines[0].strip())
+        except ValueError:
+            errors.append(f"block {bi}: first line is not a cue number ({lines[0]!r})")
+            idx = bi
+        m = _SRT_TS.match(lines[1].strip())
+        if not m:
+            errors.append(f"cue {idx}: malformed timing line ({lines[1]!r})")
+            continue
+        start = _srt_ms(*m.group(1, 2, 3, 4))
+        end = _srt_ms(*m.group(5, 6, 7, 8))
+        if end <= start:
+            errors.append(f"cue {idx}: end <= start ({lines[1].strip()})")
+        cues.append((idx, start, end))
+
+    for pos, (idx, start, end) in enumerate(cues, 1):
+        if idx != pos:
+            warnings.append(f"cue numbering not sequential at position {pos} (got {idx})")
+            break
+    for (i0, s0, e0), (i1, s1, e1) in zip(cues, cues[1:]):
+        if s1 < e0:
+            errors.append(
+                f"cue {i1} starts at {s1}ms before cue {i0} ends at {e0}ms "
+                f"(out-of-order / overlap)")
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings,
+            "stats": {"cues": len(cues)}}
+
+
+def _fill_gaps_enabled() -> bool:
+    """Mirror :func:`generate_fcpxml`'s FCPXML_FILL_GAPS read so repair re-chains
+    the b-roll track only when the generator meant it to be gap-free."""
+    return os.getenv("FCPXML_FILL_GAPS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _iter_tracks(root):
+    """Yield (kind, track_index, track_element) for every <track> under the
+    sequence, video tracks first then audio — i.e. the document order in which
+    their <clipitem>s (and thus <start>/<end> tags) appear."""
+    seq = root.find(".//sequence")
+    media = seq.find("media") if seq is not None else None
+    if media is None:
+        return
+    v = media.find("video")
+    for i, t in enumerate(v.findall("track")) if v is not None else []:
+        yield ("video", i, t)
+    a = media.find("audio")
+    for i, t in enumerate(a.findall("track")) if a is not None else []:
+        yield ("audio", i, t)
+
+
+def _clip_ints(ci):
+    """(start, end, in, out) as ints (None when absent/blank) for a <clipitem>."""
+    def gi(tag):
+        v = ci.findtext(tag)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+    return gi("start"), gi("end"), gi("in"), gi("out")
+
+
+def evaluate_fcpxml(xml_text: str, xml_dir: str = None, check_media: bool = False) -> dict:
+    """Structural evaluation of a generated FCP7 ``<xmeml>`` string — the
+    pre-finalize sanity gate. Pure; never mutates. Returns::
+
+        {"ok": bool, "errors": [...], "warnings": [...], "stats": {...}}
+
+    Hard errors (set ``ok=False`` and trigger repair upstream):
+
+    * XML not well-formed.
+    * A clip with ``end <= start`` (zero / negative length) or with
+      ``end - start != out - in`` (timeline slot doesn't match the source cut).
+    * Two clips overlapping *on the same track* (a track can only show one clip
+      at a time — overlap across *different* tracks, e.g. overlay over b-roll, is
+      expected and allowed).
+    * A ``<file id=.../>`` reference that is never fully defined (no pathurl).
+    * Sequence ``<duration>`` missing or not equal to the longest clip end.
+
+    Soft warnings (don't fail the gate, can't be auto-repaired): a ``pathurl``
+    that doesn't resolve on disk (offline media). ``check_media`` enables that
+    pass; ``xml_dir`` is the folder the XML lives in (pathurls are relative)."""
+    errors: list = []
+    warnings: list = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        return {"ok": False, "errors": [f"XML not well-formed: {e}"],
+                "warnings": [], "stats": {}}
+
+    # File id defs vs references: a referenced id with no <pathurl> anywhere is an
+    # orphan (Premiere "offline media" / dropped clip).
+    defined, referenced = set(), set()
+    for fe in root.iter("file"):
+        fid = fe.get("id")
+        if not fid:
+            continue
+        referenced.add(fid)
+        if fe.find("pathurl") is not None:
+            defined.add(fid)
+    for fid in sorted(referenced - defined):
+        errors.append(f"file id '{fid}' is referenced but never fully defined (no pathurl)")
+
+    max_end = 0
+    total_clips = 0
+    n_tracks = 0
+    for kind, ti, track in _iter_tracks(root):
+        n_tracks += 1
+        spans = []  # (start, end, clip_id) for this track only
+        for ci in track.findall("clipitem"):
+            total_clips += 1
+            cid = ci.get("id", "?")
+            s, e, in_, out_ = _clip_ints(ci)
+            if s is None or e is None:
+                errors.append(f"clip {cid}: missing <start>/<end>")
+                continue
+            if e <= s:
+                errors.append(f"clip {cid}: end ({e}) <= start ({s}) - zero/negative length")
+            elif in_ is not None and out_ is not None and (e - s) != (out_ - in_):
+                errors.append(
+                    f"clip {cid}: timeline length {e - s} != source length "
+                    f"{out_ - in_} (in={in_} out={out_})")
+            max_end = max(max_end, e)
+            spans.append((s, e, cid))
+            if check_media:
+                fe = ci.find("file")
+                pu = fe.findtext("pathurl") if fe is not None else None
+                if pu:
+                    abspath = os.path.normpath(os.path.join(xml_dir or ".", pu))
+                    if not os.path.exists(abspath):
+                        warnings.append(f"clip {cid}: media not found on disk ({pu})")
+        # Within-track overlap: sort by start, flag any clip beginning before the
+        # previous one ends.
+        spans.sort()
+        for (s0, e0, id0), (s1, e1, id1) in zip(spans, spans[1:]):
+            if s1 < e0:
+                errors.append(
+                    f"clip {id1} on {kind} track {ti} starts at {s1} before "
+                    f"clip {id0} ends at {e0} (same-track overlap)")
+
+    seq = root.find(".//sequence")
+    d = seq.findtext("duration") if seq is not None else None
+    try:
+        seq_dur = int(d)
+    except (TypeError, ValueError):
+        seq_dur = None
+    if seq_dur is None:
+        errors.append("sequence <duration> is missing or not an integer")
+    elif seq_dur != max(1, max_end):
+        errors.append(f"sequence <duration> {seq_dur} != longest clip end {max_end}")
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings,
+            "stats": {"clips": total_clips, "tracks": n_tracks,
+                      "max_end": max_end, "seq_duration": seq_dur}}
+
+
+def repair_fcpxml(xml_text: str) -> str:
+    """Best-effort fix for an FCPXML that failed :func:`evaluate_fcpxml`. Returns
+    a new XML string; the input is unchanged. Strategy, by track:
+
+    * **B-roll track** (first video track) — when gap-fill is on (the default),
+      re-chain every clip end-to-end: ``start`` = running position, ``end`` =
+      ``start + (out - in)``. This both repairs a bad ``end`` and undoes the
+      cascade it causes (the next clip's start having been derived from it). With
+      gap-fill off (honest gaps), only individual ``end <= start`` clips are
+      patched so intentional gaps survive.
+    * **Overlay / SFX tracks** — absolute placement with deliberate gaps, so
+      starts are left alone; only a clip with ``end <= start`` is patched to
+      ``start + (out - in)``.
+
+    The sequence ``<duration>`` is then recomputed to the longest clip end.
+    Formatting is preserved by substituting values in document order rather than
+    re-serialising (which would drop the DOCTYPE and reflow the file)."""
+    root = ET.fromstring(xml_text)
+    rechain_broll = _fill_gaps_enabled()
+
+    new_starts: list = []
+    new_ends: list = []
+    for kind, ti, track in _iter_tracks(root):
+        is_broll = (kind == "video" and ti == 0)
+        running = 0
+        for ci in track.findall("clipitem"):
+            s, e, in_, out_ = _clip_ints(ci)
+            s = s or 0
+            length = (out_ - in_) if (in_ is not None and out_ is not None) else None
+            if not length or length <= 0:
+                length = (e - s) if (e is not None and e > s) else 1
+            if is_broll and rechain_broll:
+                ns, ne = running, running + length
+                running = ne
+            elif e is None or e <= s:           # patch only the broken clip
+                ns, ne = s, s + length
+            else:                                # already valid — leave untouched
+                ns, ne = s, e
+            new_starts.append(ns)
+            new_ends.append(ne)
+
+    si = iter(new_starts)
+    ei = iter(new_ends)
+    out_text, ns = re.subn(r"<start>-?\d+</start>",
+                           lambda m: f"<start>{next(si)}</start>", xml_text)
+    out_text, ne = re.subn(r"<end>-?\d+</end>",
+                           lambda m: f"<end>{next(ei)}</end>", out_text)
+    if ns != len(new_starts) or ne != len(new_ends):
+        raise TimelineXMLError(
+            f"repair tag-count mismatch (start {ns}/{len(new_starts)}, "
+            f"end {ne}/{len(new_ends)}); refusing to write a half-rewritten timeline")
+
+    seq_dur = max(1, max(new_ends) if new_ends else 1)
+    # The sequence <duration> is the first <duration> in the document (it precedes
+    # every clip/file duration), so a count=1 replace targets exactly it.
+    out_text = re.sub(r"<duration>\d+</duration>",
+                      f"<duration>{seq_dur}</duration>", out_text, count=1)
+    return out_text
 
 
 def generate_overlays_fcpxml(overlays: list, project_name: str = "default",

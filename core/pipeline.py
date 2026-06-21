@@ -12,7 +12,10 @@ selected clips and writes the Premiere FCPXML into the project folder.
 import os
 from dataclasses import dataclass, field
 
-from core.output import clip_base_dir, clip_filename, generate_fcpxml, _safe_for_fs
+from core.output import (clip_base_dir, clip_filename, generate_fcpxml, _safe_for_fs,
+                         generate_shots_srt, evaluate_fcpxml, repair_fcpxml,
+                         evaluate_shot_timings, evaluate_srt,
+                         TimelineXMLError, ProjectValidationError)
 
 
 class PipelineCancelled(Exception):
@@ -1096,6 +1099,51 @@ def enforce_timeline(shots: list, groq_key: str = None, video_topic: str = "",
     return report
 
 
+def _evaluate_project_before_export(shots: list) -> None:
+    """Pre-export gate over the *source* shot timings and the shot SRT they
+    produce. Raises :class:`ProjectValidationError` when the timing is corrupt
+    (shots colliding at the same timestamp, which scrambles both the timeline and
+    the SRT) so a faulty project never ships — the fix is to re-run, since lost
+    voice timing can't be recovered after the fact. The XML itself is repaired
+    separately; this guards the timing/SRT that the XML repair can't recover."""
+    timing = evaluate_shot_timings(shots)
+    srt = evaluate_srt(generate_shots_srt(shots))
+    for w in timing["warnings"] + srt["warnings"]:
+        print(f"[export-eval] warning: {w}")
+    problems = timing["errors"] + srt["errors"]
+    if problems:
+        print(f"[export-eval] {len(problems)} timing/SRT issue(s); blocking export.")
+        raise ProjectValidationError(
+            "Project failed pre-export validation (timing/SRT is corrupt — re-run "
+            "the project to regenerate timing). Issues: " + "; ".join(problems[:6])
+            + ("" if len(problems) <= 6 else f" (+{len(problems) - 6} more)"))
+
+
+def _evaluate_and_repair_xml(xml: str, xml_dir: str) -> str:
+    """Run the pre-finalize evaluation round on a freshly generated FCPXML.
+
+    Returns the XML to write — the original if it's already clean, otherwise the
+    auto-repaired version. Raises :class:`TimelineXMLError` if structural errors
+    survive a repair pass (so a broken timeline is never written/shipped).
+    Missing-media warnings are logged but never block, since repair can't
+    materialise a file that isn't on disk."""
+    report = evaluate_fcpxml(xml, xml_dir=xml_dir, check_media=True)
+    for w in report["warnings"]:
+        print(f"[timeline] warning: {w}")
+    if report["ok"]:
+        return xml
+    print(f"[timeline] {len(report['errors'])} structural issue(s) found; "
+          f"attempting auto-repair. First few: {report['errors'][:3]}")
+    repaired = repair_fcpxml(xml)
+    recheck = evaluate_fcpxml(repaired, xml_dir=xml_dir, check_media=True)
+    if not recheck["ok"]:
+        raise TimelineXMLError(
+            "Generated timeline failed validation even after auto-repair: "
+            + "; ".join(recheck["errors"][:5]))
+    print("[timeline] auto-repair succeeded; timeline is now structurally valid.")
+    return repaired
+
+
 def write_fcpxml(shots: list, project_name: str, overlays: list = None,
                  sfx_list: list = None) -> str:
     """Render the Premiere FCPXML for ``shots`` and write it to the project dir.
@@ -1123,6 +1171,10 @@ def write_fcpxml(shots: list, project_name: str, overlays: list = None,
     report = validate_timeline(shots)
     if not report["ok"]:
         _drop_failing_clips(shots, report)
+    # Evaluation round: block the export if the source timing (and thus the shot
+    # SRT) is structurally corrupt. The XML is repaired below; this catches the
+    # timing/SRT damage that XML repair can't recover.
+    _evaluate_project_before_export(shots)
     # Resolve the output path first so media pathurls can be written relative to
     # it (portable bundle — no baked-in absolute/container paths).
     proj = _safe_for_fs(project_name, 50)
@@ -1130,6 +1182,11 @@ def write_fcpxml(shots: list, project_name: str, overlays: list = None,
     xml = generate_fcpxml(shots, project_name=project_name,
                           overlays=overlays or None, sfx_list=sfx_list or None,
                           xml_dir=os.path.dirname(xml_path))
+    # Evaluation round: structurally check the timeline before it ships. On a
+    # hard failure (bad clip ends, same-track overlaps, wrong sequence duration,
+    # orphan media refs) auto-repair once and re-verify; only a failure that
+    # survives repair is fatal — a corrupt timeline must never reach the user.
+    xml = _evaluate_and_repair_xml(xml, os.path.dirname(xml_path))
     os.makedirs(os.path.dirname(xml_path), exist_ok=True)
     with open(xml_path, "w", encoding="utf-8") as f:
         f.write(xml)
