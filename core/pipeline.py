@@ -1541,3 +1541,75 @@ def run_overlays_only(audio_path: str, groq_key: str = None, project_name: str =
 
     return {"project_name": project_name, "n_overlays": len(overlays),
             "overlays": overlays, "xml_path": xml_path, "errors": errors}
+
+
+def run_extras_only(audio_path: str, groq_key: str = None, project_name: str = "auto",
+                    quality: str = "1080", download: bool = True,
+                    progress_callback=None, should_cancel=None) -> dict:
+    """Lightweight path: transcribe → mine the script for named brands / car models /
+    parts → fetch and download ONLY the extra contextual B-roll clips for them
+    (YouTube, HD/landscape/no-Shorts) → write an extras-only FCPXML. No main-timeline
+    footage, ranking, or overlays. Returns
+    ``{project_name, shots, n_clips, download, xml_path, errors, cost}``."""
+    from core.transcription import transcribe_audio
+    from core.extras import fetch_extra_shots
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    if not key:
+        raise ValueError("GROQ_API_KEY is required.")
+    errors: list = []
+    total = 4 if download else 3
+
+    # Job-scoped API cost accounting + a fresh query cache, mirroring the full run.
+    from core import usage as _usage
+    _usage.reset()
+    from core.director_search import clear_query_cache
+    clear_query_cache()
+
+    def _p(step, label):
+        _check_cancel(should_cancel)
+        if progress_callback:
+            try:
+                progress_callback(step, total, label)
+            except Exception:
+                pass
+
+    _p(1, "Transcribing voiceover")
+    segments = transcribe_audio(audio_path, key)
+    if not segments:
+        raise RuntimeError("Transcription returned nothing — bad audio or missing GROQ key.")
+    script_text = " ".join(s["text"].strip() for s in segments).strip()
+
+    _p(2, "Mining named entities + fetching extra clips")
+    shots = fetch_extra_shots(script_text, key, errors=errors,
+                              start_slot_id=1, start_sec=0.0)
+    if not shots:
+        return {"project_name": project_name, "shots": [], "n_clips": 0,
+                "download": None, "xml_path": None, "errors": errors,
+                "cost": _usage.summary()}
+
+    dl = None
+    if download:
+        # Extras are YouTube downloads — validate the proxy pool first when one is
+        # configured (time-boxed inside ensure_working so it can't stall here).
+        if os.getenv("YT_DLP_PROXY_URL", "").strip():
+            try:
+                from core import proxy_pool
+                proxy_pool.ensure_working(should_cancel=should_cancel)
+            except Exception as e:
+                errors.append(f"proxy pool: {e}")
+        _p(3, "Downloading extra clips")
+        dl = download_selected_clips(
+            shots, project_name, quality=cap_quality(quality),
+            should_cancel=should_cancel,
+            progress=lambda done, tot: _p(3, f"Downloading extra clips · {done}/{tot}"))
+        errors.extend(dl.get("errors") or [])
+        drop_undownloaded(shots)   # XML must never reference a clip that isn't on disk
+
+    _p(total, "Writing Premiere XML")
+    xml_path = write_fcpxml(shots, project_name)
+    n_clips = sum(1 for s in shots for c in (s.get("selected_results") or [])
+                  if _clip_has_file(c))
+    return {"project_name": project_name, "shots": shots, "n_clips": n_clips,
+            "download": dl, "xml_path": xml_path, "errors": errors,
+            "cost": _usage.summary()}

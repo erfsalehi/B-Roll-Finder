@@ -58,6 +58,61 @@ def test_fetch_extra_shots_builds_placed_extras(monkeypatch):
     assert len(shots) == 6
 
 
+# ── run_extras_only (the /extras bot path) ────────────────────────────────────
+
+def test_run_extras_only_downloads_and_writes_xml(monkeypatch, tmp_path):
+    """Extras-only run: transcribe → fetch_extra_shots → download → XML, counting
+    only clips that landed a file on disk."""
+    import os
+    import core.pipeline as pipeline
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
+
+    monkeypatch.setattr("core.transcription.transcribe_audio",
+                        lambda path, key: [{"start": 0.0, "end": 1.0, "text": "Toyota Camry brakes"}])
+
+    extra = {"slot_id": 1, "timestamp": 0.0, "end_timestamp": 6.0, "priority": "low",
+             "is_extra": True, "extra_label": "Extra - toyota logo",
+             "selected_results": [{"url": "https://youtu.be/x", "source": "youtube",
+                                   "matched_query": "toyota logo"}]}
+    monkeypatch.setattr("core.extras.fetch_extra_shots",
+                        lambda *a, **k: [extra])
+
+    def _fake_download(shots, project_name, **kw):
+        # Pretend the clip downloaded: write a real file + point local_path at it.
+        d = os.path.join("downloads", project_name, "director")
+        os.makedirs(d, exist_ok=True)
+        fp = os.path.join(d, "clip.mp4")
+        with open(fp, "wb") as f:
+            f.write(b"x" * 16)
+        shots[0]["selected_results"][0]["local_path"] = fp
+        return {"ok": 1, "failed": 0, "skipped": 0, "dir": d, "errors": []}
+
+    monkeypatch.setattr(pipeline, "download_selected_clips", _fake_download)
+    monkeypatch.setattr(pipeline, "write_fcpxml", lambda shots, proj, *a, **k: f"downloads/{proj}/{proj}.xml")
+
+    res = pipeline.run_extras_only("audio.mp3", project_name="extras_test")
+    assert res["n_clips"] == 1
+    assert res["shots"] and res["shots"][0]["is_extra"]
+    assert res["xml_path"].endswith("extras_test.xml")
+
+
+def test_run_extras_only_no_entities_returns_zero(monkeypatch, tmp_path):
+    """No named brands/models/parts → no clips, no XML, no crash."""
+    import core.pipeline as pipeline
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setattr("core.transcription.transcribe_audio",
+                        lambda path, key: [{"start": 0.0, "end": 1.0, "text": "generic talk"}])
+    monkeypatch.setattr("core.extras.fetch_extra_shots", lambda *a, **k: [])
+    res = pipeline.run_extras_only("audio.mp3", project_name="empty")
+    assert res["n_clips"] == 0
+    assert res["shots"] == []
+    assert res["xml_path"] is None
+
+
 # ── placement + naming + SRT ──────────────────────────────────────────────────
 
 def _video_names_and_spans(xml: str):

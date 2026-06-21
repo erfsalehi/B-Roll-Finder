@@ -80,6 +80,9 @@ _PENDING_START: dict = {}
 # Chats that ran /overlay — their NEXT upload is offered as text-overlay-only.
 _OVERLAY_NEXT: set = set()
 
+# Chats that ran /extras — their NEXT upload is offered as extra-clips-only.
+_EXTRAS_NEXT: set = set()
+
 
 # ── config ────────────────────────────────────────────────────────────────────
 
@@ -358,11 +361,14 @@ def handle_settings_callback(cb: dict) -> None:
         if disk == "clear":
             n, freed = _clear_all_projects()
             note = f"🧹 Cleared {n} project(s), freed {_human_size(freed)}. "
-        label = "Text-overlay only" if mode == "overlay" else "Full process"
+        label = {"overlay": "Text-overlay only",
+                 "extras": "Extras only"}.get(mode, "Full process")
         edit_message(chat_id, message_id, f"{note}▶️ {label} — starting…")
         answer_callback(cb_id, "Starting")
         if mode == "overlay":
             _start_job(handle_overlay_only, chat_id, pend["file_id"], pend["name"])
+        elif mode == "extras":
+            _start_job(handle_extras_only, chat_id, pend["file_id"], pend["name"])
         else:
             _start_job(handle_audio, chat_id, pend["file_id"], pend["name"])
         return
@@ -397,6 +403,10 @@ def is_settings_command(text: str) -> bool:
 
 def is_overlay_command(text: str) -> bool:
     return _command(text) in ("/overlay", "/overlays", "/textonly")
+
+
+def is_extras_command(text: str) -> bool:
+    return _command(text) in ("/extras", "/extra", "/extraclips")
 
 
 def is_download_command(text: str) -> bool:
@@ -829,6 +839,52 @@ def handle_overlay_only(chat_id, file_id: str, suggested_name: str) -> dict:
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
         send_document(chat_id, xml_path, caption=f"{proj} — overlays FCPXML")
+    deliver_project(chat_id, proj)
+    return result
+
+
+def handle_extras_only(chat_id, file_id: str, suggested_name: str) -> dict:
+    """Extras-only path: transcribe → mine named brands / models / parts → fetch and
+    download ONLY the extra contextual B-roll clips → deliver the clips + an
+    extras-only FCPXML. Skips the main timeline (fetch/rank/overlays)."""
+    from core.pipeline import run_extras_only, PipelineCancelled
+
+    proj = project_name_from(suggested_name, time.strftime("extras_%Y%m%d_%H%M%S"))
+    ext = os.path.splitext(suggested_name or "")[1].lower() or ".mp3"
+    audio_path = os.path.join(".cache", f"bot_{proj}{ext}")
+
+    status = send_message(chat_id, f"🎞 Extras-only for '{proj}'. Downloading audio…")
+    msg_id = status.get("message_id")
+    try:
+        download_telegram_file(file_id, audio_path)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't fetch the audio: {e}")
+        return {}
+
+    progress = _progress_logger(chat_id, proj, msg_id)
+    try:
+        with bot_settings.apply_env(bot_settings.get_settings(chat_id)):
+            result = run_extras_only(audio_path, project_name=proj,
+                                     quality=str(bot_settings.get_settings(chat_id).get("quality", 1080)),
+                                     progress_callback=progress,
+                                     should_cancel=_should_cancel())
+    except PipelineCancelled:
+        send_message(chat_id, f"⏹ Cancelled '{proj}'.")
+        return {}
+    except Exception as e:
+        send_message(chat_id, f"❌ Extras pass failed for '{proj}': {e}")
+        return {}
+
+    n = result.get("n_clips", 0)
+    edit_message(chat_id, msg_id, f"🎞 {proj} — ✅ {n} extra clip(s) downloaded")
+    _LAST["project"] = proj
+    if n == 0:
+        send_message(chat_id, "No named brands / models / parts were found in the "
+                              "script, so there were no extra clips to fetch.")
+        return result
+    xml_path = result.get("xml_path")
+    if xml_path and os.path.exists(xml_path):
+        send_document(chat_id, xml_path, caption=f"{proj} — extras FCPXML")
     deliver_project(chat_id, proj)
     return result
 
@@ -1293,6 +1349,7 @@ _BOT_COMMANDS = [
     ("cancel", "Stop the running job / discard pending"),
     ("forcestop", "Hard stop + restart the bot"),
     ("zip", "Bundle a finished project (link + attach)"),
+    ("extras", "Next voice file → extra clips only (brand/model/part B-roll)"),
     ("overlaytext", "Render one overlay clip: /overlaytext 4 YOUR TEXT"),
     ("links", "Source links per shot (re-download empty shots)"),
     ("cleanup", "Show disk usage / delete a project"),
@@ -1630,6 +1687,7 @@ _HELP = (
     "🎬 Send a voice message or audio file and I'll build the B-roll project.\n"
     "/settings — choose sources, counts, quality, QA, review gate, text overlays\n"
     "/overlay — next voice file → animated text-overlays only (no footage)\n"
+    "/extras — next voice file → extra contextual clips only (brand/model/part B-roll)\n"
     "/overlaytext <secs> <text> — render ONE overlay clip for exact text + duration\n"
     "/status — am I online & ready\n"
     "/test — preflight: live-test LLM, transcription, Pexels + yt-dlp search and "
@@ -1665,13 +1723,18 @@ def _job_thread(fn, chat_id, *args) -> None:
         _BUSY.update(active=False, project=None, cancel=None, started=None)
 
 
-def build_start_keyboard(overlay_only: bool = False) -> dict:
-    """Pre-job prompt: pick the mode (Full vs text-overlay-only) AND whether to
-    clear the disk first. callback_data = start:<mode>:<disk>. When
-    ``overlay_only`` is set (the /overlay command) only the overlay rows show.
+def build_start_keyboard(overlay_only: bool = False, extras_only: bool = False) -> dict:
+    """Pre-job prompt: pick the mode (Full / text-overlay-only / extras-only) AND
+    whether to clear the disk first. callback_data = start:<mode>:<disk>. When
+    ``overlay_only`` (the /overlay command) or ``extras_only`` (the /extras
+    command) is set, only that mode's rows show.
 
     One button per row so the labels stay fully readable on narrow screens."""
     rows = []
+    if extras_only:
+        rows.append([{"text": "🎞 Extras only · clear", "callback_data": "start:extras:clear"}])
+        rows.append([{"text": "🎞 Extras only · keep",  "callback_data": "start:extras:keep"}])
+        return {"inline_keyboard": rows}
     if not overlay_only:
         rows.append([{"text": "🎬 Full · clear disk", "callback_data": "start:full:clear"}])
         rows.append([{"text": "🎬 Full · keep",       "callback_data": "start:full:keep"}])
@@ -1901,6 +1964,13 @@ def main() -> None:
                                       "(animated overlays + SFX, no footage). Send it now.")
                 continue
 
+            if is_extras_command(text):
+                _EXTRAS_NEXT.add(chat_id)
+                send_message(chat_id, "🎞 Next voice file → extra contextual clips only "
+                                      "(brand / model / part B-roll, no main timeline). "
+                                      "Send it now.")
+                continue
+
             if is_cancel_command(text):
                 cancel = _BUSY.get("cancel")
                 if _BUSY.get("active") and cancel is not None:
@@ -2039,14 +2109,17 @@ def main() -> None:
                 # disk first. The job starts from the button handler once the user
                 # answers. /overlay pre-restricts the prompt to overlay-only.
                 overlay_only = chat_id in _OVERLAY_NEXT
+                extras_only = chat_id in _EXTRAS_NEXT
                 _OVERLAY_NEXT.discard(chat_id)
+                _EXTRAS_NEXT.discard(chat_id)
                 _PENDING_START[chat_id] = {"file_id": file_id, "name": name}
                 send_message(
                     chat_id,
                     f"🎬 Ready: '{project_name_from(name, 'voice')}'.\n"
                     "Pick a mode — and whether to clear old projects first "
                     "(frees disk; keeps Clip Library & cookies):",
-                    reply_markup=build_start_keyboard(overlay_only=overlay_only),
+                    reply_markup=build_start_keyboard(overlay_only=overlay_only,
+                                                      extras_only=extras_only),
                 )
             elif text:
                 send_message(chat_id, _help_text())
