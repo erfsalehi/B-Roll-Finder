@@ -396,15 +396,44 @@ def zip_project(project_name: str, out_path: str = None, progress=None) -> dict:
     out_abs = os.path.abspath(out_path)
 
     # Collect the file list up front so we know the total for progress reporting
-    # (and so we never zip the output zip into itself).
+    # (and so we never zip the output zip into itself). Skip in-progress download
+    # artifacts (.part/.ytdl/.tmp): bundling a half-written clip ships a corrupt
+    # file and wastes space.
     members = []
+    src_bytes = 0
     for root, _dirs, names in os.walk(proj_dir):
         for name in names:
+            if name.endswith((".part", ".ytdl", ".tmp")):
+                continue
             fp = os.path.join(root, name)
             if os.path.abspath(fp) == out_abs:
                 continue
             members.append(fp)
+            try:
+                src_bytes += os.path.getsize(fp)
+            except OSError:
+                pass
     total = len(members)
+
+    # Disk preflight: the zip is ~the source size (mp4 barely compresses), so a
+    # near-full disk stalls mid-write and leaves a half-written .zip. Fail fast
+    # with an actionable message BEFORE starting, while the clips are still intact.
+    try:
+        import shutil as _shutil
+        out_dir = os.path.dirname(out_abs) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        free = _shutil.disk_usage(out_dir).free
+        need = int(src_bytes * 1.05) + (16 << 20)   # +5% + 16MB headroom
+        if free < need:
+            raise RuntimeError(
+                f"Not enough disk to zip '{proj}': need ~{need // (1 << 20)}MB, "
+                f"only {free // (1 << 20)}MB free. Free space first "
+                f"(e.g. /cleanup overlays, or delete an old project) and retry."
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        pass   # a disk_usage probe failure must not block a zip that would fit
 
     files = 0
     # ZIP_DEFLATED barely shrinks already-compressed mp4s but keeps the bundle

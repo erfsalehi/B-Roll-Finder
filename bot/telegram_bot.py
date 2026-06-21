@@ -578,6 +578,27 @@ def deliver_project(chat_id, project: str) -> None:
     if size <= _TG_UPLOAD_LIMIT and os.path.exists(abs_path):
         send_document(chat_id, abs_path, caption=f"{project} — clips + XML")
 
+    # Reclaim disk: the zip now holds everything (clips + XML), so the source
+    # folder is a redundant second copy. With "Delete clips after zip" on, drop
+    # it and keep ONLY the zip — halving the project's footprint — while the zip
+    # stays until the user runs /cleanup (downloads can take a while). A later
+    # /refine/redo for this project would need a fresh run.
+    try:
+        if bot_settings.get_settings(chat_id).get("purge_after_zip") and os.path.isfile(abs_path):
+            import shutil as _shutil
+            from core.output import _safe_for_fs
+            proj_dir = os.path.join(os.path.abspath("downloads"), _safe_for_fs(project, 50))
+            if os.path.isdir(proj_dir):
+                freed = sum(os.path.getsize(os.path.join(r, fn))
+                            for r, _d, fs in os.walk(proj_dir) for fn in fs
+                            if os.path.exists(os.path.join(r, fn)))
+                _shutil.rmtree(proj_dir, ignore_errors=True)
+                send_message(chat_id,
+                             f"🧹 Removed source clips ({_human_size(freed)}) — the zip above "
+                             f"has everything and stays until you /cleanup {project}.")
+    except Exception as e:
+        print(f"[deliver] purge-after-zip failed for {project}: {e}")
+
 
 # ── job ────────────────────────────────────────────────────────────────────────
 
@@ -1484,24 +1505,32 @@ def handle_zip(chat_id, text: str) -> None:
 
 
 def _project_disk_usage() -> list:
-    """List downloaded projects as ``(name, bytes)`` sorted largest-first."""
+    """List downloaded projects as ``(name, bytes)`` sorted largest-first.
+
+    Counts both a project's source folder AND its sibling ``<name>.zip`` under
+    one entry — a project whose clips were purged after zipping exists only as
+    the zip, and must still show up here so it can be listed and /cleanup'd."""
     root = os.path.abspath("downloads")
-    out = []
+    out: dict = {}
     if not os.path.isdir(root):
-        return out
+        return []
     for name in os.listdir(root):
-        d = os.path.join(root, name)
-        if not os.path.isdir(d):
-            continue
-        total = 0
-        for r, _dirs, files in os.walk(d):
-            for fn in files:
-                try:
-                    total += os.path.getsize(os.path.join(r, fn))
-                except OSError:
-                    pass
-        out.append((name, total))
-    return sorted(out, key=lambda x: x[1], reverse=True)
+        path = os.path.join(root, name)
+        if os.path.isdir(path):
+            total = 0
+            for r, _dirs, files in os.walk(path):
+                for fn in files:
+                    try:
+                        total += os.path.getsize(os.path.join(r, fn))
+                    except OSError:
+                        pass
+            out[name] = out.get(name, 0) + total
+        elif name.endswith(".zip") and os.path.isfile(path):
+            try:
+                out[name[:-4]] = out.get(name[:-4], 0) + os.path.getsize(path)
+            except OSError:
+                pass
+    return sorted(out.items(), key=lambda x: x[1], reverse=True)
 
 
 def _library_kept_note() -> str:
@@ -1517,12 +1546,13 @@ def _library_kept_note() -> str:
 
 def handle_cleanup(chat_id, text: str) -> None:
     """Disk management. ``/cleanup`` lists projects + sizes (plus the shared
-    overlay render cache); ``/cleanup <name>`` deletes that project's folder (and
-    its .zip); ``/cleanup all`` clears every downloaded project AND the overlay
-    cache; ``/cleanup overlays`` clears just the overlay render cache (the
-    cross-project ProRes cache that project deletes don't touch). The Clip Library
-    DB lives outside downloads/ and is always preserved. Frees space on the
-    always-on server."""
+    overlay render cache); ``/cleanup <name>`` deletes that project's folder
+    and/or its standalone .zip (a project whose clips were purged after zipping
+    lives on only as the zip); ``/cleanup all`` clears every downloaded project
+    AND the overlay cache; ``/cleanup overlays`` clears just the overlay render
+    cache (the cross-project ProRes cache that project deletes don't touch). The
+    Clip Library DB lives outside downloads/ and is always preserved. Frees space
+    on the always-on server."""
     import shutil as _shutil
     parts = text.strip().split(maxsplit=1)
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1575,15 +1605,17 @@ def handle_cleanup(chat_id, text: str) -> None:
         send_message(chat_id, msg + ". " + _library_kept_note())
         return
 
-    # Delete a single named project (guard against path traversal).
+    # Delete a single named project (guard against path traversal). A project may
+    # exist as a folder, as a standalone .zip (source purged after zipping), or
+    # both — remove whichever is present.
     from core.output import _safe_for_fs
     safe = _safe_for_fs(arg, 50)
     proj_dir = os.path.join(root, safe)
-    if not os.path.isdir(proj_dir):
+    zp = os.path.join(root, f"{safe}.zip")
+    if not os.path.isdir(proj_dir) and not os.path.isfile(zp):
         send_message(chat_id, f"❌ No project named '{arg}'. Use /cleanup to list them.")
         return
     _shutil.rmtree(proj_dir, ignore_errors=True)
-    zp = os.path.join(root, f"{safe}.zip")
     if os.path.exists(zp):
         try:
             os.remove(zp)
