@@ -25,23 +25,28 @@ except Exception:  # pragma: no cover - import guard
 
 
 _ENTITY_PROMPT = (
-    "You read a voiceover script and extract the concrete CAR-DOMAIN entities it "
+    "You read a voiceover script and extract the concrete AUTOMOTIVE entities it "
     "explicitly names, for sourcing extra stock footage. Return STRICT JSON only:\n"
-    '{"brands": [...], "models": [...], "parts": [...]}\n'
-    "- brands: car manufacturers/companies named (e.g. Toyota, Honda, BMW).\n"
-    "- models: specific car models named (e.g. Camry, Corolla, Model 3). Do NOT "
+    '{"brands": [...], "models": [...], "parts": [...], "products": [...]}\n'
+    "- brands: vehicle manufacturers/companies named (e.g. Toyota, Honda, BMW).\n"
+    "- models: specific vehicle models named (e.g. Camry, Corolla, Model 3). Do NOT "
     "include the brand word alone here.\n"
     "- parts: specific car parts/components named (e.g. brake pads, transmission, "
     "alternator, timing belt).\n"
+    "- products: named consumer products the script reviews or recommends — motor "
+    "oils, additives, supplements, fuel/injector cleaners, engine treatments, "
+    "fluids, sprays, tools, and the like (e.g. Sea Foam, Liqui Moly, motor oil "
+    "additive, fuel injector cleaner, engine flush). This is the right bucket for a "
+    "product round-up / 'best X' video — put each reviewed item here.\n"
     "Only include things ACTUALLY mentioned in the script. Use the canonical name, "
     "deduplicated, Title Case. Empty arrays are fine. No prose, JSON only."
 )
 
 
 def extract_extra_entities(script_text: str, api_key: str) -> dict:
-    """Pull ``{brands, models, parts}`` of named car entities from the script.
-    Returns empty lists on any failure."""
-    out = {"brands": [], "models": [], "parts": []}
+    """Pull ``{brands, models, parts, products}`` of named automotive entities from
+    the script. Returns empty lists on any failure."""
+    out = {"brands": [], "models": [], "parts": [], "products": []}
     if not api_key or not (script_text or "").strip():
         return out
     client = Groq(api_key=api_key) if Groq else None
@@ -64,32 +69,54 @@ def extract_extra_entities(script_text: str, api_key: str) -> dict:
 
 def build_extra_keywords(entities: dict, max_keywords: int = None) -> list:
     """Turn extracted entities into ``[{"keyword", "kind"}]`` search terms per the
-    brand/model/part rules. Capped at ``max_keywords`` (env EXTRA_MAX_KEYWORDS,
-    default 12) so a script naming dozens of things can't explode the fetch."""
+    brand/model/part/product rules. Capped at ``max_keywords`` (env
+    EXTRA_MAX_KEYWORDS, default 18) so a script naming dozens of things can't
+    explode the fetch.
+
+    Keywords are flattened *round-robin* across entities — every entity's FIRST
+    keyword comes before any entity's second, so a product round-up naming 13
+    items still covers all 13 under the cap instead of spending the whole budget
+    on the first few."""
     if max_keywords is None:
         try:
-            max_keywords = int(os.getenv("EXTRA_MAX_KEYWORDS", "12") or 12)
+            max_keywords = int(os.getenv("EXTRA_MAX_KEYWORDS", "18") or 18)
         except ValueError:
-            max_keywords = 12
+            max_keywords = 18
 
-    kws = []
+    # One ordered keyword group per named entity (best/most-distinctive first).
+    groups = []
     for b in (entities.get("brands") or []):
-        kws += [
+        groups.append([
             {"keyword": f"{b} cars company", "kind": "brand"},
             {"keyword": f"{b} logo", "kind": "brand"},
             {"keyword": f"{b} factory manufacturing line", "kind": "brand"},
-        ]
+        ])
     for m in (entities.get("models") or []):
-        kws += [
+        groups.append([
             {"keyword": f"{m} pov driving", "kind": "model"},
             {"keyword": f"{m} test drive", "kind": "model"},
             {"keyword": f"{m} review introduction", "kind": "model"},
-        ]
+        ])
     for p in (entities.get("parts") or []):
-        kws += [
+        groups.append([
             {"keyword": f"{p} explained", "kind": "part"},
             {"keyword": f"how {p} works", "kind": "part"},
-        ]
+        ])
+    for pr in (entities.get("products") or []):
+        groups.append([
+            {"keyword": f"{pr} review", "kind": "product"},
+            {"keyword": f"{pr} close up", "kind": "product"},
+        ])
+
+    # Round-robin flatten (column-major across groups): all firsts, then all
+    # seconds, then all thirds — so the cap spreads across entities, not depth.
+    kws = []
+    if groups:
+        width = max(len(g) for g in groups)
+        for i in range(width):
+            for g in groups:
+                if i < len(g):
+                    kws.append(g[i])
 
     # De-dup (case-insensitive) preserving order, then cap.
     seen, deduped = set(), []

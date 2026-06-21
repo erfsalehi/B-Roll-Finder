@@ -31,6 +31,25 @@ def test_build_extra_keywords_caps_and_dedupes():
     assert len({k["keyword"].lower() for k in kws}) == 2   # deduped
 
 
+def test_build_extra_keywords_products():
+    ents = {"products": ["Sea Foam", "Liqui Moly"]}
+    kws = extras.build_extra_keywords(ents)
+    assert any(k["kind"] == "product" for k in kws)
+    assert any("sea foam review" == k["keyword"].lower() for k in kws)
+    assert any("liqui moly review" == k["keyword"].lower() for k in kws)
+
+
+def test_build_extra_keywords_round_robin_covers_all_products():
+    # 13 products, 2 templates each = 26 keywords; round-robin must give EVERY
+    # product its first ('review') keyword before any second one, so all 13 are
+    # covered under a cap that can't fit all 26.
+    products = [f"Product{i}" for i in range(13)]
+    kws = extras.build_extra_keywords({"products": products}, max_keywords=18)
+    reviewed = {k["keyword"].lower().replace(" review", "")
+                for k in kws if k["keyword"].lower().endswith("review")}
+    assert reviewed == {p.lower() for p in products}   # all 13 got their review keyword
+
+
 # ── fetch -> extra shots ──────────────────────────────────────────────────────
 
 def _yt(title):

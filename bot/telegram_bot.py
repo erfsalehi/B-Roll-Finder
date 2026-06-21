@@ -879,8 +879,8 @@ def handle_extras_only(chat_id, file_id: str, suggested_name: str) -> dict:
     edit_message(chat_id, msg_id, f"🎞 {proj} — ✅ {n} extra clip(s) downloaded")
     _LAST["project"] = proj
     if n == 0:
-        send_message(chat_id, "No named brands / models / parts were found in the "
-                              "script, so there were no extra clips to fetch.")
+        send_message(chat_id, "No named products / brands / models / parts were found "
+                              "in the script, so there were no extra clips to fetch.")
         return result
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
