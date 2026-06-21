@@ -1725,21 +1725,30 @@ def _job_thread(fn, chat_id, *args) -> None:
 
 def build_start_keyboard(overlay_only: bool = False, extras_only: bool = False) -> dict:
     """Pre-job prompt: pick the mode (Full / text-overlay-only / extras-only) AND
-    whether to clear the disk first. callback_data = start:<mode>:<disk>. When
-    ``overlay_only`` (the /overlay command) or ``extras_only`` (the /extras
-    command) is set, only that mode's rows show.
+    whether to clear the disk first. callback_data = start:<mode>:<disk>.
+
+    The default upload prompt offers all three modes — so Extras is a one-tap
+    option on every upload, no /extras needed. ``overlay_only`` (the /overlay
+    command) or ``extras_only`` (the /extras command) narrow it to just that mode.
 
     One button per row so the labels stay fully readable on narrow screens."""
-    rows = []
+    extras_rows = [
+        [{"text": "🎞 Extras only · clear", "callback_data": "start:extras:clear"}],
+        [{"text": "🎞 Extras only · keep",  "callback_data": "start:extras:keep"}],
+    ]
+    overlay_rows = [
+        [{"text": "🅰️ Overlays only · clear", "callback_data": "start:overlay:clear"}],
+        [{"text": "🅰️ Overlays only · keep",  "callback_data": "start:overlay:keep"}],
+    ]
     if extras_only:
-        rows.append([{"text": "🎞 Extras only · clear", "callback_data": "start:extras:clear"}])
-        rows.append([{"text": "🎞 Extras only · keep",  "callback_data": "start:extras:keep"}])
-        return {"inline_keyboard": rows}
-    if not overlay_only:
-        rows.append([{"text": "🎬 Full · clear disk", "callback_data": "start:full:clear"}])
-        rows.append([{"text": "🎬 Full · keep",       "callback_data": "start:full:keep"}])
-    rows.append([{"text": "🅰️ Overlays only · clear", "callback_data": "start:overlay:clear"}])
-    rows.append([{"text": "🅰️ Overlays only · keep",  "callback_data": "start:overlay:keep"}])
+        return {"inline_keyboard": extras_rows}
+    if overlay_only:
+        return {"inline_keyboard": overlay_rows}
+    rows = [
+        [{"text": "🎬 Full · clear disk", "callback_data": "start:full:clear"}],
+        [{"text": "🎬 Full · keep",       "callback_data": "start:full:keep"}],
+    ]
+    rows += overlay_rows + extras_rows
     return {"inline_keyboard": rows}
 
 
