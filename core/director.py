@@ -536,6 +536,55 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
     ensure_shot_queries(all_shots, video_topic)
     return all_shots
 
+def _resolve_block_shot_timings(block: list, shots: list) -> list:
+    """Absolute ``(start, end)`` seconds for each shot the Director produced from
+    one ``block`` of transcription segments.
+
+    The model is *asked* to echo each shot's ``start``/``end`` (segment-accurate),
+    but it intermittently omits them — and the old code then defaulted the shot to
+    ``0.0``, collapsing the whole block onto timestamp 0 and scrambling the
+    timeline/SRT. The segment times are authoritative and already in hand, so we
+    trust the model's values only when they're internally sane (numeric, ordered,
+    inside the block's own span) and otherwise fall back to the block span,
+    distributed across the shots by ``script_chunk`` word count. Either way the
+    result is monotonic and bounded by the block, so a forgetful model can no
+    longer zero a block."""
+    if not shots:
+        return []
+    if not block:
+        return [(0.0, 0.0) for _ in shots]
+    b_start = float(block[0].get("start", 0.0))
+    b_end = float(block[-1].get("end", b_start))
+    if b_end < b_start:
+        b_end = b_start
+    span = b_end - b_start
+
+    # Word-count-weighted spans across the block — the deterministic fallback.
+    weights = [max(1, len((s.get("script_chunk") or "").split())) for s in shots]
+    total = sum(weights) or 1
+    fallback, t = [], b_start
+    for j, w in enumerate(weights):
+        nt = b_end if j == len(weights) - 1 else min(b_end, t + span * (w / total))
+        nt = max(t, nt)
+        fallback.append((t, nt))
+        t = nt
+
+    # Use the model's own start/end only if every shot in the block is numeric,
+    # ordered, and inside the block's time span (with a little tolerance).
+    tol = 0.5
+    llm, prev = [], b_start - tol
+    for s in shots:
+        try:
+            st, en = float(s.get("start")), float(s.get("end"))
+        except (TypeError, ValueError):
+            return fallback
+        if not (b_start - tol <= st <= b_end + tol) or en <= st or st < prev - tol:
+            return fallback
+        llm.append((st, en))
+        prev = st
+    return llm
+
+
 def generate_shot_list_from_transcription(segments: list, api_key: str, progress_callback=None,
                                           custom_instructions: str = "",
                                           video_topic: str = "",
@@ -603,20 +652,12 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
             if not shots:
                 print(f"DEBUG: No shots found in LLM response for block. Response keys: {data.keys()}")
             
-            for shot in shots:
-                # We expect the AI to return the start/end in its JSON if we ask, 
-                # but to be safe we can also try to parse it from the script_chunk it returns
-                # or just trust the AI's logic if it groups them correctly.
-                # Let's assume the AI provides 'start' and 'end' in the JSON for this mode.
-                
-                s_time = shot.get("start")
-                e_time = shot.get("end")
-                
-                # If AI returns 0 or None, try to use current_time if we had one
-                # but in transcription mode we really want the AI's values.
-                if s_time is None: s_time = 0.0
-                if e_time is None: e_time = s_time + 5.0
-                
+            # Resolve each shot's absolute timing from the authoritative segment
+            # span — trusting the model's echoed start/end only when they're sane.
+            # This is what stops a block from collapsing onto timestamp 0 when the
+            # model omits the (schema-optional) start/end keys.
+            timings = _resolve_block_shot_timings(block, shots)
+            for shot, (s_time, e_time) in zip(shots, timings):
                 all_shots.append({
                     "slot_id": slot_id,
                     "chunk_id": chunk_id,

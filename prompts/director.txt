@@ -80,6 +80,8 @@ JSON SCHEMA
   "shots": [
     {
       "slot_id": <int>,
+      "start": <float seconds — start time of this shot's first segment>,
+      "end": <float seconds — end time of this shot's last segment>,
       "script_chunk": "<verbatim text from the script>",
       "shot_intent": "<one short phrase describing what this moment must convey visually>",
       "shot_type": "<one of the allowed shot_types>",
@@ -97,6 +99,8 @@ EXAMPLES (different shot archetypes)
 Example 1 — establishing / topic intro:
 {
   "slot_id": 1,
+  "start": 0.0,
+  "end": 4.0,
   "script_chunk": "Welcome back. Today we're talking about the housing market.",
   "shot_intent": "set the topic with energy and place",
   "shot_type": "aerial",

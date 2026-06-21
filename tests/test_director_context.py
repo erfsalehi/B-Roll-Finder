@@ -11,8 +11,47 @@ from core.director import (
     subjects_in_span,
     load_director_prompt,
     _render_director_system_prompt,
+    _resolve_block_shot_timings,
 )
 from core.director_rank import auto_select_top_candidates, clear_auto_selections
+
+
+# ── Block shot timing: never collapse a block onto timestamp 0 ────────────────
+
+def _block(*spans):
+    return [{"start": s, "end": e, "text": "x"} for s, e in spans]
+
+
+def test_model_start_end_used_when_sane():
+    block = _block((100.0, 104.0), (104.0, 110.0))
+    shots = [{"start": 100.0, "end": 104.0, "script_chunk": "a a a"},
+             {"start": 104.0, "end": 110.0, "script_chunk": "b b"}]
+    assert _resolve_block_shot_timings(block, shots) == [(100.0, 104.0), (104.0, 110.0)]
+
+
+def test_missing_start_end_falls_back_to_segment_span():
+    # The regression: the model omits start/end -> old code zeroed the block.
+    block = _block((100.0, 104.0), (104.0, 112.0))
+    shots = [{"script_chunk": "one two three four"},   # 4 words
+             {"script_chunk": "five six seven eight"}]  # 4 words
+    out = _resolve_block_shot_timings(block, shots)
+    assert out[0][0] == 100.0 and out[-1][1] == 112.0   # bounded by the block
+    assert all(out[i][1] == out[i + 1][0] for i in range(len(out) - 1))  # contiguous
+    assert all(e > s for s, e in out)                   # positive, never (0,0)
+    assert out[0][0] > 0                                # not collapsed to 0
+
+
+def test_one_bad_value_falls_back_for_whole_block():
+    block = _block((50.0, 60.0), (60.0, 70.0))
+    shots = [{"start": 50.0, "end": 60.0, "script_chunk": "a"},
+             {"start": 0.0, "end": 1.0, "script_chunk": "b"}]   # out of block span
+    out = _resolve_block_shot_timings(block, shots)
+    assert out[0][0] == 50.0 and out[-1][1] == 70.0            # segment-derived
+    assert out[1][0] >= out[0][1]                              # monotonic
+
+
+def test_empty_shots_returns_empty():
+    assert _resolve_block_shot_timings(_block((0.0, 5.0)), []) == []
 
 
 ROADMAP = {
