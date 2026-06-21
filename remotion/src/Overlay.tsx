@@ -49,6 +49,20 @@ export type OverlayType =
   | 'number'
   | 'emphasis';
 
+// Style preset tokens — a bundle applied to EVERY overlay in a video. Picked on
+// the Python side (core/overlays_remotion.py OVERLAY_STYLES) and passed through
+// props, so the same component renders bold-yellow, clean-white, neon, or boxed-
+// news looks without changing the per-overlay `anim` layout.
+export type StyleTokens = {
+  weight: number;                       // font weight (400–900)
+  upper: boolean;                       // ALL-CAPS the display text
+  box: 'scrim' | 'none' | 'solid';      // background treatment behind text
+  stroke: boolean;                      // bold dark outline on the glyphs
+  glow: boolean;                        // accent-colored glow around the text
+  radius: number;                       // corner radius of the box
+  name: string;                         // preset id (for debugging)
+};
+
 export type OverlayProps = {
   text: string;
   type: OverlayType;
@@ -58,6 +72,14 @@ export type OverlayProps = {
   fps: number;
   color: string;   // primary text color
   accent: string;  // accent (bars, numbers)
+  style?: StyleTokens;
+};
+
+// The original "bold yellow" look — also the fallback when a clip was rendered
+// before styles existed (props.style undefined).
+const DEFAULT_STYLE: StyleTokens = {
+  weight: 900, upper: true, box: 'scrim', stroke: true, glow: false,
+  radius: 24, name: 'bold_yellow',
 };
 
 export const DEFAULT_PROPS: OverlayProps = {
@@ -69,6 +91,7 @@ export const DEFAULT_PROPS: OverlayProps = {
   fps: 30,
   color: '#FFFFFF',
   accent: '#FFD400',
+  style: DEFAULT_STYLE,
 };
 
 const FONT = `${MONTSERRAT}, "Arial Black", "Helvetica Neue", Arial, sans-serif`;
@@ -90,12 +113,14 @@ function fitFontSize(text: string, big: number, small: number): number {
 const SAFE_X = 120;
 const SAFE_Y = 120;
 
-// A dark scrim behind text so white copy stays readable over ANY footage these
-// alpha overlays get composited onto.
+// A dark scrim behind text so copy stays readable over ANY footage these alpha
+// overlays get composited onto. The "solid" box is more opaque for the broadcast
+// caption look.
 const SCRIM = 'rgba(8,8,10,0.58)';
+const SOLID_BG = 'rgba(12,12,14,0.96)';
 // Layered drop shadow for text sitting directly on footage (no box behind it).
 const TEXT_SHADOW = '0 4px 10px rgba(0,0,0,0.85), 0 2px 30px rgba(0,0,0,0.6)';
-// Bold dark outline ("border") so the vivid yellow copy pops on any footage.
+// Bold dark outline ("border") so vivid copy pops on any footage.
 // paintOrder:'stroke' renders the outline BEHIND the fill so it doesn't eat the
 // letterforms — a clean thick border rather than a thinned glyph.
 const TEXT_STROKE = '3px rgba(0,0,0,0.9)';
@@ -103,15 +128,25 @@ const STROKED: React.CSSProperties = {
   WebkitTextStroke: TEXT_STROKE,
   paintOrder: 'stroke',
 };
-// All overlay copy renders in CAPS for a punchy, consistent kinetic-type look —
-// non-destructive (the underlying verbatim text is unchanged, only displayed
-// uppercased).
-const UPPER: React.CSSProperties = {textTransform: 'uppercase'};
 
 export const Overlay: React.FC<OverlayProps> = (props) => {
   const {text, anim, sfx, color, accent} = props;
+  const st = props.style ?? DEFAULT_STYLE;
   const frame = useCurrentFrame();
   const {fps, durationInFrames} = useVideoConfig();
+
+  // ── style-derived helpers (applied across every anim branch) ──────────────
+  const upper: React.CSSProperties = st.upper ? {textTransform: 'uppercase'} : {};
+  const stroked: React.CSSProperties = st.stroke ? STROKED : {};
+  const glow = st.glow ? `, 0 0 38px ${accent}, 0 0 14px ${accent}` : '';
+  const textShadow = TEXT_SHADOW + glow;
+  const boxBg =
+    st.box === 'solid' ? SOLID_BG : st.box === 'scrim' ? SCRIM : 'transparent';
+  // The broadcast "solid" box gets a thick accent edge; scrim/none don't.
+  const solidEdge: React.CSSProperties =
+    st.box === 'solid' ? {borderLeft: `12px solid ${accent}`} : {};
+  const boxShadow =
+    st.box === 'none' ? 'none' : '0 24px 70px rgba(0,0,0,0.45)';
 
   // Entrance spring (0 → 1) and a symmetric fade-out near the end.
   const enter = spring({frame, fps, config: {damping: 200, mass: 0.6}});
@@ -135,6 +170,7 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
       extrapolateLeft: 'clamp',
       extrapolateRight: 'clamp',
     });
+    const padded = st.box !== 'none';
     return (
       <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center'}}>
         {Sfx}
@@ -144,23 +180,24 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
             transform: `translateY(${slide}px)`,
             textAlign: 'center',
             maxWidth: '78%',
-            background: SCRIM,
-            padding: '36px 56px',
-            borderRadius: 24,
-            boxShadow: '0 24px 70px rgba(0,0,0,0.45)',
+            background: boxBg,
+            padding: padded ? '36px 56px' : 0,
+            borderRadius: st.radius,
+            boxShadow,
+            ...solidEdge,
           }}
         >
           <div
             style={{
               fontFamily: FONT,
-              fontWeight: 900,
+              fontWeight: st.weight,
               fontSize: fitFontSize(text, 104, 52),
               lineHeight: 1.06,
               color,
-              textShadow: TEXT_SHADOW,
+              textShadow,
               letterSpacing: -1,
-              ...STROKED,
-              ...UPPER,
+              ...stroked,
+              ...upper,
             }}
           >
             {text}
@@ -194,20 +231,21 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
             opacity,
             transform: `scale(${pop})`,
             padding: '34px 60px',
-            background: 'rgba(10,10,12,0.82)',
-            borderRadius: 28,
+            background: st.box === 'none' ? 'transparent' : SOLID_BG,
+            borderRadius: Math.max(st.radius, 20),
             border: `4px solid ${accent}`,
-            boxShadow: '0 18px 60px rgba(0,0,0,0.5)',
+            boxShadow: st.box === 'none' ? 'none' : '0 18px 60px rgba(0,0,0,0.5)',
           }}
         >
           <span
             style={{
               fontFamily: FONT,
-              fontWeight: 900,
+              fontWeight: Math.max(st.weight, 800),
               fontSize: 150,
               color: accent,
               letterSpacing: -2,
-              ...UPPER,
+              textShadow: st.glow ? glow.slice(2) : undefined,
+              ...upper,
             }}
           >
             {countUp(text, enter)}
@@ -233,17 +271,17 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
             maxWidth: 1920 - 2 * SAFE_X,
             opacity,
             transform: `translateX(${x}px)`,
-            background: 'rgba(10,10,12,0.88)',
+            background: st.box === 'none' ? 'transparent' : SOLID_BG,
             borderLeft: `10px solid ${accent}`,
-            borderRadius: 6,
+            borderRadius: Math.max(st.radius, 6),
             padding: '24px 44px',
-            boxShadow: '0 18px 50px rgba(0,0,0,0.45)',
+            boxShadow: st.box === 'none' ? 'none' : '0 18px 50px rgba(0,0,0,0.45)',
           }}
         >
           <span
-            style={{fontFamily: FONT, fontWeight: 800,
+            style={{fontFamily: FONT, fontWeight: st.weight,
                     fontSize: fitFontSize(text, 64, 40), color,
-                    textShadow: TEXT_SHADOW, ...STROKED, ...UPPER}}
+                    textShadow, ...stroked, ...upper}}
           >
             {text}
           </span>
@@ -264,15 +302,15 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
           opacity,
           transform: `scale(${punch}) rotate(-3deg)`,
           fontFamily: FONT,
-          fontWeight: 900,
+          fontWeight: st.weight,
           fontSize: 170,
           color,
-          // Dark drop shadow for legibility over bright footage + the accent
-          // glow, plus the bold dark outline so the word reads on any background.
-          textShadow: `0 6px 22px rgba(0,0,0,0.8), 0 0 40px ${accent}`,
+          // Dark drop shadow for legibility over bright footage + an accent glow
+          // (always present on emphasis; intensified when the style asks for it).
+          textShadow: `0 6px 22px rgba(0,0,0,0.8), 0 0 40px ${accent}${glow}`,
           letterSpacing: -2,
-          ...STROKED,
-          ...UPPER,
+          ...stroked,
+          ...upper,
         }}
       >
         {text}

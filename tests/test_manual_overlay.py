@@ -62,7 +62,7 @@ def test_handle_overlay_text_when_renderer_missing(monkeypatch):
 def test_render_one_overlay_classifies_stat_vs_title(monkeypatch):
     captured = {}
 
-    def fake_render(highlights, out_dir, fps=30, color="", accent=""):
+    def fake_render(highlights, out_dir, fps=30, style=None, **kw):
         captured["h"] = highlights[0]
         return [{**highlights[0], "filepath": "x.mov", "start_sec": 0.0, "end_sec": 1.0}]
 
@@ -77,3 +77,40 @@ def test_render_one_overlay_classifies_stat_vs_title(monkeypatch):
     # duration floor + carried through
     ovr.render_one_overlay("HELLO", 0.01, "out")
     assert captured["h"]["end"] == 0.4
+
+
+# ── style presets ─────────────────────────────────────────────────────────────
+
+def test_resolve_style_default_and_pick(monkeypatch):
+    monkeypatch.delenv("OVERLAY_STYLE", raising=False)
+    monkeypatch.delenv("OVERLAY_TEXT_COLOR", raising=False)
+    monkeypatch.delenv("OVERLAY_ACCENT_COLOR", raising=False)
+    assert ovr._resolve_style()["name"] == "bold_yellow"
+
+    monkeypatch.setenv("OVERLAY_STYLE", "neon")
+    s = ovr._resolve_style()
+    assert s["name"] == "neon" and s["glow"] is True
+
+    # Unknown name falls back to the default preset.
+    monkeypatch.setenv("OVERLAY_STYLE", "does_not_exist")
+    assert ovr._resolve_style()["name"] == "bold_yellow"
+
+
+def test_resolve_style_color_override(monkeypatch):
+    monkeypatch.setenv("OVERLAY_STYLE", "boxed_news")
+    monkeypatch.setenv("OVERLAY_TEXT_COLOR", "#123456")
+    s = ovr._resolve_style()
+    assert s["name"] == "boxed_news" and s["color"] == "#123456" and s["box"] == "solid"
+
+
+def test_props_carry_style_tokens(monkeypatch):
+    monkeypatch.setenv("OVERLAY_STYLE", "clean_white")
+    h = {"text": "HELLO", "type": "title", "anim": "title_card",
+         "sfx": "none", "start": 0.0, "end": 2.0}
+    props = ovr._props_for(h, 30, ovr._resolve_style())
+    assert props["color"] == "#FFFFFF"
+    assert props["style"]["name"] == "clean_white"
+    assert props["style"]["upper"] is False and props["style"]["box"] == "none"
+    # All Overlay.tsx style tokens are present.
+    for k in ("weight", "upper", "box", "stroke", "glow", "radius", "name"):
+        assert k in props["style"]

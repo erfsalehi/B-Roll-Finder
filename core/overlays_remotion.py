@@ -76,6 +76,63 @@ def clear_overlay_cache() -> tuple:
 _VALID_ANIM = {"title_card", "stat_pop", "money_count", "lower_third", "pop"}
 _VALID_SFX = {"swoosh", "ding", "thud", "none"}
 
+# ── Style presets ─────────────────────────────────────────────────────────────
+# A "style" is a bundle of look tokens applied to EVERY overlay in a video (the
+# per-overlay `anim` layout is still auto-picked). Pick one per chat via /settings
+# (env OVERLAY_STYLE). Overlay.tsx consumes the `weight/upper/box/stroke/glow/
+# radius` tokens; `color`/`accent` set the palette and can still be overridden by
+# OVERLAY_TEXT_COLOR / OVERLAY_ACCENT_COLOR for a one-off tweak.
+OVERLAY_STYLES = {
+    "bold_yellow": {   # the original punchy look — default
+        "color": "#FFD60A", "accent": "#FFD400",
+        "weight": 900, "upper": True, "box": "scrim", "stroke": True,
+        "glow": False, "radius": 24,
+    },
+    "clean_white": {   # understated: white, no box, sentence case, lighter weight
+        "color": "#FFFFFF", "accent": "#D0D0D0",
+        "weight": 600, "upper": False, "box": "none", "stroke": False,
+        "glow": False, "radius": 0,
+    },
+    "neon": {          # bright accent with a colored glow
+        "color": "#00E5FF", "accent": "#00E5FF",
+        "weight": 800, "upper": True, "box": "none", "stroke": True,
+        "glow": True, "radius": 0,
+    },
+    "boxed_news": {    # broadcast caption: solid box + accent side bar
+        "color": "#FFFFFF", "accent": "#E50914",
+        "weight": 800, "upper": True, "box": "solid", "stroke": False,
+        "glow": False, "radius": 6,
+    },
+}
+DEFAULT_OVERLAY_STYLE = "bold_yellow"
+_STYLE_TOKEN_KEYS = ("weight", "upper", "box", "stroke", "glow", "radius")
+
+
+def overlay_style_names() -> list:
+    """The selectable style preset ids (for the /settings picker)."""
+    return list(OVERLAY_STYLES.keys())
+
+
+def _resolve_style() -> dict:
+    """Resolve the active overlay style preset from ``OVERLAY_STYLE`` (default
+    ``bold_yellow``). Unknown names fall back to the default. ``OVERLAY_TEXT_COLOR``
+    / ``OVERLAY_ACCENT_COLOR`` still override the preset's palette when set, so a
+    one-off color change doesn't need a whole new preset. Returns a dict carrying
+    the resolved ``color``/``accent`` plus the Overlay.tsx style tokens and the
+    preset ``name``."""
+    name = (os.getenv("OVERLAY_STYLE", "").strip().lower() or DEFAULT_OVERLAY_STYLE)
+    if name not in OVERLAY_STYLES:
+        name = DEFAULT_OVERLAY_STYLE
+    preset = dict(OVERLAY_STYLES[name])
+    preset["name"] = name
+    col = os.getenv("OVERLAY_TEXT_COLOR", "").strip()
+    acc = os.getenv("OVERLAY_ACCENT_COLOR", "").strip()
+    if col:
+        preset["color"] = col
+    if acc:
+        preset["accent"] = acc
+    return preset
+
 # A title is the full hook/heading line spoken verbatim — it can run long, so it
 # gets a generous cap. Every other overlay is a short phrase/figure.
 _TITLE_TYPES = {"title", "heading"}
@@ -309,7 +366,7 @@ def _pick_sfx_variant(base: str, text: str) -> str:
     return variants[idx]
 
 
-def _props_for(h: dict, fps: int, color: str, accent: str) -> dict:
+def _props_for(h: dict, fps: int, style: dict) -> dict:
     # Match the overlay's on-screen length to exactly how long the line is spoken
     # — the fade in/out happens *within* this window (see Overlay.tsx), so the
     # text is fully up while the voice says it. Tiny floor only so a degenerate
@@ -317,18 +374,23 @@ def _props_for(h: dict, fps: int, color: str, accent: str) -> dict:
     dur = max(0.4, float(h["end"]) - float(h["start"]))
     # Pick a (deterministic) variant of the requested SFX, e.g. swoosh→swoosh2.
     sfx = _pick_sfx_variant(h.get("sfx", "none"), h.get("text", ""))
+    style = style or _resolve_style()
+    style_tokens = {k: style[k] for k in _STYLE_TOKEN_KEYS if k in style}
+    style_tokens["name"] = style.get("name", DEFAULT_OVERLAY_STYLE)
     return {
         "text": h["text"], "type": h.get("type", "title"),
         "anim": h.get("anim", "title_card"), "sfx": sfx,
         "durationSec": round(dur, 3), "fps": fps,
-        "color": color, "accent": accent,
+        "color": style["color"], "accent": style["accent"],
+        "style": style_tokens,
     }
 
 
 # Bump when Overlay.tsx visuals change. The render cache is keyed by props, NOT
 # by the component source, so a style change wouldn't otherwise invalidate
-# previously-rendered clips — they'd be reused with the OLD look.
-_STYLE_VERSION = "5"
+# previously-rendered clips — they'd be reused with the OLD look. (6 = style
+# presets: the props now carry a `style` token bundle.)
+_STYLE_VERSION = "6"
 
 
 def _cache_key(props: dict) -> str:
@@ -436,12 +498,14 @@ def _overlay_basename(idx: int, h: dict, shots: list, seen: set) -> str:
 
 
 def render_overlay_clips(highlights: list, out_dir: str, fps: int = 30,
-                         color: str = "#FFFFFF", accent: str = "#FFD400",
-                         timeout: int = 240, shots: list = None) -> list:
+                         style: dict = None, timeout: int = 240,
+                         shots: list = None) -> list:
     """Render each highlight to a transparent ProRes 4444 .mov, reusing cached
     renders and rendering several at once. Returns overlay dicts (``filepath``
-    set) for the ones that succeeded, in timeline order. ``shots`` (optional) is
-    used only to name each clip after the shot it overlays."""
+    set) for the ones that succeeded, in timeline order. ``style`` is a resolved
+    preset (:func:`_resolve_style`); defaults to the active one. ``shots``
+    (optional) is used only to name each clip after the shot it overlays."""
+    style = style or _resolve_style()
     binary = _remotion_bin()
     if not binary:
         print("[overlays] remotion deps not installed (run `npm install` in "
@@ -461,7 +525,7 @@ def render_overlay_clips(highlights: list, out_dir: str, fps: int = 30,
 
     def _one(idx_h):
         idx, h = idx_h
-        props = _props_for(h, fps, color, accent)
+        props = _props_for(h, fps, style)
         out_path = os.path.join(out_dir, names[idx])
         if not _render_or_reuse(binary, props, out_path, timeout):
             return None
@@ -515,9 +579,7 @@ def render_one_overlay(text: str, duration_sec: float, out_dir: str,
     cap = _TITLE_TEXT_CAP if otype in _TITLE_TYPES else _OTHER_TEXT_CAP
     h = {"text": text[:cap], "type": otype, "anim": anim, "sfx": sfx,
          "start": 0.0, "end": dur, "emphasis": "high"}
-    color = os.getenv("OVERLAY_TEXT_COLOR", "#FFD60A").strip() or "#FFD60A"
-    accent = os.getenv("OVERLAY_ACCENT_COLOR", "#FFD400").strip() or "#FFD400"
-    rendered = render_overlay_clips([h], out_dir, fps=fps, color=color, accent=accent)
+    rendered = render_overlay_clips([h], out_dir, fps=fps, style=_resolve_style())
     return rendered[0] if rendered else None
 
 
@@ -528,10 +590,8 @@ def build_overlays(out_dir: str, segments: list = None, script_text: str = "",
     highlights = extract_overlay_highlights(segments, script_text, groq_key)
     if not highlights:
         return []
-    # Punchy, non-pale defaults; tunable without a code change. A vivid yellow
-    # text with a dark outline (added in Overlay.tsx) reads far better than pale
-    # white over footage.
-    color = os.getenv("OVERLAY_TEXT_COLOR", "#FFD60A").strip() or "#FFD60A"
-    accent = os.getenv("OVERLAY_ACCENT_COLOR", "#FFD400").strip() or "#FFD400"
+    # The active style preset (OVERLAY_STYLE, default bold_yellow) sets the look
+    # for every overlay; OVERLAY_TEXT_COLOR / OVERLAY_ACCENT_COLOR still override
+    # its palette for a one-off tweak.
     return render_overlay_clips(highlights, out_dir, fps=fps,
-                                color=color, accent=accent, shots=shots)
+                                style=_resolve_style(), shots=shots)
