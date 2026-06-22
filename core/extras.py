@@ -1,17 +1,24 @@
 """Extra contextual B-roll clips.
 
 After the narration timeline is built, we mine the script for the concrete
-car-domain entities it names and fetch a handful of generic, on-theme YouTube
-clips for each — spare footage the editor can swap in for any unwanted pick.
+entities it names AND the video's overall concept, then fetch a handful of
+generic, on-theme YouTube clips for each — spare footage the editor can swap in
+for any unwanted pick.
 
 Rules (per the product spec):
-  * BRAND   (e.g. Toyota)  -> the company, its logo, its manufacturing line
-  * MODEL   (e.g. Camry)   -> POV driving, test drive, review/introduction
-  * PART    (e.g. brakes)  -> "<part> explained" / how it works
+  * BRAND   (e.g. Toyota)     -> the company, its logo, its manufacturing line
+  * MODEL   (e.g. Camry)      -> POV driving, test drive, review/introduction
+  * PART    (e.g. brakes)     -> "<part> explained" / how it works
+  * PRODUCT (e.g. Sea Foam)   -> "<product> review" / close up
+  * THEME   (e.g. fuel video) -> the subject's iconic imagery, as ready-made
+                                 visual queries ("gas station forecourt",
+                                 "pumping fuel into car", "fuel gauge dashboard")
 
-Each keyword pulls 2-3 YouTube videos (same filters as the main timeline: HD,
-landscape, no Shorts). They're appended AFTER the last narration shot as extra
-"shots" named ``Extra - <keyword>``. YouTube-only by design.
+The theme queries capture what the video is ABOUT even when it names no specific
+entities, so a concept-driven video still gets relevant extras. Each keyword
+pulls 2-3 YouTube videos (same filters as the main timeline: HD, landscape, no
+Shorts). They're appended AFTER the last narration shot as extra "shots" named
+``Extra - <keyword>``. YouTube-only by design.
 """
 
 import os
@@ -25,9 +32,10 @@ except Exception:  # pragma: no cover - import guard
 
 
 _ENTITY_PROMPT = (
-    "You read a voiceover script and extract the concrete AUTOMOTIVE entities it "
-    "explicitly names, for sourcing extra stock footage. Return STRICT JSON only:\n"
-    '{"brands": [...], "models": [...], "parts": [...], "products": [...]}\n'
+    "You read a voiceover script and extract what's needed to source extra stock "
+    "B-roll. Return STRICT JSON only:\n"
+    '{"brands": [...], "models": [...], "parts": [...], "products": [...], '
+    '"themes": [...]}\n'
     "- brands: vehicle manufacturers/companies named (e.g. Toyota, Honda, BMW).\n"
     "- models: specific vehicle models named (e.g. Camry, Corolla, Model 3). Do NOT "
     "include the brand word alone here.\n"
@@ -38,15 +46,33 @@ _ENTITY_PROMPT = (
     "fluids, sprays, tools, and the like (e.g. Sea Foam, Liqui Moly, motor oil "
     "additive, fuel injector cleaner, engine flush). This is the right bucket for a "
     "product round-up / 'best X' video — put each reviewed item here.\n"
-    "Only include things ACTUALLY mentioned in the script. Use the canonical name, "
-    "deduplicated, Title Case. Empty arrays are fine. No prose, JSON only."
+    "- themes: 4-8 short, concrete, VISUAL stock-footage search phrases that capture "
+    "the video's OVERALL subject and its iconic imagery — generic evergreen B-roll "
+    "that fits anywhere, NOT tied to one named entity. Each 2-4 words, filmable, "
+    "clearly in the subject's domain. For a video about FUEL: \"gas station "
+    "forecourt\", \"pumping fuel into car\", \"fuel gauge dashboard\", \"petrol pump "
+    "nozzle\", \"fuel tanker highway\". For COFFEE: \"barista pouring espresso\", "
+    "\"coffee beans roasting\", \"cafe interior\". Always provide themes, even when "
+    "no specific brands/models/parts/products are named.\n"
+    "brands/models/parts/products: only things ACTUALLY named, canonical Title-Case, "
+    "deduplicated. themes: lowercase search phrases. Empty entity arrays are fine. "
+    "No prose, JSON only."
 )
 
 
+def _theme_max() -> int:
+    try:
+        return max(0, int(os.getenv("EXTRA_THEME_MAX", "8") or 8))
+    except ValueError:
+        return 8
+
+
 def extract_extra_entities(script_text: str, api_key: str) -> dict:
-    """Pull ``{brands, models, parts, products}`` of named automotive entities from
-    the script. Returns empty lists on any failure."""
-    out = {"brands": [], "models": [], "parts": [], "products": []}
+    """Pull ``{brands, models, parts, products, themes}`` from the script — the
+    named automotive entities plus a few concept/theme B-roll search phrases for
+    the video's overall subject (so even an entity-less video still gets on-theme
+    extras). Returns empty lists on any failure."""
+    out = {"brands": [], "models": [], "parts": [], "products": [], "themes": []}
     if not api_key or not (script_text or "").strip():
         return out
     client = Groq(api_key=api_key) if Groq else None
@@ -64,14 +90,15 @@ def extract_extra_entities(script_text: str, api_key: str) -> dict:
             if v and key not in seen:
                 seen.add(key)
                 out[k].append(v)
+    out["themes"] = out["themes"][:_theme_max()]   # bound the concept budget
     return out
 
 
 def build_extra_keywords(entities: dict, max_keywords: int = None) -> list:
     """Turn extracted entities into ``[{"keyword", "kind"}]`` search terms per the
-    brand/model/part/product rules. Capped at ``max_keywords`` (env
-    EXTRA_MAX_KEYWORDS, default 18) so a script naming dozens of things can't
-    explode the fetch.
+    brand/model/part/product rules, plus the concept ``themes`` (used verbatim).
+    Capped at ``max_keywords`` (env EXTRA_MAX_KEYWORDS, default 18) so a script
+    naming dozens of things can't explode the fetch.
 
     Keywords are flattened *round-robin* across entities — every entity's FIRST
     keyword comes before any entity's second, so a product round-up naming 13
@@ -107,6 +134,12 @@ def build_extra_keywords(entities: dict, max_keywords: int = None) -> list:
             {"keyword": f"{pr} review", "kind": "product"},
             {"keyword": f"{pr} close up", "kind": "product"},
         ])
+    # Concept/theme queries are already full visual search phrases (e.g. "gas
+    # station forecourt") — one standalone keyword each, so they interleave into
+    # the round-robin "firsts" pass and are guaranteed footage even when the video
+    # names no specific entities.
+    for t in (entities.get("themes") or []):
+        groups.append([{"keyword": t, "kind": "theme"}])
 
     # Round-robin flatten (column-major across groups): all firsts, then all
     # seconds, then all thirds — so the cap spreads across entities, not depth.

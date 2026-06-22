@@ -31,6 +31,37 @@ def test_build_extra_keywords_caps_and_dedupes():
     assert len({k["keyword"].lower() for k in kws}) == 2   # deduped
 
 
+def test_build_extra_keywords_themes():
+    # A concept-driven video naming NO entities still gets theme keywords, used
+    # verbatim as search phrases and tagged kind="theme".
+    ents = {"brands": [], "models": [], "parts": [], "products": [],
+            "themes": ["gas station forecourt", "pumping fuel into car",
+                       "fuel gauge dashboard"]}
+    kws = extras.build_extra_keywords(ents)
+    assert kws and all(k["kind"] == "theme" for k in kws)
+    assert {k["keyword"] for k in kws} == set(ents["themes"])
+
+
+def test_build_extra_keywords_interleaves_entities_and_themes():
+    # Themes interleave into the round-robin so both entity and concept B-roll are
+    # represented under the cap.
+    ents = {"brands": [], "models": [], "parts": [],
+            "products": ["Sea Foam", "Liqui Moly"], "themes": ["gas station forecourt"]}
+    kinds = [k["kind"] for k in extras.build_extra_keywords(ents)]
+    assert "product" in kinds and "theme" in kinds
+
+
+def test_extract_entities_parses_themes(monkeypatch):
+    monkeypatch.setattr(extras, "_call_llm_json",
+                        lambda *a, **k: {"brands": [], "models": [], "parts": [],
+                                         "products": ["Sea Foam"],
+                                         "themes": ["gas station forecourt",
+                                                    "pumping fuel into car"]})
+    out = extras.extract_extra_entities("script about fuel", api_key="k")
+    assert out["products"] == ["Sea Foam"]
+    assert out["themes"] == ["gas station forecourt", "pumping fuel into car"]
+
+
 def test_build_extra_keywords_products():
     ents = {"products": ["Sea Foam", "Liqui Moly"]}
     kws = extras.build_extra_keywords(ents)
