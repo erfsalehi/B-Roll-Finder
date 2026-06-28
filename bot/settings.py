@@ -41,6 +41,9 @@ OPTIONS = [
     {"key": "extra_clips", "label": "Extra clips",    "type": "bool",   "env": "ENABLE_EXTRA_CLIPS"},
     {"key": "detailed_queries", "label": "Detailed queries", "type": "bool", "env": "ENABLE_DETAILED_QUERIES"},
     {"key": "purge_after_zip", "label": "Delete clips after zip", "type": "bool"},
+    {"key": "chunked_download", "label": "Chunked download", "type": "bool"},
+    {"key": "chunk_size_mb", "label": "Chunk size", "type": "choice",
+     "choices": [500, 1000, 1500, 2000, 3000], "fmt": lambda v: f"{v}MB"},
 ]
 
 _OPT_BY_KEY = {o["key"]: o for o in OPTIONS}
@@ -60,6 +63,8 @@ DEFAULTS = {
     "extra_clips": True,
     "detailed_queries": False,
     "purge_after_zip": True,
+    "chunked_download": False,
+    "chunk_size_mb": 1500,
 }
 
 

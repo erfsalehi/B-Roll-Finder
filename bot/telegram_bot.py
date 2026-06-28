@@ -66,6 +66,20 @@ def _persist_pending() -> None:
     except Exception as e:
         print(f"[bot] couldn't persist review-gate state: {e}")
 
+# In-progress chunked deliveries, keyed by chat_id: holds the chunk manifest and
+# how far we've got, so /next can zip+deliver the following piece and clean up
+# the previous one. Persisted (see pending_store) so a restart can resume.
+_CHUNKED: dict = {}
+_CHUNKED_PATH = os.path.join(".cache", "bot_chunked.json")
+
+
+def _persist_chunked() -> None:
+    """Snapshot ``_CHUNKED`` to disk after every mutation. Best-effort."""
+    try:
+        pending_store.save_pending(_CHUNKED, _CHUNKED_PATH)
+    except Exception as e:
+        print(f"[bot] couldn't persist chunked-download state: {e}")
+
 # File server port (set in main() when BOT_FILE_SERVER is enabled), used to build
 # download links.
 _FILESERVER = {"port": None}
@@ -542,10 +556,28 @@ def format_details(shots: list) -> str:
 
 # ── project delivery (zip → Telegram attach + download link) ─────────────────
 
-def deliver_project(chat_id, project: str) -> None:
-    """Zip the finished project, attach it to Telegram when it fits under the
-    upload cap, and always provide a signed download link (when the file server
-    is up) plus the scp path."""
+def _download_link_for(abs_path: str):
+    """Signed download URL for a file under downloads/, or None if the file
+    server isn't up. Prefers a TLS domain (BOT_PUBLIC_URL) when set."""
+    port = _FILESERVER.get("port")
+    if not port:
+        return None
+    base = fileserver.public_base_url()
+    return (fileserver.build_link(abs_path, base=base) if base
+            else fileserver.build_link(abs_path, fileserver.public_host(), port))
+
+
+def deliver_project(chat_id, project: str, chunked: bool = None) -> None:
+    """Zip the finished project and hand it over. When ``chunked`` is on (per the
+    chat's setting unless overridden), the project is delivered in size-capped
+    pieces via /next — for disk-tight servers where a single full zip won't fit.
+    Otherwise it's one zip: attached to Telegram when it fits under the upload
+    cap, plus a signed download link (when the file server is up) and scp path."""
+    if chunked is None:
+        chunked = bool(bot_settings.get_settings(chat_id).get("chunked_download"))
+    if chunked:
+        deliver_project_chunked(chat_id, project)
+        return
     from core.output import zip_project
     # Bundling a big project (hundreds of clips, multi-GB) takes a while and is
     # otherwise silent — show a live "zipping N/total" line on one edited message.
@@ -573,15 +605,9 @@ def deliver_project(chat_id, project: str) -> None:
     size = res["size_bytes"]
     lines = [f"📦 {project} — {res['files']} file(s), {_human_size(size)}"]
 
-    port = _FILESERVER.get("port")
-    if port:
-        # Prefer a TLS domain (BOT_PUBLIC_URL → https://host/d/...) when set, so
-        # links work through Traefik/Coolify; else fall back to raw host:port.
-        base = fileserver.public_base_url()
-        link = (fileserver.build_link(abs_path, base=base) if base
-                else fileserver.build_link(abs_path, fileserver.public_host(), port))
-        if link:
-            lines.append(f"🔗 {link}\n(link expires in 24h)")
+    link = _download_link_for(abs_path)
+    if link:
+        lines.append(f"🔗 {link}\n(link expires in 24h)")
     lines.append(f"scp USER@SERVER:'{abs_path}' .")
     send_message(chat_id, "\n".join(lines))
 
@@ -608,6 +634,151 @@ def deliver_project(chat_id, project: str) -> None:
                              f"has everything and stays until you /cleanup {project}.")
     except Exception as e:
         print(f"[deliver] purge-after-zip failed for {project}: {e}")
+
+
+# ── chunked delivery (disk-tight servers: zip → download → /next) ────────────
+
+def deliver_project_chunked(chat_id, project: str) -> None:
+    """Plan a size-capped chunked bundle and deliver the first piece. Subsequent
+    pieces follow on /next, which also cleans up the previous chunk's zip. Source
+    clips are deleted as each chunk is zipped, so the on-disk footprint shrinks
+    as delivery proceeds and the peak overhead never exceeds a single chunk."""
+    from core.output import plan_project_chunks
+    cap_mb = int(bot_settings.get_settings(chat_id).get("chunk_size_mb") or 1500)
+    try:
+        manifest = plan_project_chunks(project, chunk_size_mb=cap_mb)
+    except FileNotFoundError:
+        send_message(chat_id, f"(No files to bundle for '{project}'.)")
+        return
+    except Exception as e:
+        send_message(chat_id, f"(Couldn't plan '{project}': {e})")
+        return
+
+    chunks = manifest.get("chunks") or []
+    if not chunks:
+        send_message(chat_id, f"(Nothing to bundle for '{project}'.)")
+        return
+
+    # Even a project that fits one chunk goes through the same flow — a single
+    # /next at the end reclaims its zip, and source is still purged as we go.
+    _CHUNKED[chat_id] = {"project": manifest["project"], "manifest": manifest,
+                         "index": -1, "last_zip": None}
+    _persist_chunked()
+    n = len(chunks)
+    send_message(
+        chat_id,
+        f"📦 Delivering '{project}' in {n} chunk(s) of up to {cap_mb}MB "
+        f"({_human_size(manifest['total_bytes'])} total).\n"
+        f"Download each link, then send /next for the following piece. "
+        f"Unzip every part into one folder to rebuild the project.")
+    _deliver_next_chunk(chat_id)
+
+
+def _deliver_next_chunk(chat_id) -> None:
+    """Zip + deliver the chunk after the one last sent, advancing the cursor.
+    Deletes the previously delivered chunk's zip first (the user has pulled it).
+    Ends the session after the final chunk."""
+    state = _CHUNKED.get(chat_id)
+    if not state:
+        send_message(chat_id, "No chunked download is in progress.")
+        return
+    manifest = state["manifest"]
+    chunks = manifest["chunks"]
+    n = len(chunks)
+    project = state["project"]
+
+    # Reclaim the previous chunk's zip — it's been downloaded.
+    prev_zip = state.get("last_zip")
+    if prev_zip and os.path.isfile(prev_zip):
+        try:
+            os.remove(prev_zip)
+        except OSError as e:
+            print(f"[chunked] couldn't remove {prev_zip}: {e}")
+
+    idx = state["index"] + 1
+    if idx >= n:
+        _CHUNKED.pop(chat_id, None)
+        _persist_chunked()
+        send_message(
+            chat_id,
+            f"✅ All {n} chunk(s) of '{project}' delivered. Source clips were "
+            f"removed as we went. Unzip every part into one folder to relink.")
+        return
+
+    chunk = chunks[idx]
+    from core.output import zip_one_chunk
+    status = send_message(
+        chat_id, f"📦 Zipping chunk {idx + 1}/{n} ({chunk['label']})…") or {}
+    msg_id = status.get("message_id")
+    tick = {"last": 0.0}
+
+    def _progress(done, total):
+        now = time.time()
+        if done < total and now - tick["last"] < 3.0:
+            return
+        tick["last"] = now
+        edit_message(chat_id, msg_id,
+                     f"📦 Zipping chunk {idx + 1}/{n} ({chunk['label']})… "
+                     f"{done}/{total} file(s)")
+
+    try:
+        # purge_after_zip governs whether source clips are reclaimed per chunk
+        # (default on — that's the whole point of chunking a tight disk).
+        purge = bool(bot_settings.get_settings(chat_id).get("purge_after_zip", True))
+        res = zip_one_chunk(manifest, idx, delete_source=purge, progress=_progress)
+    except Exception as e:
+        edit_message(chat_id, msg_id,
+                     f"(Couldn't zip chunk {idx + 1}/{n}: {e})\n"
+                     f"Send /next to retry, or /cancel to stop.")
+        return
+
+    abs_path = os.path.abspath(res["path"])
+    state["index"] = idx
+    state["last_zip"] = abs_path
+    _persist_chunked()
+
+    size = res["size_bytes"]
+    last = idx == n - 1
+    lines = [f"📦 Chunk {idx + 1}/{n} ({chunk['label']}) — "
+             f"{res['files']} file(s), {_human_size(size)}"]
+    link = _download_link_for(abs_path)
+    if link:
+        lines.append(f"🔗 {link}\n(link expires in 24h)")
+    lines.append(f"scp USER@SERVER:'{abs_path}' .")
+    if last:
+        lines.append("➡️ Last chunk. Download it, then /next to clean up and finish.")
+    else:
+        lines.append("➡️ Download it, then /next for the next chunk.")
+    send_message(chat_id, "\n".join(lines))
+
+    if size <= _TG_UPLOAD_LIMIT and os.path.exists(abs_path):
+        send_document(chat_id, abs_path,
+                      caption=f"{project} — chunk {idx + 1}/{n}")
+
+
+def handle_next(chat_id) -> None:
+    """/next — advance a chunked delivery to the following piece."""
+    if not _CHUNKED.get(chat_id):
+        send_message(chat_id, "Nothing to continue — start a chunked download "
+                              "with /zip chunked (or enable it in /settings).")
+        return
+    _deliver_next_chunk(chat_id)
+
+
+def cancel_chunked(chat_id) -> bool:
+    """Abort an in-progress chunked delivery, deleting the current chunk's zip.
+    Returns True if there was one to cancel."""
+    state = _CHUNKED.pop(chat_id, None)
+    if not state:
+        return False
+    _persist_chunked()
+    z = state.get("last_zip")
+    if z and os.path.isfile(z):
+        try:
+            os.remove(z)
+        except OSError:
+            pass
+    return True
 
 
 # ── job ────────────────────────────────────────────────────────────────────────
@@ -1348,7 +1519,8 @@ _BOT_COMMANDS = [
     ("redo", "Re-fetch shots with no clip (YouTube-first)"),
     ("cancel", "Stop the running job / discard pending"),
     ("forcestop", "Hard stop + restart the bot"),
-    ("zip", "Bundle a finished project (link + attach)"),
+    ("zip", "Bundle a finished project (link + attach; /zip chunked for pieces)"),
+    ("next", "Next piece of a chunked download"),
     ("extras", "Next voice file → extra clips only (brand/model/part B-roll)"),
     ("overlaytext", "Render one overlay clip: /overlaytext 4 YOUR TEXT"),
     ("links", "Source links per shot (re-download empty shots)"),
@@ -1497,6 +1669,10 @@ def is_zip_command(text: str) -> bool:
     return _command(text) in ("/zip", "/package", "/bundle")
 
 
+def is_next_command(text: str) -> bool:
+    return _command(text) in ("/next", "/continue", "/more")
+
+
 def is_links_command(text: str) -> bool:
     return _command(text) in ("/links", "/sources")
 
@@ -1550,15 +1726,23 @@ def _human_size(n: int) -> str:
 def handle_zip(chat_id, text: str) -> None:
     """Bundle a project's clips + XML and deliver it (Telegram attach when small,
     plus a signed download link and the scp path). ``/zip <name>`` targets a
-    specific project; bare /zip uses the last one."""
-    parts = text.strip().split(maxsplit=1)
-    name = parts[1].strip() if len(parts) > 1 else (_LAST.get("project") or "")
+    specific project; bare /zip uses the last one. ``/zip chunked [name]`` forces
+    the size-capped piecewise delivery even when the setting is off."""
+    rest = text.strip().split(maxsplit=1)
+    arg = rest[1].strip() if len(rest) > 1 else ""
+    force_chunked = None
+    # A leading "chunked"/"chunk" token forces chunked mode; strip it off so the
+    # remainder is still treated as an optional project name.
+    first = arg.split(maxsplit=1)
+    if first and first[0].lower() in ("chunked", "chunk", "chunks"):
+        force_chunked = True
+        arg = first[1].strip() if len(first) > 1 else ""
+    name = arg or (_LAST.get("project") or "")
     if not name:
         send_message(chat_id, "No recent project to zip. Send a voice file first, "
                               "or use /zip <project-name>.")
         return
-    send_message(chat_id, f"📦 Zipping '{name}'…")
-    deliver_project(chat_id, name)
+    deliver_project(chat_id, name, chunked=force_chunked)
 
 
 def _project_disk_usage() -> list:
@@ -1583,11 +1767,24 @@ def _project_disk_usage() -> list:
                         pass
             out[name] = out.get(name, 0) + total
         elif name.endswith(".zip") and os.path.isfile(path):
+            # A full bundle is "<name>.zip"; chunked parts are
+            # "<name>.partNofM.zip" — fold both under the base project name.
+            base = re.sub(r"\.part\d+of\d+$", "", name[:-4])
             try:
-                out[name[:-4]] = out.get(name[:-4], 0) + os.path.getsize(path)
+                out[base] = out.get(base, 0) + os.path.getsize(path)
             except OSError:
                 pass
     return sorted(out.items(), key=lambda x: x[1], reverse=True)
+
+
+def _project_zip_paths(safe_name: str) -> list:
+    """All zip artifacts for a project: the full ``<name>.zip`` plus any
+    leftover ``<name>.partNofM.zip`` chunk parts."""
+    import glob as _glob
+    root = os.path.abspath("downloads")
+    paths = [os.path.join(root, f"{safe_name}.zip")]
+    paths += _glob.glob(os.path.join(root, f"{safe_name}.part*of*.zip"))
+    return [p for p in paths if os.path.isfile(p)]
 
 
 def _library_kept_note() -> str:
@@ -1649,12 +1846,12 @@ def handle_cleanup(chat_id, text: str) -> None:
         usage = _project_disk_usage()
         for name, _ in usage:
             _shutil.rmtree(os.path.join(root, name), ignore_errors=True)
-            zp = os.path.join(root, f"{name}.zip")
-            if os.path.exists(zp):
+            for zp in _project_zip_paths(name):
                 try:
                     os.remove(zp)
                 except OSError:
                     pass
+        cancel_chunked(chat_id)
         ov_n, ov_freed = clear_overlay_cache()
         msg = f"🗑 Cleared {len(usage)} project(s)"
         if ov_n:
@@ -1668,12 +1865,12 @@ def handle_cleanup(chat_id, text: str) -> None:
     from core.output import _safe_for_fs
     safe = _safe_for_fs(arg, 50)
     proj_dir = os.path.join(root, safe)
-    zp = os.path.join(root, f"{safe}.zip")
-    if not os.path.isdir(proj_dir) and not os.path.isfile(zp):
+    zips = _project_zip_paths(safe)
+    if not os.path.isdir(proj_dir) and not zips:
         send_message(chat_id, f"❌ No project named '{arg}'. Use /cleanup to list them.")
         return
     _shutil.rmtree(proj_dir, ignore_errors=True)
-    if os.path.exists(zp):
+    for zp in zips:
         try:
             os.remove(zp)
         except OSError:
@@ -1700,6 +1897,8 @@ _HELP = (
     "/cancel — stop the running job (graceful; or discard a pending one)\n"
     "/forcestop — hard stop + restart the bot (when /cancel won't catch)\n"
     "/zip [name] — bundle a finished project (link + attach)\n"
+    "/zip chunked [name] — deliver in size-capped pieces for a tight disk (/next per piece)\n"
+    "/next — fetch the next piece of a chunked download\n"
     "/links [name] — per-shot source links (title + link) to manually re-download empty shots\n"
     "/cleanup [name|all|overlays] — list/delete projects or clear the overlay cache (free disk)\n"
     "/logs — export the bot logs as a file\n"
@@ -1871,6 +2070,22 @@ def main() -> None:
             except Exception:
                 pass
 
+    # Recover any in-progress chunked deliveries so /next still works after a
+    # restart (the already-delivered chunks' source clips are gone, but the
+    # manifest tells us which pieces remain).
+    restored_chunks = pending_store.load_pending(_CHUNKED_PATH)
+    if restored_chunks:
+        _CHUNKED.update(restored_chunks)
+        for cid, st in restored_chunks.items():
+            try:
+                done = st.get("index", -1) + 1
+                total = len(st.get("manifest", {}).get("chunks") or [])
+                send_message(cid, f"♻️ Resumed chunked download of "
+                                  f"'{st.get('project', '?')}' ({done}/{total} sent). "
+                                  f"Send /next for the next piece, or /cancel to stop.")
+            except Exception:
+                pass
+
     allowed = allowed_user_ids()
     if not allowed:
         print("WARNING: TELEGRAM_ALLOWED_USERS is empty — every message will be ignored "
@@ -1990,6 +2205,9 @@ def main() -> None:
                     proj = _PENDING.pop(chat_id)["project"]
                     _persist_pending()
                     send_message(chat_id, f"⏹ Discarded pending project '{proj}'.")
+                elif cancel_chunked(chat_id):
+                    send_message(chat_id, "⏹ Stopped the chunked download. "
+                                          "Any remaining clips stay on disk.")
                 else:
                     send_message(chat_id, "Nothing is running right now.")
                 continue
@@ -2006,6 +2224,10 @@ def main() -> None:
 
             if is_zip_command(text):
                 handle_zip(chat_id, text)
+                continue
+
+            if is_next_command(text):
+                handle_next(chat_id)
                 continue
 
             if is_links_command(text):
