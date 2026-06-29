@@ -176,6 +176,27 @@ def test_zip_chunked_command_forces_pieces(tmp_path, monkeypatch):
     tb._CHUNKED.pop(99, None)                   # don't leak state across tests
 
 
+def test_zip_chunked_size_override_makes_fewer_chunks(tmp_path, monkeypatch):
+    import os
+    monkeypatch.chdir(tmp_path)
+    sent, docs = [], []
+    _stub_telegram(monkeypatch, sent, docs)
+    monkeypatch.setattr(tb.bot_settings, "get_settings",
+                        lambda chat: {"chunked_download": False, "chunk_size_mb": 1,
+                                      "purge_after_zip": False})
+    # ~4MB of clips: a 1MB cap → ~4 chunks; an explicit 100MB cap → 1 chunk.
+    proj = tmp_path / "downloads" / "big"
+    (proj / "director").mkdir(parents=True)
+    (proj / "big.xml").write_text("<xmeml/>")
+    for i in range(1, 9):
+        (proj / "director" / f"{i}-1-clip.mp4").write_bytes(b"x" * (512 * 1024))
+
+    tb.handle_zip(99, "/zip chunked 100 big")   # 100MB cap from the command
+    assert 99 in tb._CHUNKED
+    assert len(tb._CHUNKED[99]["manifest"]["chunks"]) == 1   # all fits one chunk
+    tb._CHUNKED.pop(99, None)
+
+
 def test_next_without_session_is_graceful(monkeypatch):
     sent = []
     monkeypatch.setattr(tb, "send_message", lambda chat, text: sent.append(text))

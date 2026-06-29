@@ -43,7 +43,8 @@ OPTIONS = [
     {"key": "purge_after_zip", "label": "Delete clips after zip", "type": "bool"},
     {"key": "chunked_download", "label": "Chunked download", "type": "bool"},
     {"key": "chunk_size_mb", "label": "Chunk size", "type": "choice",
-     "choices": [500, 1000, 1500, 2000, 3000], "fmt": lambda v: f"{v}MB"},
+     "choices": [500, 1000, 1500, 3000, 5000, 8000, 10000, 15000],
+     "fmt": lambda v: (f"{v / 1000:g}GB" if v >= 1000 else f"{v}MB")},
 ]
 
 _OPT_BY_KEY = {o["key"]: o for o in OPTIONS}

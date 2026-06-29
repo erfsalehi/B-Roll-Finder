@@ -567,16 +567,18 @@ def _download_link_for(abs_path: str):
             else fileserver.build_link(abs_path, fileserver.public_host(), port))
 
 
-def deliver_project(chat_id, project: str, chunked: bool = None) -> None:
+def deliver_project(chat_id, project: str, chunked: bool = None,
+                    chunk_mb: int = None) -> None:
     """Zip the finished project and hand it over. When ``chunked`` is on (per the
     chat's setting unless overridden), the project is delivered in size-capped
     pieces via /next — for disk-tight servers where a single full zip won't fit.
-    Otherwise it's one zip: attached to Telegram when it fits under the upload
-    cap, plus a signed download link (when the file server is up) and scp path."""
+    ``chunk_mb`` overrides the per-chunk cap for this delivery only. Otherwise
+    it's one zip: attached to Telegram when it fits under the upload cap, plus a
+    signed download link (when the file server is up) and scp path."""
     if chunked is None:
         chunked = bool(bot_settings.get_settings(chat_id).get("chunked_download"))
     if chunked:
-        deliver_project_chunked(chat_id, project)
+        deliver_project_chunked(chat_id, project, chunk_mb=chunk_mb)
         return
     from core.output import zip_project
     # Bundling a big project (hundreds of clips, multi-GB) takes a while and is
@@ -638,13 +640,14 @@ def deliver_project(chat_id, project: str, chunked: bool = None) -> None:
 
 # ── chunked delivery (disk-tight servers: zip → download → /next) ────────────
 
-def deliver_project_chunked(chat_id, project: str) -> None:
+def deliver_project_chunked(chat_id, project: str, chunk_mb: int = None) -> None:
     """Plan a size-capped chunked bundle and deliver the first piece. Subsequent
     pieces follow on /next, which also cleans up the previous chunk's zip. Source
     clips are deleted as each chunk is zipped, so the on-disk footprint shrinks
-    as delivery proceeds and the peak overhead never exceeds a single chunk."""
+    as delivery proceeds and the peak overhead never exceeds a single chunk.
+    ``chunk_mb`` overrides the per-chunk cap (else the chat's setting)."""
     from core.output import plan_project_chunks
-    cap_mb = int(bot_settings.get_settings(chat_id).get("chunk_size_mb") or 1500)
+    cap_mb = int(chunk_mb or bot_settings.get_settings(chat_id).get("chunk_size_mb") or 1500)
     try:
         manifest = plan_project_chunks(project, chunk_size_mb=cap_mb)
     except FileNotFoundError:
@@ -658,6 +661,24 @@ def deliver_project_chunked(chat_id, project: str) -> None:
     if not chunks:
         send_message(chat_id, f"(Nothing to bundle for '{project}'.)")
         return
+
+    # The first chunk is the tightest moment on disk (full source still present
+    # while its zip is written); every later chunk has more room as source is
+    # purged. So if even chunk 1 won't fit free space, a smaller cap is needed —
+    # warn upfront rather than failing mid-zip.
+    try:
+        import shutil as _shutil
+        free = _shutil.disk_usage(os.path.abspath("downloads")).free
+        need = int(chunks[0]["bytes"] * 1.05) + (16 << 20)
+        if free < need:
+            send_message(
+                chat_id,
+                f"⚠️ First chunk needs ~{need // (1 << 20)}MB but only "
+                f"{_human_size(free)} is free. Use a smaller cap, e.g. "
+                f"/zip chunked {max(500, (free // (1 << 20)) - 2000)} {project}.")
+            return
+    except Exception:
+        pass
 
     # Even a project that fits one chunk goes through the same flow — a single
     # /next at the end reclaims its zip, and source is still purged as we go.
@@ -1726,23 +1747,31 @@ def _human_size(n: int) -> str:
 def handle_zip(chat_id, text: str) -> None:
     """Bundle a project's clips + XML and deliver it (Telegram attach when small,
     plus a signed download link and the scp path). ``/zip <name>`` targets a
-    specific project; bare /zip uses the last one. ``/zip chunked [name]`` forces
-    the size-capped piecewise delivery even when the setting is off."""
+    specific project; bare /zip uses the last one. ``/zip chunked [sizeMB] [name]``
+    forces the size-capped piecewise delivery even when the setting is off, with
+    an optional per-chunk cap in MB (e.g. ``/zip chunked 10000`` → ~10GB pieces,
+    so a big project comes in a handful of chunks instead of dozens)."""
     rest = text.strip().split(maxsplit=1)
     arg = rest[1].strip() if len(rest) > 1 else ""
     force_chunked = None
+    chunk_mb = None
     # A leading "chunked"/"chunk" token forces chunked mode; strip it off so the
-    # remainder is still treated as an optional project name.
+    # remainder is still treated as an optional [sizeMB] then project name.
     first = arg.split(maxsplit=1)
     if first and first[0].lower() in ("chunked", "chunk", "chunks"):
         force_chunked = True
         arg = first[1].strip() if len(first) > 1 else ""
+        # An optional leading integer is the per-chunk cap in MB.
+        nxt = arg.split(maxsplit=1)
+        if nxt and nxt[0].isdigit():
+            chunk_mb = max(100, int(nxt[0]))
+            arg = nxt[1].strip() if len(nxt) > 1 else ""
     name = arg or (_LAST.get("project") or "")
     if not name:
         send_message(chat_id, "No recent project to zip. Send a voice file first, "
                               "or use /zip <project-name>.")
         return
-    deliver_project(chat_id, name, chunked=force_chunked)
+    deliver_project(chat_id, name, chunked=force_chunked, chunk_mb=chunk_mb)
 
 
 def _project_disk_usage() -> list:
@@ -1897,7 +1926,8 @@ _HELP = (
     "/cancel — stop the running job (graceful; or discard a pending one)\n"
     "/forcestop — hard stop + restart the bot (when /cancel won't catch)\n"
     "/zip [name] — bundle a finished project (link + attach)\n"
-    "/zip chunked [name] — deliver in size-capped pieces for a tight disk (/next per piece)\n"
+    "/zip chunked [sizeMB] [name] — deliver in size-capped pieces for a tight disk "
+    "(e.g. /zip chunked 10000 → ~10GB pieces; /next per piece)\n"
     "/next — fetch the next piece of a chunked download\n"
     "/links [name] — per-shot source links (title + link) to manually re-download empty shots\n"
     "/cleanup [name|all|overlays] — list/delete projects or clear the overlay cache (free disk)\n"
