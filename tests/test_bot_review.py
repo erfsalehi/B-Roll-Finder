@@ -108,98 +108,59 @@ def test_deliver_project_large_skips_attach(monkeypatch):
     assert docs == []                                       # too big to attach
 
 
-# ── chunked delivery (zip → download → /next) ─────────────────────────────────
+# ── /files (re-issue links for what's on disk) ────────────────────────────────
 
-def _stub_telegram(monkeypatch, sent, docs):
-    monkeypatch.setattr(tb, "send_message",
-                        lambda chat, text: sent.append(text) or {"message_id": 1})
-    monkeypatch.setattr(tb, "edit_message", lambda chat, mid, text: None)
-    monkeypatch.setattr(tb, "send_document",
-                        lambda chat, path, caption="": docs.append(path))
-
-
-def test_chunked_delivery_walks_pieces_and_purges(tmp_path, monkeypatch):
+def _fake_zips(monkeypatch, *entries):
+    """Stub fileserver.list_zips with (name, size, mtime) triples."""
     import os
-    monkeypatch.chdir(tmp_path)
-    sent, docs = [], []
-    _stub_telegram(monkeypatch, sent, docs)
-    monkeypatch.setitem(tb._FILESERVER, "port", 8770)
-    monkeypatch.setattr(tb.bot_settings, "get_settings",
-                        lambda chat: {"chunked_download": True, "chunk_size_mb": 1,
-                                      "purge_after_zip": True})
-    # Project ~ 6 clips of 400KB → several 1MB chunks.
-    proj = tmp_path / "downloads" / "proj"
-    (proj / "director").mkdir(parents=True)
-    (proj / "proj.xml").write_text("<xmeml/>")
-    for i in range(1, 7):
-        (proj / "director" / f"{i}-1-clip.mp4").write_bytes(b"x" * (400 * 1024))
-
-    tb.deliver_project(99, "proj")            # chunked path (setting on)
-    assert 99 in tb._CHUNKED
-    n = len(tb._CHUNKED[99]["manifest"]["chunks"])
-    assert n >= 2                              # genuinely split
-    # First chunk delivered, its source purged, a part-zip on disk.
-    assert any("Chunk 1/" in m for m in sent)
-    assert os.path.isfile(tb._CHUNKED[99]["last_zip"])
-
-    # Walk to the end via /next; each step removes the previous part-zip.
-    prev = tb._CHUNKED[99]["last_zip"]
-    for _ in range(n):
-        tb.handle_next(99)
-        assert not os.path.exists(prev) or 99 not in tb._CHUNKED
-        if 99 in tb._CHUNKED:
-            prev = tb._CHUNKED[99]["last_zip"]
-
-    assert 99 not in tb._CHUNKED               # session finished + cleared
-    assert any("All" in m and "delivered" in m for m in sent)
-    # All source clips were reclaimed as we went.
-    assert not any(f.endswith(".mp4") for f in os.listdir(proj / "director")) \
-        if (proj / "director").exists() else True
+    rows = [{"name": n, "rel": n, "path": os.path.join(tb.fileserver.DOWNLOADS_ROOT, n),
+             "size": sz, "mtime": mt} for n, sz, mt in entries]
+    monkeypatch.setattr(tb.fileserver, "list_zips", lambda root=None: rows)
+    return rows
 
 
-def test_zip_chunked_command_forces_pieces(tmp_path, monkeypatch):
-    import os
-    monkeypatch.chdir(tmp_path)
-    sent, docs = [], []
-    _stub_telegram(monkeypatch, sent, docs)
-    # Setting is OFF, but "/zip chunked" forces it.
-    monkeypatch.setattr(tb.bot_settings, "get_settings",
-                        lambda chat: {"chunked_download": False, "chunk_size_mb": 1,
-                                      "purge_after_zip": False})
-    proj = tmp_path / "downloads" / "myproj"
-    (proj / "director").mkdir(parents=True)
-    (proj / "myproj.xml").write_text("<xmeml/>")
-    (proj / "director" / "1-1-clip.mp4").write_bytes(b"x" * (100 * 1024))
-
-    tb.handle_zip(99, "/zip chunked myproj")
-    assert 99 in tb._CHUNKED                    # chunked session started
-    tb._CHUNKED.pop(99, None)                   # don't leak state across tests
-
-
-def test_zip_chunked_size_override_makes_fewer_chunks(tmp_path, monkeypatch):
-    import os
-    monkeypatch.chdir(tmp_path)
-    sent, docs = [], []
-    _stub_telegram(monkeypatch, sent, docs)
-    monkeypatch.setattr(tb.bot_settings, "get_settings",
-                        lambda chat: {"chunked_download": False, "chunk_size_mb": 1,
-                                      "purge_after_zip": False})
-    # ~4MB of clips: a 1MB cap → ~4 chunks; an explicit 100MB cap → 1 chunk.
-    proj = tmp_path / "downloads" / "big"
-    (proj / "director").mkdir(parents=True)
-    (proj / "big.xml").write_text("<xmeml/>")
-    for i in range(1, 9):
-        (proj / "director" / f"{i}-1-clip.mp4").write_bytes(b"x" * (512 * 1024))
-
-    tb.handle_zip(99, "/zip chunked 100 big")   # 100MB cap from the command
-    assert 99 in tb._CHUNKED
-    assert len(tb._CHUNKED[99]["manifest"]["chunks"]) == 1   # all fits one chunk
-    tb._CHUNKED.pop(99, None)
-
-
-def test_next_without_session_is_graceful(monkeypatch):
+def test_files_lists_zips_with_links(monkeypatch):
     sent = []
     monkeypatch.setattr(tb, "send_message", lambda chat, text: sent.append(text))
-    tb._CHUNKED.pop(123, None)
-    tb.handle_next(123)
-    assert sent and "Nothing to continue" in sent[0]
+    monkeypatch.setitem(tb._FILESERVER, "port", 8770)
+    monkeypatch.delenv("BOT_LINK_TTL", raising=False)
+    _fake_zips(monkeypatch, ("alpha.zip", 5 * 1024 * 1024, 1000.0),
+               ("beta.zip", 2 * 1024 * 1024, 900.0))
+
+    tb.handle_files(7, "/files")
+    out = "\n".join(sent)
+    assert "2 zip(s)" in out and "7.0MB" in out
+    assert "/d/alpha.zip?" in out and "/d/beta.zip?" in out
+    assert "doesn't expire" in out          # permanent links by default
+
+
+def test_files_filters_by_name(monkeypatch):
+    sent = []
+    monkeypatch.setattr(tb, "send_message", lambda chat, text: sent.append(text))
+    monkeypatch.setitem(tb._FILESERVER, "port", 8770)
+    _fake_zips(monkeypatch, ("alpha.zip", 10, 1000.0), ("beta.zip", 10, 900.0))
+
+    tb.handle_files(7, "/files beta")
+    out = "\n".join(sent)
+    assert "beta.zip" in out and "alpha.zip" not in out
+
+
+def test_files_reports_nothing_and_server_off(monkeypatch):
+    sent = []
+    monkeypatch.setattr(tb, "send_message", lambda chat, text: sent.append(text))
+    monkeypatch.setattr(tb.fileserver, "list_zips", lambda root=None: [])
+    tb.handle_files(7, "/files")
+    assert any("No zips on the server" in m for m in sent)
+
+    # Server down: fall back to an scp path and say why there's no link.
+    sent.clear()
+    monkeypatch.setitem(tb._FILESERVER, "port", None)
+    _fake_zips(monkeypatch, ("alpha.zip", 10, 1000.0))
+    tb.handle_files(7, "/files")
+    out = "\n".join(sent)
+    assert "scp USER@SERVER" in out and "BOT_FILE_SERVER=1" in out
+
+
+def test_files_command_predicate():
+    assert tb.is_files_command("/files") and tb.is_files_command("/zips@Bot")
+    assert not tb.is_files_command("/links")

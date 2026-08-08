@@ -1,5 +1,6 @@
 """Extra contextual B-roll: brand/model/part keyword rules, YouTube-only fetch,
-and placement after the timeline (named 'Extra - <keyword>')."""
+and library-only delivery (extras are downloaded into the Clip Library but never
+placed on the narration timeline or shot SRT)."""
 
 import re
 import xml.etree.ElementTree as ET
@@ -110,9 +111,9 @@ def test_fetch_extra_shots_builds_placed_extras(monkeypatch):
 
 # ── run_extras_only (the /extras bot path) ────────────────────────────────────
 
-def test_run_extras_only_downloads_and_writes_xml(monkeypatch, tmp_path):
-    """Extras-only run: transcribe → fetch_extra_shots → download → XML, counting
-    only clips that landed a file on disk."""
+def test_run_extras_only_downloads_to_library_no_xml(monkeypatch, tmp_path):
+    """Extras-only run: transcribe → fetch_extra_shots → download (into the Clip
+    Library) → NO XML. Counts only clips that landed a file on disk."""
     import os
     import core.pipeline as pipeline
 
@@ -141,12 +142,11 @@ def test_run_extras_only_downloads_and_writes_xml(monkeypatch, tmp_path):
         return {"ok": 1, "failed": 0, "skipped": 0, "dir": d, "errors": []}
 
     monkeypatch.setattr(pipeline, "download_selected_clips", _fake_download)
-    monkeypatch.setattr(pipeline, "write_fcpxml", lambda shots, proj, *a, **k: f"downloads/{proj}/{proj}.xml")
 
     res = pipeline.run_extras_only("audio.mp3", project_name="extras_test")
     assert res["n_clips"] == 1
     assert res["shots"] and res["shots"][0]["is_extra"]
-    assert res["xml_path"].endswith("extras_test.xml")
+    assert res["xml_path"] is None          # extras are library-only, no timeline
 
 
 def test_run_extras_only_no_entities_returns_zero(monkeypatch, tmp_path):
@@ -163,7 +163,7 @@ def test_run_extras_only_no_entities_returns_zero(monkeypatch, tmp_path):
     assert res["xml_path"] is None
 
 
-# ── placement + naming + SRT ──────────────────────────────────────────────────
+# ── library-only: excluded from timeline + SRT ───────────────────────────────
 
 def _video_names_and_spans(xml: str):
     root = ET.fromstring(xml)
@@ -175,7 +175,7 @@ def _video_names_and_spans(xml: str):
     return out
 
 
-def test_extras_appended_after_timeline_with_label():
+def test_extras_excluded_from_timeline():
     shots = [
         {"slot_id": 1, "timestamp": 0.0, "end_timestamp": 5.0,
          "selected_results": [{"url": "https://x/a.mp4", "matched_query": "a"}]},
@@ -186,14 +186,12 @@ def test_extras_appended_after_timeline_with_label():
     ]
     xml = generate_fcpxml(shots, project_name="demo")
     items = _video_names_and_spans(xml)
-    assert any(n == "Extra - toyota logo" for n, _s, _e in items)
-    # The extra sits after the narration clip (later start frame).
-    narr = [it for it in items if it[0] != "Extra - toyota logo"][0]
-    extra = [it for it in items if it[0] == "Extra - toyota logo"][0]
-    assert extra[1] >= narr[2]
+    # Only the narration clip is placed; the extra clip is NOT (library-only).
+    assert not any(n == "Extra - toyota logo" for n, _s, _e in items)
+    assert len(items) == 1
 
 
-def test_srt_labels_extras():
+def test_srt_excludes_extras():
     shots = [
         {"slot_id": 1, "timestamp": 0.0, "end_timestamp": 5.0, "selected_results": [{"url": "x"}]},
         {"slot_id": 2, "timestamp": 5.0, "end_timestamp": 11.0, "is_extra": True,
@@ -202,4 +200,4 @@ def test_srt_labels_extras():
     ]
     srt = generate_shots_srt(shots)
     assert "Shot 1" in srt
-    assert "Extra - camry test drive" in srt
+    assert "Extra" not in srt          # extras never appear in the shot SRT

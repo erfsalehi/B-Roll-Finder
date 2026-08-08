@@ -233,7 +233,10 @@ def generate_shots_srt(shots: list) -> str:
     until "Shot N+1" replaces it the moment the next line of voice begins.
     """
     lines = []
-    sorted_shots = sorted(shots, key=lambda s: float(s.get('timestamp', 0)))
+    # Extra contextual clips are library-only (see generate_fcpxml) — they carry
+    # no narration timing and must not appear in the shot SRT.
+    real_shots = [s for s in shots if not s.get("is_extra")]
+    sorted_shots = sorted(real_shots, key=lambda s: float(s.get('timestamp', 0)))
     for i, shot in enumerate(sorted_shots, 1):
         start_val = float(shot.get('timestamp', 0))
 
@@ -248,12 +251,7 @@ def generate_shots_srt(shots: list) -> str:
             end_val = start_val + 1.0
 
         slot_id = shot.get('slot_id', i)
-        # Extra (spare contextual) clips are labelled by their keyword so the SRT
-        # clearly separates the narration timeline from the appended extras.
-        if shot.get("is_extra"):
-            label = shot.get("extra_label") or f"Extra - {shot.get('extra_keyword', '')}"
-        else:
-            label = f"Shot {slot_id}"
+        label = f"Shot {slot_id}"
         lines.append(str(i))
         lines.append(f"{format_srt_time(start_val)} --> {format_srt_time(end_val)}")
         lines.append(label)
@@ -327,29 +325,48 @@ def _safe_for_fs(text: str, max_len: int = 30) -> str:
     cleaned = "-".join(cleaned.split()).lower()
     return cleaned[:max_len].strip("-") or ""
 
+def _fits(in_frame: int, duration_frames: int, media_dur_frames: int) -> bool:
+    """Whether starting at ``in_frame`` still leaves room for the timeline slot."""
+    return in_frame > 0 and in_frame + duration_frames <= media_dur_frames
+
+
 def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
-                        media_dur_frames: int, fps: float) -> int:
+                        media_dur_frames: int, fps: float,
+                        candidate: dict = None) -> int:
     """
-    Source in-point (frames) for a clip, honouring any trim learned from a
-    re-imported Premiere edit. Returns 0 when there's no learned trim, when
-    the trim wouldn't leave room for the timeline slot, or on any error — so
-    the export never breaks because of this lookup.
+    Source in-point (frames) for a clip. Two things can move it off frame 0, in
+    this order of authority:
+
+    1. A trim learned from a re-imported Premiere edit — a human editor's actual
+       cut of this exact footage, so it always wins when we have one.
+    2. ``verified_in_sec``, where :mod:`core.visual_verify` saw the matching
+       footage start. This is what stops a 12-minute YouTube upload from being
+       cut at its intro when the subject only shows up at 4:20.
+
+    Returns 0 when neither applies, when the in-point wouldn't leave room for
+    the timeline slot, or on any error — so the export never breaks because of
+    this lookup.
     """
-    if not clip_url and not filename:
+    if not clip_url and not filename and not candidate:
         return 0
     try:
         from core import clip_library
         row = clip_library.find_clip_by_path_or_url(clip_url=clip_url, filename=filename)
-        if not row:
+        if row:
+            trim = clip_library.get_preferred_trim(row["id"],
+                                                   row.get("shot_description", "") or "")
+            if trim:
+                in_frame = sec_to_frames(float(trim["in_seconds"]), fps)
+                if _fits(in_frame, duration_frames, media_dur_frames):
+                    return in_frame
+    except Exception:
+        pass
+    try:
+        verified = (candidate or {}).get("verified_in_sec")
+        if verified is None:
             return 0
-        trim = clip_library.get_preferred_trim(row["id"], row.get("shot_description", "") or "")
-        if not trim:
-            return 0
-        in_frame = sec_to_frames(float(trim["in_seconds"]), fps)
-        # Keep the slot length: only honour the trim if in + slot fits the media.
-        if in_frame <= 0 or in_frame + duration_frames > media_dur_frames:
-            return 0
-        return in_frame
+        in_frame = sec_to_frames(float(verified), fps)
+        return in_frame if _fits(in_frame, duration_frames, media_dur_frames) else 0
     except Exception:
         return 0
 
@@ -450,195 +467,6 @@ def zip_project(project_name: str, out_path: str = None, progress=None) -> dict:
                 except Exception:
                     pass
     return {"path": out_path, "size_bytes": os.path.getsize(out_path), "files": files}
-
-
-# ── chunked delivery (for disk-tight servers) ────────────────────────────────
-#
-# A single ``zip_project`` needs ~2x the project size on disk at its peak (the
-# source clips PLUS the full zip, since mp4s barely compress). On a space-tight
-# server that transient doubling is what fails. ``plan_project_chunks`` +
-# ``zip_one_chunk`` split the bundle into size-capped pieces that are zipped,
-# delivered, and have their source deleted one at a time — so the peak overhead
-# drops from the whole project to a single chunk, and the source folder shrinks
-# as delivery progresses.
-
-def _chunk_label(categories: set) -> str:
-    """Human label for a chunk from the file categories it holds
-    (0=project files, 1=overlays, 2=clips)."""
-    parts = []
-    if 0 in categories:
-        parts.append("project files")
-    if 1 in categories:
-        parts.append("overlays")
-    if 2 in categories:
-        parts.append("clips")
-    return " + ".join(parts) or "files"
-
-
-def plan_project_chunks(project_name: str, chunk_size_mb: int = 1500) -> dict:
-    """Plan (but don't build) a chunked bundle of a project for piecewise
-    download. Returns a JSON-serialisable manifest::
-
-        {project, chunk_size_bytes, total_bytes, total_files,
-         chunks: [{index, label, files: [<relpath-from-downloads>], bytes, n}]}
-
-    Files are ordered project-metadata first (XML/SRT/TXT), then overlays, then
-    the ``director/`` clips, and packed greedily into chunks no larger than
-    ``chunk_size_mb`` (a single file bigger than the cap becomes its own chunk).
-    Leading every plan with the metadata means the first chunk always carries the
-    FCPXML, so the user can unzip and start relinking before the clips arrive
-    (unzip every part into one folder and the ``<project>/director/...`` layout
-    is reconstructed). Raises FileNotFoundError if the project folder is missing.
-    """
-    proj = _safe_for_fs(project_name, 50)
-    proj_dir = os.path.join("downloads", proj)
-    if not os.path.isdir(proj_dir):
-        raise FileNotFoundError(f"No downloaded project at {proj_dir}")
-
-    cap = max(1, int(chunk_size_mb)) * (1 << 20)
-
-    members = []   # {rel (from downloads), size, category}
-    for root, _dirs, names in os.walk(proj_dir):
-        for name in names:
-            # Skip in-progress artifacts and any existing zip (incl. our own
-            # chunk parts) so we never bundle a half-written clip or a zip.
-            if name.endswith((".part", ".ytdl", ".tmp", ".zip")):
-                continue
-            fp = os.path.join(root, name)
-            rel_proj = os.path.relpath(fp, proj_dir).replace(os.sep, "/")
-            if rel_proj.startswith("director/"):
-                category = 2
-            elif rel_proj.startswith("overlays/"):
-                category = 1
-            else:
-                category = 0
-            try:
-                size = os.path.getsize(fp)
-            except OSError:
-                continue
-            members.append({
-                "rel": os.path.relpath(fp, "downloads").replace(os.sep, "/"),
-                "size": size,
-                "category": category,
-            })
-
-    # Metadata first, then overlays, then clips; stable path order within each.
-    members.sort(key=lambda m: (m["category"], m["rel"]))
-
-    chunks = []
-    cur, cur_bytes, cur_cats = [], 0, set()
-
-    def _flush():
-        nonlocal cur, cur_bytes, cur_cats
-        if not cur:
-            return
-        chunks.append({
-            "index": len(chunks),
-            "label": _chunk_label(cur_cats),
-            "files": [m["rel"] for m in cur],
-            "bytes": cur_bytes,
-            "n": len(cur),
-        })
-        cur, cur_bytes, cur_cats = [], 0, set()
-
-    for m in members:
-        # Start a new chunk before adding a file that would overflow a non-empty
-        # one, so each chunk stays at or under the cap (a lone oversized file
-        # still gets its own chunk via the post-add flush below).
-        if cur and cur_bytes + m["size"] > cap:
-            _flush()
-        cur.append(m)
-        cur_bytes += m["size"]
-        cur_cats.add(m["category"])
-        if cur_bytes >= cap:
-            _flush()
-    _flush()
-
-    return {
-        "project": proj,
-        "chunk_size_bytes": cap,
-        "total_bytes": sum(m["size"] for m in members),
-        "total_files": len(members),
-        "chunks": chunks,
-    }
-
-
-def zip_one_chunk(manifest: dict, index: int, out_path: str = None,
-                  delete_source: bool = False, progress=None) -> dict:
-    """Zip a single chunk from a ``plan_project_chunks`` manifest. Arcnames are
-    the stored ``downloads``-relative paths, so unzipping every part into one
-    place rebuilds ``<project>/director/...`` exactly. Returns
-    ``{path, size_bytes, files, index, total}``.
-
-    With ``delete_source=True`` the chunk's source files are removed *after* the
-    zip is written and verified — reclaiming disk as each chunk is delivered.
-    Deletion only happens once the zip's central directory is confirmed intact,
-    so a write failure never strands the user with neither the clip nor the zip.
-    ``progress(done, total)`` is called after each file, like ``zip_project``.
-    """
-    import zipfile
-    proj = manifest["project"]
-    chunks = manifest.get("chunks") or []
-    if not (0 <= index < len(chunks)):
-        raise IndexError(f"chunk {index} out of range (have {len(chunks)})")
-    chunk = chunks[index]
-    total_chunks = len(chunks)
-
-    out_path = out_path or os.path.join(
-        "downloads", f"{proj}.part{index + 1}of{total_chunks}.zip")
-    out_abs = os.path.abspath(out_path)
-
-    rels = [r for r in chunk["files"]
-            if os.path.isfile(os.path.join("downloads", r))]
-    total = len(rels)
-
-    # Disk preflight: we only need room for THIS chunk's zip (the source is
-    # already on disk), so the requirement is bounded by the chunk size — the
-    # whole point of chunking. Fail fast before touching anything.
-    try:
-        import shutil as _shutil
-        out_dir = os.path.dirname(out_abs) or "."
-        os.makedirs(out_dir, exist_ok=True)
-        free = _shutil.disk_usage(out_dir).free
-        need = int(chunk.get("bytes", 0) * 1.05) + (16 << 20)
-        if free < need:
-            raise RuntimeError(
-                f"Not enough disk for chunk {index + 1}/{total_chunks} of "
-                f"'{proj}': need ~{need // (1 << 20)}MB, only "
-                f"{free // (1 << 20)}MB free. Free space first and retry.")
-    except RuntimeError:
-        raise
-    except Exception:
-        pass
-
-    files = 0
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
-        for rel in rels:
-            z.write(os.path.join("downloads", rel), rel)
-            files += 1
-            if progress:
-                try:
-                    progress(files, total)
-                except Exception:
-                    pass
-
-    # Verify the central directory before deleting any source: a truncated or
-    # corrupt zip must not cost the user their only copy of the clips.
-    with zipfile.ZipFile(out_path) as z:
-        if len(z.namelist()) != files:
-            raise RuntimeError(
-                f"Chunk {index + 1} zip is incomplete "
-                f"({len(z.namelist())}/{files} entries) — keeping source files.")
-
-    if delete_source:
-        for rel in rels:
-            try:
-                os.remove(os.path.join("downloads", rel))
-            except OSError:
-                pass
-
-    return {"path": out_path, "size_bytes": os.path.getsize(out_path),
-            "files": files, "index": index, "total": total_chunks}
 
 
 def _dl_link(c: dict) -> str:
@@ -750,6 +578,10 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     relinking. Defaults to the project root (parent of the clip folder), which
     matches where :func:`core.pipeline.write_fcpxml` saves it.
     """
+    # Extra contextual clips are library-only: they're downloaded so they enrich
+    # the searchable Clip Library, but they never belong on the narration timeline.
+    # Drop them here so no caller can leak them into the FCPXML.
+    shots = [s for s in shots if not s.get("is_extra")]
     proj_folder = _safe_for_fs(project_name, 50)
     base_dir = clip_base_dir(project_name)
     # pathurls are written relative to where the .xml lands, so the bundle stays
@@ -943,14 +775,15 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             xml.append(f'                <start>{start_frame}</start>')
             xml.append(f'                <end>{end_frame}</end>')
             
-            # Cut points on the source file. Default: start at frame 0. If
-            # this clip has a preferred trim learned from a re-imported
-            # Premiere edit, start at that in-point instead — keeping the same
-            # timeline-slot length so placement/layout is unchanged. Fully
-            # defensive: any miss or error falls back to in=0.
+            # Cut points on the source file. Default: start at frame 0, unless a
+            # trim learned from a re-imported Premiere edit — or a segment Gemini
+            # verified as the matching footage — says otherwise. Either way the
+            # timeline-slot length is unchanged, so placement/layout is identical.
+            # Fully defensive: any miss or error falls back to in=0.
             in_frame_src = _preferred_in_frame(
                 res.get("url", ""), filename,
                 duration_frames, asset_info["media_dur_frames"], fps_exact,
+                candidate=res,
             )
             xml.append(f'                <in>{in_frame_src}</in>')
             xml.append(f'                <out>{in_frame_src + duration_frames}</out>')

@@ -50,16 +50,22 @@ class PipelineState:
     xml_path: str = None
 
     @property
+    def _timeline_shots(self) -> list:
+        # Extras are library-only (never on the timeline), so they don't count
+        # toward the shot/clip tallies the review + summary report.
+        return [s for s in self.shots if not s.get("is_extra")]
+
+    @property
     def n_shots(self) -> int:
-        return len(self.shots)
+        return len(self._timeline_shots)
 
     @property
     def n_selected(self) -> int:
-        return sum(1 for s in self.shots if s.get("selected_results"))
+        return sum(1 for s in self._timeline_shots if s.get("selected_results"))
 
     @property
     def n_clips(self) -> int:
-        return sum(len(s.get("selected_results") or []) for s in self.shots)
+        return sum(len(s.get("selected_results") or []) for s in self._timeline_shots)
 
     def to_result(self) -> dict:
         return {
@@ -1443,6 +1449,30 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     except Exception as e:
         errors.append(f"rank: {e}")
 
+    # 7b — Visual verify (optional): Gemini WATCHES the shortlisted YouTube
+    # candidates. Ranking above only saw their titles — and the yt-dlp search path
+    # gives no description — so this is the first stage with evidence about the
+    # actual pixels. It demotes clips that turn out to be talking heads or the
+    # wrong subject, and records where in each video the usable footage sits so
+    # the timeline can start on that moment. Placed here deliberately: candidates
+    # are already ordered (so the shortlist is small), and nothing is bound or
+    # downloaded yet, so rejecting a clip is free. Reuses step 7 rather than
+    # renumbering every later stage. A no-op unless ENABLE_VISUAL_VERIFY is on
+    # with a Gemini key.
+    verify_stats = None
+    try:
+        from core import visual_verify
+        if visual_verify.enabled():
+            _p(7, "Watching candidates (Gemini)")
+            verify_stats = visual_verify.verify_shot_candidates(
+                shots, video_topic=topic, errors=errors,
+                should_cancel=should_cancel,
+                progress_callback=lambda f: _p(
+                    7, f"Watching candidates (Gemini) · {int(max(0.0, min(1.0, f)) * 100)}%"),
+            )
+    except Exception as e:
+        errors.append(f"visual_verify: {e}")
+
     # 8 — Auto-select (the per-shot quota binds a YouTube clip for every shot).
     _p(8, "Auto-selecting clips")
     auto_select_top_candidates(shots)
@@ -1452,6 +1482,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # attempts telemetry for the self-healing loops).
     state = PipelineState(project_name=project_name, topic=topic, shots=shots,
                           errors=errors)
+    if verify_stats:
+        state.attempts["visual_verify"] = verify_stats
 
     # 8b — Rescue any shots still empty (failed fetch / bad block). auto_fill
     # (default on) runs the aggressive multi-pass fill so nearly every shot ends
@@ -1492,6 +1524,26 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
                 state.attempts["extras"] = len(extra_shots)
         except Exception as e:
             errors.append(f"extras: {e}")
+
+    # 8e — Related images: mine the same script for brands / car models /
+    # products / parts / general ideas and download stills from Google straight
+    # into the Clip Library — never onto the timeline (stills aren't b-roll, and
+    # inject_library_candidates already filters them out of the video candidate
+    # pool). Silently skipped when Google Custom Search isn't configured, so this
+    # is a no-op until GOOGLE_CSE_API_KEY/GOOGLE_CSE_CX are set. Gate
+    # ENABLE_RELATED_IMAGES.
+    if _flag_default("ENABLE_RELATED_IMAGES", True):
+        try:
+            from core.related_images import fetch_related_images, cse_configured
+            if cse_configured():
+                _p(8, "Fetching related images")
+                images = fetch_related_images(script_text, key, errors=errors)
+                if images:
+                    n_saved, _subjects = _store_related_images(
+                        images, project_name, errors, should_cancel=should_cancel)
+                    state.attempts["related_images"] = n_saved
+        except Exception as e:
+            errors.append(f"related images: {e}")
 
     # 9 — QA review (optional)
     if run_qa:
@@ -1605,9 +1657,11 @@ def run_extras_only(audio_path: str, groq_key: str = None, project_name: str = "
                     progress_callback=None, should_cancel=None) -> dict:
     """Lightweight path: transcribe → mine the script for named brands / car models /
     parts → fetch and download ONLY the extra contextual B-roll clips for them
-    (YouTube, HD/landscape/no-Shorts) → write an extras-only FCPXML. No main-timeline
-    footage, ranking, or overlays. Returns
-    ``{project_name, shots, n_clips, download, xml_path, errors, cost}``."""
+    (YouTube, HD/landscape/no-Shorts). Downloading them stores each clip in the
+    searchable Clip Library — that's the whole point; no timeline/XML is written.
+    No main-timeline footage, ranking, or overlays. Returns
+    ``{project_name, shots, n_clips, download, xml_path, errors, cost}`` with
+    ``xml_path`` always None."""
     from core.transcription import transcribe_audio
     from core.extras import fetch_extra_shots
 
@@ -1615,7 +1669,7 @@ def run_extras_only(audio_path: str, groq_key: str = None, project_name: str = "
     if not key:
         raise ValueError("GROQ_API_KEY is required.")
     errors: list = []
-    total = 4 if download else 3
+    total = 3 if download else 2
 
     # Job-scoped API cost accounting + a fresh query cache, mirroring the full run.
     from core import usage as _usage
@@ -1661,12 +1715,147 @@ def run_extras_only(audio_path: str, groq_key: str = None, project_name: str = "
             should_cancel=should_cancel,
             progress=lambda done, tot: _p(3, f"Downloading extra clips · {done}/{tot}"))
         errors.extend(dl.get("errors") or [])
-        drop_undownloaded(shots)   # XML must never reference a clip that isn't on disk
+        drop_undownloaded(shots)
 
-    _p(total, "Writing Premiere XML")
-    xml_path = write_fcpxml(shots, project_name)
+    # Extras are library-only: downloading them (above) already stored each clip
+    # in the searchable Clip Library, so there's no timeline/XML to write — the
+    # user finds them via library search, not a Premiere sequence.
     n_clips = sum(1 for s in shots for c in (s.get("selected_results") or [])
                   if _clip_has_file(c))
     return {"project_name": project_name, "shots": shots, "n_clips": n_clips,
-            "download": dl, "xml_path": xml_path, "errors": errors,
+            "download": dl, "xml_path": None, "errors": errors,
             "cost": _usage.summary()}
+
+
+_IMAGE_EXT_BY_CT = {
+    "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+    "image/webp": ".webp", "image/gif": ".gif", "image/bmp": ".bmp",
+    "image/tiff": ".tif",
+}
+
+
+def _download_image(url: str, out_dir: str, index: int) -> str:
+    """Download a still image to ``out_dir`` and return its local path (or "" on
+    failure). Extension is taken from the Content-Type, falling back to the URL's
+    own suffix, then .jpg."""
+    import requests
+    os.makedirs(out_dir, exist_ok=True)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; B-Roll-Finder/1.0)"}
+    try:
+        r = requests.get(url, headers=headers, timeout=25, stream=True)
+        r.raise_for_status()
+        ct = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        ext = _IMAGE_EXT_BY_CT.get(ct, "")
+        if not ext:
+            url_ext = os.path.splitext(url.split("?")[0])[1].lower()
+            ext = url_ext if url_ext in (".jpg", ".jpeg", ".png", ".webp", ".gif") else ".jpg"
+        path = os.path.join(out_dir, f"img-{index:03d}{ext}")
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(1 << 16):
+                if chunk:
+                    f.write(chunk)
+        if os.path.getsize(path) > 0:
+            return path
+        os.remove(path)
+    except Exception:
+        pass
+    return ""
+
+
+def _store_related_images(images: list, project_name: str, errors: list,
+                          should_cancel=None, progress=None) -> tuple:
+    """Download each related-image dict and store it in the Clip Library.
+    Returns ``(n_saved, subjects)``. Shared by :func:`run_related_images` (the
+    on-demand /images path) and the automatic hook in
+    :func:`run_pipeline_headless`."""
+    from core.clip_library import store_clip
+    proj = _safe_for_fs(project_name, 50)
+    out_dir = os.path.join(os.path.abspath("downloads"), proj, "images")
+    n_saved = 0
+    subjects = []
+    for i, img in enumerate(images, 1):
+        _check_cancel(should_cancel)
+        path = _download_image(img["url"], out_dir, i)
+        if not path:
+            errors.append(f"image download failed: {img['url']}")
+            continue
+        # Store in the Clip Library keyed on the search query, so it's semantically
+        # searchable. source='google_image' keeps it out of the video candidate
+        # pool (inject_library_candidates skips images) — it's a still, not b-roll.
+        try:
+            store_clip(
+                img.get("query", "") or img.get("title", ""),
+                {"url": img["url"], "source": "google_image",
+                 "title": img.get("title", ""), "duration": 0,
+                 "thumbnail": img.get("thumbnail", ""), "local_path": path},
+                project=project_name,
+                search_query=img.get("query", ""),
+            )
+        except Exception as e:
+            errors.append(f"image library store: {e}")
+            continue
+        n_saved += 1
+        if img.get("query") and img["query"] not in subjects:
+            subjects.append(img["query"])
+        if progress:
+            try:
+                progress(n_saved, len(images))
+            except Exception:
+                pass
+    return n_saved, subjects
+
+
+def run_related_images(audio_path: str, groq_key: str = None, project_name: str = "auto",
+                       per_query: int = None, progress_callback=None,
+                       should_cancel=None) -> dict:
+    """On-demand path (the /images command): transcribe → mine the script for the
+    subjects it discusses (brands, car models, products, car parts & systems, and
+    general ideas) → fetch related still images from Google (Custom Search JSON
+    API) → download each and store it in the searchable Clip Library.
+
+    Library-only, like extras: no timeline/XML is produced; the editor finds the
+    images by searching the library. Returns
+    ``{project_name, n_images, subjects, errors, cost}``."""
+    from core.transcription import transcribe_audio
+    from core.related_images import fetch_related_images, cse_configured
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    if not key:
+        raise ValueError("GROQ_API_KEY is required.")
+    errors: list = []
+    total = 3
+
+    from core import usage as _usage
+    _usage.reset()
+
+    def _p(step, label):
+        _check_cancel(should_cancel)
+        if progress_callback:
+            try:
+                progress_callback(step, total, label)
+            except Exception:
+                pass
+
+    if not cse_configured():
+        raise ValueError("Google Custom Search isn't configured — set "
+                         "GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX.")
+
+    _p(1, "Transcribing voiceover")
+    segments = transcribe_audio(audio_path, key)
+    if not segments:
+        raise RuntimeError("Transcription returned nothing — bad audio or missing GROQ key.")
+    script_text = " ".join(s["text"].strip() for s in segments).strip()
+
+    _p(2, "Finding related images")
+    images = fetch_related_images(script_text, key, errors=errors, per_query=per_query)
+    if not images:
+        return {"project_name": project_name, "n_images": 0, "subjects": [],
+                "errors": errors, "cost": _usage.summary()}
+
+    _p(3, "Downloading images to the library")
+    n_images, subjects = _store_related_images(
+        images, project_name, errors, should_cancel=should_cancel,
+        progress=lambda done, total: _p(3, f"Downloading images to the library · {done}/{total}"))
+
+    return {"project_name": project_name, "n_images": n_images, "subjects": subjects,
+            "errors": errors, "cost": _usage.summary()}

@@ -66,20 +66,6 @@ def _persist_pending() -> None:
     except Exception as e:
         print(f"[bot] couldn't persist review-gate state: {e}")
 
-# In-progress chunked deliveries, keyed by chat_id: holds the chunk manifest and
-# how far we've got, so /next can zip+deliver the following piece and clean up
-# the previous one. Persisted (see pending_store) so a restart can resume.
-_CHUNKED: dict = {}
-_CHUNKED_PATH = os.path.join(".cache", "bot_chunked.json")
-
-
-def _persist_chunked() -> None:
-    """Snapshot ``_CHUNKED`` to disk after every mutation. Best-effort."""
-    try:
-        pending_store.save_pending(_CHUNKED, _CHUNKED_PATH)
-    except Exception as e:
-        print(f"[bot] couldn't persist chunked-download state: {e}")
-
 # File server port (set in main() when BOT_FILE_SERVER is enabled), used to build
 # download links.
 _FILESERVER = {"port": None}
@@ -96,6 +82,9 @@ _OVERLAY_NEXT: set = set()
 
 # Chats that ran /extras — their NEXT upload is offered as extra-clips-only.
 _EXTRAS_NEXT: set = set()
+
+# Chats that ran /images — their NEXT upload is offered as related-images-only.
+_IMAGES_NEXT: set = set()
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -376,13 +365,16 @@ def handle_settings_callback(cb: dict) -> None:
             n, freed = _clear_all_projects()
             note = f"🧹 Cleared {n} project(s), freed {_human_size(freed)}. "
         label = {"overlay": "Text-overlay only",
-                 "extras": "Extras only"}.get(mode, "Full process")
+                 "extras": "Extras only",
+                 "images": "Related images only"}.get(mode, "Full process")
         edit_message(chat_id, message_id, f"{note}▶️ {label} — starting…")
         answer_callback(cb_id, "Starting")
         if mode == "overlay":
             _start_job(handle_overlay_only, chat_id, pend["file_id"], pend["name"])
         elif mode == "extras":
             _start_job(handle_extras_only, chat_id, pend["file_id"], pend["name"])
+        elif mode == "images":
+            _start_job(handle_related_images, chat_id, pend["file_id"], pend["name"])
         else:
             _start_job(handle_audio, chat_id, pend["file_id"], pend["name"])
         return
@@ -421,6 +413,10 @@ def is_overlay_command(text: str) -> bool:
 
 def is_extras_command(text: str) -> bool:
     return _command(text) in ("/extras", "/extra", "/extraclips")
+
+
+def is_images_command(text: str) -> bool:
+    return _command(text) in ("/images", "/image", "/pics", "/relatedimages")
 
 
 def is_download_command(text: str) -> bool:
@@ -466,9 +462,12 @@ def is_proxies_command(text: str) -> bool:
 # ── reporting (per-shot + QA + errors) ───────────────────────────────────────
 
 def _shot_clip_info(shots: list) -> list:
-    """Per selected shot: ``(slot_id, priority, n_clips, sources)``."""
+    """Per selected shot: ``(slot_id, priority, n_clips, sources)``. Extras are
+    library-only, so they're not listed as timeline shots."""
     out = []
     for s in shots:
+        if s.get("is_extra"):
+            continue
         sel = s.get("selected_results") or []
         if not sel:
             continue
@@ -524,6 +523,28 @@ def format_errors_block(errors: list, limit: int = 6) -> list:
     return lines
 
 
+def format_verify_line(result: dict):
+    """One line on what Gemini saw, or None when the stage didn't run.
+
+    Worth surfacing at review time because it's the only stage that judged the
+    actual footage: 'rejected' is how many candidate clips turned out not to
+    contain what the shot asked for, and 'timed' is how many got a verified
+    in-point instead of starting at frame 0."""
+    v = (result.get("attempts") or {}).get("visual_verify") or {}
+    if not v or v.get("skipped"):
+        return None
+    parts = [f"👁 Gemini watched {v.get('calls', 0)} video(s)"]
+    if v.get("cached"):
+        parts.append(f"{v['cached']} from cache")
+    if v.get("rejected"):
+        parts.append(f"{v['rejected']} clip(s) rejected")
+    if v.get("segments"):
+        parts.append(f"{v['segments']} timed to a segment")
+    if v.get("budget_skipped"):
+        parts.append(f"{v['budget_skipped']} skipped (budget)")
+    return "  ·  ".join(parts)
+
+
 def format_review(proj: str, result: dict) -> str:
     """Pre-download review: counts, per-shot clip spread, QA flags, errors, and
     the action prompt."""
@@ -534,9 +555,13 @@ def format_review(proj: str, result: dict) -> str:
         f"  ·  clips: {result.get('n_clips', 0)}",
     ]
     empties = [s.get("slot_id") for s in shots
-               if s.get("priority") != "none" and not s.get("selected_results")]
+               if s.get("priority") != "none" and not s.get("selected_results")
+               and not s.get("is_extra")]
     if empties:
         lines.append(f"⚪ No clip for shot(s): {', '.join(str(e) for e in empties[:20])}")
+    verify_line = format_verify_line(result)
+    if verify_line:
+        lines.append(verify_line)
     lines += format_qa_block(result.get("qa") or {})
     lines += format_errors_block(result.get("errors") or [])
     lines.append("")
@@ -567,19 +592,10 @@ def _download_link_for(abs_path: str):
             else fileserver.build_link(abs_path, fileserver.public_host(), port))
 
 
-def deliver_project(chat_id, project: str, chunked: bool = None,
-                    chunk_mb: int = None) -> None:
-    """Zip the finished project and hand it over. When ``chunked`` is on (per the
-    chat's setting unless overridden), the project is delivered in size-capped
-    pieces via /next — for disk-tight servers where a single full zip won't fit.
-    ``chunk_mb`` overrides the per-chunk cap for this delivery only. Otherwise
-    it's one zip: attached to Telegram when it fits under the upload cap, plus a
-    signed download link (when the file server is up) and scp path."""
-    if chunked is None:
-        chunked = bool(bot_settings.get_settings(chat_id).get("chunked_download"))
-    if chunked:
-        deliver_project_chunked(chat_id, project, chunk_mb=chunk_mb)
-        return
+def deliver_project(chat_id, project: str) -> None:
+    """Zip the finished project and hand it over as one zip: attached to Telegram
+    when it fits under the upload cap, plus a signed download link (when the file
+    server is up) and the scp path."""
     from core.output import zip_project
     # Bundling a big project (hundreds of clips, multi-GB) takes a while and is
     # otherwise silent — show a live "zipping N/total" line on one edited message.
@@ -609,7 +625,7 @@ def deliver_project(chat_id, project: str, chunked: bool = None,
 
     link = _download_link_for(abs_path)
     if link:
-        lines.append(f"🔗 {link}\n(link expires in 24h)")
+        lines.append(f"🔗 {link}\n({fileserver.expiry_note()} — /files re-issues it)")
     lines.append(f"scp USER@SERVER:'{abs_path}' .")
     send_message(chat_id, "\n".join(lines))
 
@@ -636,170 +652,6 @@ def deliver_project(chat_id, project: str, chunked: bool = None,
                              f"has everything and stays until you /cleanup {project}.")
     except Exception as e:
         print(f"[deliver] purge-after-zip failed for {project}: {e}")
-
-
-# ── chunked delivery (disk-tight servers: zip → download → /next) ────────────
-
-def deliver_project_chunked(chat_id, project: str, chunk_mb: int = None) -> None:
-    """Plan a size-capped chunked bundle and deliver the first piece. Subsequent
-    pieces follow on /next, which also cleans up the previous chunk's zip. Source
-    clips are deleted as each chunk is zipped, so the on-disk footprint shrinks
-    as delivery proceeds and the peak overhead never exceeds a single chunk.
-    ``chunk_mb`` overrides the per-chunk cap (else the chat's setting)."""
-    from core.output import plan_project_chunks
-    cap_mb = int(chunk_mb or bot_settings.get_settings(chat_id).get("chunk_size_mb") or 1500)
-    try:
-        manifest = plan_project_chunks(project, chunk_size_mb=cap_mb)
-    except FileNotFoundError:
-        send_message(chat_id, f"(No files to bundle for '{project}'.)")
-        return
-    except Exception as e:
-        send_message(chat_id, f"(Couldn't plan '{project}': {e})")
-        return
-
-    chunks = manifest.get("chunks") or []
-    if not chunks:
-        send_message(chat_id, f"(Nothing to bundle for '{project}'.)")
-        return
-
-    # The first chunk is the tightest moment on disk (full source still present
-    # while its zip is written); every later chunk has more room as source is
-    # purged. So if even chunk 1 won't fit free space, a smaller cap is needed —
-    # warn upfront rather than failing mid-zip.
-    try:
-        import shutil as _shutil
-        free = _shutil.disk_usage(os.path.abspath("downloads")).free
-        need = int(chunks[0]["bytes"] * 1.05) + (16 << 20)
-        if free < need:
-            send_message(
-                chat_id,
-                f"⚠️ First chunk needs ~{need // (1 << 20)}MB but only "
-                f"{_human_size(free)} is free. Use a smaller cap, e.g. "
-                f"/zip chunked {max(500, (free // (1 << 20)) - 2000)} {project}.")
-            return
-    except Exception:
-        pass
-
-    # Even a project that fits one chunk goes through the same flow — a single
-    # /next at the end reclaims its zip, and source is still purged as we go.
-    _CHUNKED[chat_id] = {"project": manifest["project"], "manifest": manifest,
-                         "index": -1, "last_zip": None}
-    _persist_chunked()
-    n = len(chunks)
-    send_message(
-        chat_id,
-        f"📦 Delivering '{project}' in {n} chunk(s) of up to {cap_mb}MB "
-        f"({_human_size(manifest['total_bytes'])} total).\n"
-        f"Download each link, then send /next for the following piece. "
-        f"Unzip every part into one folder to rebuild the project.")
-    _deliver_next_chunk(chat_id)
-
-
-def _deliver_next_chunk(chat_id) -> None:
-    """Zip + deliver the chunk after the one last sent, advancing the cursor.
-    Deletes the previously delivered chunk's zip first (the user has pulled it).
-    Ends the session after the final chunk."""
-    state = _CHUNKED.get(chat_id)
-    if not state:
-        send_message(chat_id, "No chunked download is in progress.")
-        return
-    manifest = state["manifest"]
-    chunks = manifest["chunks"]
-    n = len(chunks)
-    project = state["project"]
-
-    # Reclaim the previous chunk's zip — it's been downloaded.
-    prev_zip = state.get("last_zip")
-    if prev_zip and os.path.isfile(prev_zip):
-        try:
-            os.remove(prev_zip)
-        except OSError as e:
-            print(f"[chunked] couldn't remove {prev_zip}: {e}")
-
-    idx = state["index"] + 1
-    if idx >= n:
-        _CHUNKED.pop(chat_id, None)
-        _persist_chunked()
-        send_message(
-            chat_id,
-            f"✅ All {n} chunk(s) of '{project}' delivered. Source clips were "
-            f"removed as we went. Unzip every part into one folder to relink.")
-        return
-
-    chunk = chunks[idx]
-    from core.output import zip_one_chunk
-    status = send_message(
-        chat_id, f"📦 Zipping chunk {idx + 1}/{n} ({chunk['label']})…") or {}
-    msg_id = status.get("message_id")
-    tick = {"last": 0.0}
-
-    def _progress(done, total):
-        now = time.time()
-        if done < total and now - tick["last"] < 3.0:
-            return
-        tick["last"] = now
-        edit_message(chat_id, msg_id,
-                     f"📦 Zipping chunk {idx + 1}/{n} ({chunk['label']})… "
-                     f"{done}/{total} file(s)")
-
-    try:
-        # purge_after_zip governs whether source clips are reclaimed per chunk
-        # (default on — that's the whole point of chunking a tight disk).
-        purge = bool(bot_settings.get_settings(chat_id).get("purge_after_zip", True))
-        res = zip_one_chunk(manifest, idx, delete_source=purge, progress=_progress)
-    except Exception as e:
-        edit_message(chat_id, msg_id,
-                     f"(Couldn't zip chunk {idx + 1}/{n}: {e})\n"
-                     f"Send /next to retry, or /cancel to stop.")
-        return
-
-    abs_path = os.path.abspath(res["path"])
-    state["index"] = idx
-    state["last_zip"] = abs_path
-    _persist_chunked()
-
-    size = res["size_bytes"]
-    last = idx == n - 1
-    lines = [f"📦 Chunk {idx + 1}/{n} ({chunk['label']}) — "
-             f"{res['files']} file(s), {_human_size(size)}"]
-    link = _download_link_for(abs_path)
-    if link:
-        lines.append(f"🔗 {link}\n(link expires in 24h)")
-    lines.append(f"scp USER@SERVER:'{abs_path}' .")
-    if last:
-        lines.append("➡️ Last chunk. Download it, then /next to clean up and finish.")
-    else:
-        lines.append("➡️ Download it, then /next for the next chunk.")
-    send_message(chat_id, "\n".join(lines))
-
-    if size <= _TG_UPLOAD_LIMIT and os.path.exists(abs_path):
-        send_document(chat_id, abs_path,
-                      caption=f"{project} — chunk {idx + 1}/{n}")
-
-
-def handle_next(chat_id) -> None:
-    """/next — advance a chunked delivery to the following piece."""
-    if not _CHUNKED.get(chat_id):
-        send_message(chat_id, "Nothing to continue — start a chunked download "
-                              "with /zip chunked (or enable it in /settings).")
-        return
-    _deliver_next_chunk(chat_id)
-
-
-def cancel_chunked(chat_id) -> bool:
-    """Abort an in-progress chunked delivery, deleting the current chunk's zip.
-    Returns True if there was one to cancel."""
-    state = _CHUNKED.pop(chat_id, None)
-    if not state:
-        return False
-    _persist_chunked()
-    z = state.get("last_zip")
-    if z and os.path.isfile(z):
-        try:
-            os.remove(z)
-        except OSError:
-            pass
-    return True
 
 
 # ── job ────────────────────────────────────────────────────────────────────────
@@ -850,6 +702,9 @@ def format_summary(proj: str, result: dict) -> str:
             extra += f", {dl['dropped']} dropped"
         lines.append(f"Downloaded: {dl.get('ok', 0)} ok, {dl.get('failed', 0)} failed, "
                      f"{dl.get('skipped', 0)} cached{extra}")
+    verify_line = format_verify_line(result)
+    if verify_line:
+        lines.append(verify_line)
     verdict = qa.get("overall") or "—"
     lines.append(f"QA: {verdict}" + (f"  ⚠️ {n_issues} flag(s)" if n_issues else ""))
     cost_line = format_cost_line(result)
@@ -926,7 +781,8 @@ def _deliver_completed(chat_id, proj, result) -> None:
     # so the user can re-download those by hand (it's also bundled in the zip).
     shots = result.get("shots") or []
     empty = [s for s in shots if s.get("priority") != "none"
-             and not s.get("skipped") and not s.get("selected_results")]
+             and not s.get("skipped") and not s.get("selected_results")
+             and not s.get("is_extra")]
     links_path = _links_file_path(proj)
     if empty and os.path.exists(links_path):
         send_document(chat_id, links_path,
@@ -1037,8 +893,9 @@ def handle_overlay_only(chat_id, file_id: str, suggested_name: str) -> dict:
 
 def handle_extras_only(chat_id, file_id: str, suggested_name: str) -> dict:
     """Extras-only path: transcribe → mine named brands / models / parts → fetch and
-    download ONLY the extra contextual B-roll clips → deliver the clips + an
-    extras-only FCPXML. Skips the main timeline (fetch/rank/overlays)."""
+    download ONLY the extra contextual B-roll clips, adding each to the searchable
+    Clip Library. No timeline/XML (extras are library-only); skips the main
+    pipeline (fetch/rank/overlays)."""
     from core.pipeline import run_extras_only, PipelineCancelled
 
     proj = project_name_from(suggested_name, time.strftime("extras_%Y%m%d_%H%M%S"))
@@ -1068,16 +925,64 @@ def handle_extras_only(chat_id, file_id: str, suggested_name: str) -> dict:
         return {}
 
     n = result.get("n_clips", 0)
-    edit_message(chat_id, msg_id, f"🎞 {proj} — ✅ {n} extra clip(s) downloaded")
+    edit_message(chat_id, msg_id, f"🎞 {proj} — ✅ {n} extra clip(s) added to library")
     _LAST["project"] = proj
     if n == 0:
         send_message(chat_id, "No named products / brands / models / parts were found "
                               "in the script, so there were no extra clips to fetch.")
         return result
-    xml_path = result.get("xml_path")
-    if xml_path and os.path.exists(xml_path):
-        send_document(chat_id, xml_path, caption=f"{proj} — extras FCPXML")
-    deliver_project(chat_id, proj)
+    send_message(chat_id, f"📚 Added {n} related clip(s) to the Clip Library — search "
+                          f"for them by keyword when building a video. (No timeline is "
+                          f"produced for extras.)")
+    return result
+
+
+def handle_related_images(chat_id, file_id: str, suggested_name: str) -> dict:
+    """Related-images path: transcribe → mine the script's subjects (brands, car
+    models, products, car parts & systems, general ideas) → fetch related still
+    images from Google → download each into the searchable Clip Library. Images
+    are library-only (no timeline); the editor finds them via library search."""
+    from core.pipeline import run_related_images, PipelineCancelled
+
+    proj = project_name_from(suggested_name, time.strftime("images_%Y%m%d_%H%M%S"))
+    ext = os.path.splitext(suggested_name or "")[1].lower() or ".mp3"
+    audio_path = os.path.join(".cache", f"bot_{proj}{ext}")
+
+    status = send_message(chat_id, f"🖼 Related images for '{proj}'. Downloading audio…")
+    msg_id = status.get("message_id")
+    try:
+        download_telegram_file(file_id, audio_path)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't fetch the audio: {e}")
+        return {}
+
+    progress = _progress_logger(chat_id, proj, msg_id)
+    try:
+        with bot_settings.apply_env(bot_settings.get_settings(chat_id)):
+            result = run_related_images(audio_path, project_name=proj,
+                                        progress_callback=progress,
+                                        should_cancel=_should_cancel())
+    except PipelineCancelled:
+        send_message(chat_id, f"⏹ Cancelled '{proj}'.")
+        return {}
+    except ValueError as e:
+        # Missing Google credentials — a clear, actionable message.
+        send_message(chat_id, f"❌ {e}")
+        return {}
+    except Exception as e:
+        send_message(chat_id, f"❌ Related-images pass failed for '{proj}': {e}")
+        return {}
+
+    n = result.get("n_images", 0)
+    edit_message(chat_id, msg_id, f"🖼 {proj} — ✅ {n} image(s) added to library")
+    _LAST["project"] = proj
+    if n == 0:
+        send_message(chat_id, "No subjects were found in the script (or no images "
+                              "cleared the resolution bar), so nothing was added.")
+        return result
+    send_message(chat_id, f"📚 Added {n} related image(s) to the Clip Library — search "
+                          f"for them by keyword when building a video. (Images are "
+                          f"library-only; they never go on a timeline.)")
     return result
 
 
@@ -1217,8 +1122,10 @@ def _run_refine(chat_id, only_slots=None) -> None:
         return
 
     result = pend["result"]
-    result["n_selected"] = sum(1 for s in shots if s.get("selected_results"))
-    result["n_clips"] = sum(len(s.get("selected_results") or []) for s in shots)
+    result["n_selected"] = sum(1 for s in shots
+                               if s.get("selected_results") and not s.get("is_extra"))
+    result["n_clips"] = sum(len(s.get("selected_results") or []) for s in shots
+                            if not s.get("is_extra"))
     if n:
         new_qa["refined"] = n
     result["qa"] = new_qa
@@ -1267,8 +1174,10 @@ def _run_redo(chat_id) -> None:
         return
 
     result = pend["result"]
-    result["n_selected"] = sum(1 for s in shots if s.get("selected_results"))
-    result["n_clips"] = sum(len(s.get("selected_results") or []) for s in shots)
+    result["n_selected"] = sum(1 for s in shots
+                               if s.get("selected_results") and not s.get("is_extra"))
+    result["n_clips"] = sum(len(s.get("selected_results") or []) for s in shots
+                            if not s.get("is_extra"))
     result["qa"] = new_qa
     pend["qa"] = new_qa
     _persist_pending()   # selection changed — re-snapshot so a restart keeps it
@@ -1540,9 +1449,10 @@ _BOT_COMMANDS = [
     ("redo", "Re-fetch shots with no clip (YouTube-first)"),
     ("cancel", "Stop the running job / discard pending"),
     ("forcestop", "Hard stop + restart the bot"),
-    ("zip", "Bundle a finished project (link + attach; /zip chunked for pieces)"),
-    ("next", "Next piece of a chunked download"),
+    ("zip", "Bundle a finished project (link + attach)"),
+    ("files", "List zips on the server with fresh download links"),
     ("extras", "Next voice file → extra clips only (brand/model/part B-roll)"),
+    ("images", "Next voice file → related still images into the library (Google)"),
     ("overlaytext", "Render one overlay clip: /overlaytext 4 YOUR TEXT"),
     ("links", "Source links per shot (re-download empty shots)"),
     ("cleanup", "Show disk usage / delete a project"),
@@ -1623,6 +1533,18 @@ def check_health(timeout: int = 8) -> list:
     ds = bool(os.getenv("DEEPSEEK_API_KEY"))
     checks.append(("DeepSeek (OpenRouter)", ds, "set" if ds else "not set (free tier)"))
 
+    # Visual verify — surface the mismatch that would otherwise fail silently:
+    # the toggle on with no key means the stage no-ops for the whole run.
+    try:
+        from core import visual_verify
+        if visual_verify.requested():
+            has_key = bool(visual_verify.api_keys())
+            checks.append(("Gemini (visual verify)", has_key,
+                           f"on — {visual_verify.model()}" if has_key
+                           else "ON but GEMINI_API_KEY is MISSING — stage will be skipped"))
+    except Exception:
+        pass
+
     net_ok, net_detail = _probe_internet(timeout)
     checks.append(("Internet", net_ok, net_detail))
 
@@ -1690,10 +1612,6 @@ def is_zip_command(text: str) -> bool:
     return _command(text) in ("/zip", "/package", "/bundle")
 
 
-def is_next_command(text: str) -> bool:
-    return _command(text) in ("/next", "/continue", "/more")
-
-
 def is_links_command(text: str) -> bool:
     return _command(text) in ("/links", "/sources")
 
@@ -1747,31 +1665,65 @@ def _human_size(n: int) -> str:
 def handle_zip(chat_id, text: str) -> None:
     """Bundle a project's clips + XML and deliver it (Telegram attach when small,
     plus a signed download link and the scp path). ``/zip <name>`` targets a
-    specific project; bare /zip uses the last one. ``/zip chunked [sizeMB] [name]``
-    forces the size-capped piecewise delivery even when the setting is off, with
-    an optional per-chunk cap in MB (e.g. ``/zip chunked 10000`` → ~10GB pieces,
-    so a big project comes in a handful of chunks instead of dozens)."""
-    rest = text.strip().split(maxsplit=1)
-    arg = rest[1].strip() if len(rest) > 1 else ""
-    force_chunked = None
-    chunk_mb = None
-    # A leading "chunked"/"chunk" token forces chunked mode; strip it off so the
-    # remainder is still treated as an optional [sizeMB] then project name.
-    first = arg.split(maxsplit=1)
-    if first and first[0].lower() in ("chunked", "chunk", "chunks"):
-        force_chunked = True
-        arg = first[1].strip() if len(first) > 1 else ""
-        # An optional leading integer is the per-chunk cap in MB.
-        nxt = arg.split(maxsplit=1)
-        if nxt and nxt[0].isdigit():
-            chunk_mb = max(100, int(nxt[0]))
-            arg = nxt[1].strip() if len(nxt) > 1 else ""
-    name = arg or (_LAST.get("project") or "")
+    specific project; bare /zip uses the last one."""
+    parts = text.strip().split(maxsplit=1)
+    name = parts[1].strip() if len(parts) > 1 else (_LAST.get("project") or "")
     if not name:
         send_message(chat_id, "No recent project to zip. Send a voice file first, "
                               "or use /zip <project-name>.")
         return
-    deliver_project(chat_id, name, chunked=force_chunked, chunk_mb=chunk_mb)
+    send_message(chat_id, f"📦 Zipping '{name}'…")
+    deliver_project(chat_id, name)
+
+
+def is_files_command(text: str) -> bool:
+    return _command(text) in ("/files", "/zips", "/bundles")
+
+
+# Zips listed per /files message. Each entry costs ~2 lines including a long
+# signed URL, so this keeps us clear of Telegram's 4096-char message cap.
+_FILES_PAGE = 12
+
+
+def handle_files(chat_id, text: str) -> None:
+    """List the zips sitting in downloads/ and mint a fresh link for each.
+
+    A link handed out earlier can stop working while the zip itself is still on
+    disk — it was issued under an old TTL, or the bot restarted with a different
+    signing secret. This re-issues links for whatever is actually there, so a
+    dead URL never means re-running the project. ``/files <text>`` filters by
+    filename."""
+    parts = text.strip().split(maxsplit=1)
+    needle = parts[1].strip().lower() if len(parts) > 1 else ""
+
+    files = fileserver.list_zips()
+    if needle:
+        files = [f for f in files if needle in f["name"].lower()]
+    if not files:
+        send_message(chat_id, (f"No zip matches '{needle}'." if needle
+                               else "No zips on the server yet.")
+                     + " Finish a project, or bundle one with /zip <name>.")
+        return
+
+    total = sum(f["size"] for f in files)
+    shown = files[:_FILES_PAGE]
+    now = time.time()
+    lines = [f"📦 {len(files)} zip(s) on the server · {_human_size(total)} "
+             f"({fileserver.expiry_note()})", ""]
+    for f in shown:
+        lines.append(f"• {f['rel']} — {_human_size(f['size'])}, "
+                     f"{_fmt_duration(now - f['mtime'])} old")
+        link = _download_link_for(f["path"])
+        lines.append(f"  🔗 {link}" if link else f"  scp USER@SERVER:'{f['path']}' .")
+    if len(files) > len(shown):
+        lines.append("")
+        lines.append(f"…and {len(files) - len(shown)} more — "
+                     "narrow it down with /files <name>.")
+    if not _FILESERVER.get("port"):
+        lines.append("")
+        lines.append("⚠️ The file server isn't running — set BOT_FILE_SERVER=1 "
+                     "so these can be handed out as links.")
+    send_message(chat_id, "\n".join(lines))
 
 
 def _project_disk_usage() -> list:
@@ -1796,24 +1748,11 @@ def _project_disk_usage() -> list:
                         pass
             out[name] = out.get(name, 0) + total
         elif name.endswith(".zip") and os.path.isfile(path):
-            # A full bundle is "<name>.zip"; chunked parts are
-            # "<name>.partNofM.zip" — fold both under the base project name.
-            base = re.sub(r"\.part\d+of\d+$", "", name[:-4])
             try:
-                out[base] = out.get(base, 0) + os.path.getsize(path)
+                out[name[:-4]] = out.get(name[:-4], 0) + os.path.getsize(path)
             except OSError:
                 pass
     return sorted(out.items(), key=lambda x: x[1], reverse=True)
-
-
-def _project_zip_paths(safe_name: str) -> list:
-    """All zip artifacts for a project: the full ``<name>.zip`` plus any
-    leftover ``<name>.partNofM.zip`` chunk parts."""
-    import glob as _glob
-    root = os.path.abspath("downloads")
-    paths = [os.path.join(root, f"{safe_name}.zip")]
-    paths += _glob.glob(os.path.join(root, f"{safe_name}.part*of*.zip"))
-    return [p for p in paths if os.path.isfile(p)]
 
 
 def _library_kept_note() -> str:
@@ -1875,12 +1814,12 @@ def handle_cleanup(chat_id, text: str) -> None:
         usage = _project_disk_usage()
         for name, _ in usage:
             _shutil.rmtree(os.path.join(root, name), ignore_errors=True)
-            for zp in _project_zip_paths(name):
+            zp = os.path.join(root, f"{name}.zip")
+            if os.path.exists(zp):
                 try:
                     os.remove(zp)
                 except OSError:
                     pass
-        cancel_chunked(chat_id)
         ov_n, ov_freed = clear_overlay_cache()
         msg = f"🗑 Cleared {len(usage)} project(s)"
         if ov_n:
@@ -1894,12 +1833,12 @@ def handle_cleanup(chat_id, text: str) -> None:
     from core.output import _safe_for_fs
     safe = _safe_for_fs(arg, 50)
     proj_dir = os.path.join(root, safe)
-    zips = _project_zip_paths(safe)
-    if not os.path.isdir(proj_dir) and not zips:
+    zp = os.path.join(root, f"{safe}.zip")
+    if not os.path.isdir(proj_dir) and not os.path.isfile(zp):
         send_message(chat_id, f"❌ No project named '{arg}'. Use /cleanup to list them.")
         return
     _shutil.rmtree(proj_dir, ignore_errors=True)
-    for zp in zips:
+    if os.path.exists(zp):
         try:
             os.remove(zp)
         except OSError:
@@ -1914,6 +1853,8 @@ _HELP = (
     "/settings — choose sources, counts, quality, QA, review gate, text overlays\n"
     "/overlay — next voice file → animated text-overlays only (no footage)\n"
     "/extras — next voice file → extra contextual clips only (brand/model/part B-roll)\n"
+    "/images — next voice file → related still images (brand/model/product/part/idea) "
+    "pulled from Google into the searchable Clip Library (library-only, no timeline)\n"
     "/overlaytext <secs> <text> — render ONE overlay clip for exact text + duration\n"
     "/status — am I online & ready\n"
     "/test — preflight: live-test LLM, transcription, Pexels + yt-dlp search and "
@@ -1926,9 +1867,8 @@ _HELP = (
     "/cancel — stop the running job (graceful; or discard a pending one)\n"
     "/forcestop — hard stop + restart the bot (when /cancel won't catch)\n"
     "/zip [name] — bundle a finished project (link + attach)\n"
-    "/zip chunked [sizeMB] [name] — deliver in size-capped pieces for a tight disk "
-    "(e.g. /zip chunked 10000 → ~10GB pieces; /next per piece)\n"
-    "/next — fetch the next piece of a chunked download\n"
+    "/files [name] — list the zips on the server with a fresh download link each "
+    "(links don't expire; use this when an old one stops working)\n"
     "/links [name] — per-shot source links (title + link) to manually re-download empty shots\n"
     "/cleanup [name|all|overlays] — list/delete projects or clear the overlay cache (free disk)\n"
     "/logs — export the bot logs as a file\n"
@@ -1952,13 +1892,15 @@ def _job_thread(fn, chat_id, *args) -> None:
         _BUSY.update(active=False, project=None, cancel=None, started=None)
 
 
-def build_start_keyboard(overlay_only: bool = False, extras_only: bool = False) -> dict:
-    """Pre-job prompt: pick the mode (Full / text-overlay-only / extras-only) AND
+def build_start_keyboard(overlay_only: bool = False, extras_only: bool = False,
+                         images_only: bool = False) -> dict:
+    """Pre-job prompt: pick the mode (Full / text-overlay / extras / images) AND
     whether to clear the disk first. callback_data = start:<mode>:<disk>.
 
-    The default upload prompt offers all three modes — so Extras is a one-tap
-    option on every upload, no /extras needed. ``overlay_only`` (the /overlay
-    command) or ``extras_only`` (the /extras command) narrow it to just that mode.
+    The default upload prompt offers every mode — so Extras and Images are one-tap
+    options on every upload, no command needed. ``overlay_only`` (/overlay),
+    ``extras_only`` (/extras) or ``images_only`` (/images) narrow it to just that
+    mode.
 
     One button per row so the labels stay fully readable on narrow screens."""
     extras_rows = [
@@ -1969,15 +1911,21 @@ def build_start_keyboard(overlay_only: bool = False, extras_only: bool = False) 
         [{"text": "🅰️ Overlays only · clear", "callback_data": "start:overlay:clear"}],
         [{"text": "🅰️ Overlays only · keep",  "callback_data": "start:overlay:keep"}],
     ]
+    images_rows = [
+        [{"text": "🖼 Images only · clear", "callback_data": "start:images:clear"}],
+        [{"text": "🖼 Images only · keep",  "callback_data": "start:images:keep"}],
+    ]
     if extras_only:
         return {"inline_keyboard": extras_rows}
     if overlay_only:
         return {"inline_keyboard": overlay_rows}
+    if images_only:
+        return {"inline_keyboard": images_rows}
     rows = [
         [{"text": "🎬 Full · clear disk", "callback_data": "start:full:clear"}],
         [{"text": "🎬 Full · keep",       "callback_data": "start:full:keep"}],
     ]
-    rows += overlay_rows + extras_rows
+    rows += overlay_rows + extras_rows + images_rows
     return {"inline_keyboard": rows}
 
 
@@ -2100,22 +2048,6 @@ def main() -> None:
             except Exception:
                 pass
 
-    # Recover any in-progress chunked deliveries so /next still works after a
-    # restart (the already-delivered chunks' source clips are gone, but the
-    # manifest tells us which pieces remain).
-    restored_chunks = pending_store.load_pending(_CHUNKED_PATH)
-    if restored_chunks:
-        _CHUNKED.update(restored_chunks)
-        for cid, st in restored_chunks.items():
-            try:
-                done = st.get("index", -1) + 1
-                total = len(st.get("manifest", {}).get("chunks") or [])
-                send_message(cid, f"♻️ Resumed chunked download of "
-                                  f"'{st.get('project', '?')}' ({done}/{total} sent). "
-                                  f"Send /next for the next piece, or /cancel to stop.")
-            except Exception:
-                pass
-
     allowed = allowed_user_ids()
     if not allowed:
         print("WARNING: TELEGRAM_ALLOWED_USERS is empty — every message will be ignored "
@@ -2225,6 +2157,13 @@ def main() -> None:
                                       "Send it now.")
                 continue
 
+            if is_images_command(text):
+                _IMAGES_NEXT.add(chat_id)
+                send_message(chat_id, "🖼 Next voice file → related still images only "
+                                      "(brands / car models / products / parts / ideas, "
+                                      "pulled from Google into the Clip Library). Send it now.")
+                continue
+
             if is_cancel_command(text):
                 cancel = _BUSY.get("cancel")
                 if _BUSY.get("active") and cancel is not None:
@@ -2235,9 +2174,6 @@ def main() -> None:
                     proj = _PENDING.pop(chat_id)["project"]
                     _persist_pending()
                     send_message(chat_id, f"⏹ Discarded pending project '{proj}'.")
-                elif cancel_chunked(chat_id):
-                    send_message(chat_id, "⏹ Stopped the chunked download. "
-                                          "Any remaining clips stay on disk.")
                 else:
                     send_message(chat_id, "Nothing is running right now.")
                 continue
@@ -2256,8 +2192,8 @@ def main() -> None:
                 handle_zip(chat_id, text)
                 continue
 
-            if is_next_command(text):
-                handle_next(chat_id)
+            if is_files_command(text):
+                handle_files(chat_id, text)
                 continue
 
             if is_links_command(text):
@@ -2371,8 +2307,10 @@ def main() -> None:
                 # answers. /overlay pre-restricts the prompt to overlay-only.
                 overlay_only = chat_id in _OVERLAY_NEXT
                 extras_only = chat_id in _EXTRAS_NEXT
+                images_only = chat_id in _IMAGES_NEXT
                 _OVERLAY_NEXT.discard(chat_id)
                 _EXTRAS_NEXT.discard(chat_id)
+                _IMAGES_NEXT.discard(chat_id)
                 _PENDING_START[chat_id] = {"file_id": file_id, "name": name}
                 send_message(
                     chat_id,
@@ -2380,7 +2318,8 @@ def main() -> None:
                     "Pick a mode — and whether to clear old projects first "
                     "(frees disk; keeps Clip Library & cookies):",
                     reply_markup=build_start_keyboard(overlay_only=overlay_only,
-                                                      extras_only=extras_only),
+                                                      extras_only=extras_only,
+                                                      images_only=images_only),
                 )
             elif text:
                 send_message(chat_id, _help_text())

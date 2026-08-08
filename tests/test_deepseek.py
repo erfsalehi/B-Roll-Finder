@@ -48,7 +48,7 @@ def test_deepseek_request_uses_endpoint_model_and_json_mode(monkeypatch):
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer sk-abc"
     # Default tier is "fast" → flash, reasoning off.
-    assert captured["payload"]["model"] == "deepseek/deepseek-v4-flash"
+    assert captured["payload"]["model"] == "~deepseek/deepseek-v4-flash-latest"
     assert captured["payload"]["reasoning"] == {"enabled": False}
     assert captured["payload"]["response_format"] == {"type": "json_object"}
 
@@ -59,7 +59,7 @@ def test_deepseek_fast_tier_is_flash_no_reasoning(monkeypatch):
     monkeypatch.setattr(kw.requests, "post",
                         lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
     kw._call_deepseek_json("sys", "user", tier="fast")
-    assert captured["payload"]["model"] == "deepseek/deepseek-v4-flash"
+    assert captured["payload"]["model"] == "~deepseek/deepseek-v4-flash-latest"
     assert captured["payload"]["reasoning"] == {"enabled": False}
 
 

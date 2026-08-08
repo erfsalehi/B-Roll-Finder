@@ -108,9 +108,10 @@ function fitFontSize(text: string, big: number, small: number): number {
   return Math.round(big + (small - big) * t);
 }
 
-// Title/action-safe margins for the 1920×1080 canvas (~6%), so edge-anchored
-// overlays (e.g. the lower third) never hug the frame border in a 1080p edit.
-const SAFE_X = 120;
+// Title/action-safe margins for the 1920×1080 canvas: 10% horizontal so
+// edge-anchored overlays (e.g. the lower third) sit comfortably inside the frame
+// instead of hugging the left border, ~11% vertical for the bottom margin.
+const SAFE_X = 192;
 const SAFE_Y = 120;
 
 // A dark scrim behind text so copy stays readable over ANY footage these alpha

@@ -322,6 +322,9 @@ def inject_library_candidates(shots: list, top_k: int = 5,
     the deduped hits to the front of its candidates, so previously-downloaded
     footage is judged alongside fresh API results — no quota, no network. Used by
     auto mode / the headless pipeline. Returns the number of hits injected.
+
+    Still images (source ``google_image``, added by the /images path) are skipped:
+    they're library-only search assets, not b-roll, and would break a video edit.
     """
     injected = 0
     for shot in shots:
@@ -337,6 +340,8 @@ def inject_library_candidates(shots: list, top_k: int = 5,
         except Exception as e:
             print(f"[ClipLibrary] inject search failed: {e}")
             hits = []
+        # Never inject stills into the video candidate pool.
+        hits = [h for h in hits if h.get("original_source") != "google_image"]
         if hits:
             existing = {r.get("url") for r in shot.get("video_results", [])}
             new_hits = [h for h in hits if h.get("url") not in existing]

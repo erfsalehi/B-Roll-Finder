@@ -389,8 +389,9 @@ def _props_for(h: dict, fps: int, style: dict) -> dict:
 # Bump when Overlay.tsx visuals change. The render cache is keyed by props, NOT
 # by the component source, so a style change wouldn't otherwise invalidate
 # previously-rendered clips — they'd be reused with the OLD look. (6 = style
-# presets: the props now carry a `style` token bundle.)
-_STYLE_VERSION = "6"
+# presets: the props now carry a `style` token bundle. 7 = wider left/right safe
+# margin so lower-third overlays no longer hug the left frame edge.)
+_STYLE_VERSION = "7"
 
 
 def _cache_key(props: dict) -> str:

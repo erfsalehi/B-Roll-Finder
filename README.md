@@ -55,6 +55,7 @@ The same pipeline runs **headless** (`core/pipeline.py`), so you can trigger it 
 Commands (from your phone):
 - **`/status`** — confirm the laptop is up and ready: internet/API reachability, ffmpeg, configured keys, pipeline health, and whether a job is already running.
 - **`/cancel`** — stop the job in progress (it halts at the next stage boundary).
+- **`/files`** — list every project zip sitting on the server with a fresh download link each. Links are **HMAC-signed but don't expire** (it's your own server — an expired link on a zip that's still on disk is pure friction), so this is also the fix when an old URL stops working. Set `BOT_LINK_TTL=<seconds>` if you'd rather they lapse.
 
 Jobs run in a background thread, so the bot stays responsive to `/status` and `/cancel` while a job is running, and a second audio file is deferred rather than run concurrently.
 
@@ -81,6 +82,10 @@ An LLM-as-Judge reads each candidate's title, description, dimensions, and the q
 *Optional — Drop SD YouTube (`🎥`):* a one-click filter checks each YouTube candidate's HD/SD via the Data API — batched (≈1 quota unit per 50 clips) and capped — and removes confirmed-SD clips so only HD footage reaches ranking and selection. Stock clips (already HD) are skipped.
 
 *Optional — Auto-selection (`🤖`):* when enabled, ranking also **binds the best clips to each shot automatically**, so every shot becomes download-ready with no manual pass. It picks **multiple clips scaled to the shot's length** (≈ one per 5s, min 2) — so a 30s shot gets ~6 clips spread across it, and even a short shot gets a couple of alternatives — while a deterministic variety guard avoids repeating the same clip back-to-back. You choose the **starting shot number** here (bounded to your shot count) — e.g. hand-pick an intro yourself and auto-select from shot 4 onward. A **Re-apply** button changes the start without re-ranking; manual picks are always preserved.
+
+*Optional — Visual verify (`👁`, Gemini):* everything above judges a YouTube candidate by its **title**. The yt-dlp search returns no description at all, so a clickbait title can outrank a perfect but plainly-named video, and nothing in the metadata tells you *which part* of a 12-minute upload matches the shot. Turn this on and Gemini 2.5 Flash actually **watches** the clips a shot would bind, then reports per shot whether the footage is really there and the timestamps where it is. Two things follow: clips that turn out to be talking heads or the wrong subject get demoted and skipped by selection, and the ones that survive carry a verified in-point, so the timeline starts on the moment that matches instead of frame 0 of a long video.
+
+It's opt-in per chat (`/settings` → **Gemini watches clips**) and needs a `GEMINI_API_KEY`, because unlike every other stage it costs money per video watched. The defaults are tuned hard for that: low media resolution (66 tokens/frame instead of 258), one sampled frame every 5 seconds, thinking off, and **one request per video** regardless of how many shots shortlisted it — the same upload is usually a candidate for several. That puts a 15-minute video near 40k input tokens (**~$0.01**) against the ~270k Gemini's defaults would charge. Verdicts are cached in `.cache/visual_verify.json`, so re-runs and videos that recur across projects are free, and a per-run budget (`VERIFY_MAX_VIDEOS` / `VERIFY_MAX_MINUTES`) spends the quota on the videos that answer for the most shots first. Any failure — no key, an API error, a spent budget — leaves the run exactly as ranking left it.
 
 **Step 5 — Review & select**  
 A paginated gallery per shot. Clip Library results appear with a purple border and a similarity % + usage count. Select clips, skip shots, or refetch individual shots with new queries. With auto-selection on, this step becomes **optional review/override** — auto-picks are flagged with a `🤖` badge, and picking a different clip clears the badge.
@@ -192,8 +197,8 @@ DeepSeek runs as **two model tiers, switched per call with the same key**, match
 
 | Tier | Model | Reasoning | Used for |
 |------|-------|-----------|----------|
-| **fast** | `deepseek/deepseek-v4-flash` | off | High-volume loop calls — shot slicing, ranking, keywords. Fast & cheap; no chain-of-thought to starve the JSON answer. |
-| **smart** | `deepseek/deepseek-v4-pro` | on | Once-per-video global passes — video topic, global themes, the structural pre-pass. Single calls that benefit from synthesis, so no rate-limit risk. |
+| **fast** | `~deepseek/deepseek-v4-flash-latest` | off | High-volume loop calls — shot slicing, ranking, keywords. Fast & cheap; no chain-of-thought to starve the JSON answer. Rolling alias — always the newest Flash snapshot. |
+| **smart** | `deepseek/deepseek-v4-pro` | on | Once-per-video global passes — video topic, global themes, the structural pre-pass. Single calls that benefit from synthesis, so no rate-limit risk. No `-latest` alias exists for pro on OpenRouter, so this is pinned. |
 
 Override slugs with `DEEPSEEK_MODEL_FAST` / `DEEPSEEK_MODEL_SMART`.
 
@@ -210,7 +215,7 @@ Optional toggles and tuning knobs, all off/default unless set:
 | `AUTO_SELECT_MIN_CLIPS` | `2` | Minimum clips auto-bound per shot — even a short shot gets alternatives for the editor |
 | `AUTO_SELECT_MAX_CLIPS` | `8` | Cap on clips auto-bound per shot |
 | `DIRECTOR_BLOCK_SIZE` | `20` | Transcription segments per shot-list LLM call. Raise it (e.g. `40`) on long transcripts to cut the number of calls and ease rate limits |
-| `DEEPSEEK_MODEL_FAST` | `deepseek/deepseek-v4-flash` | Model for the fast tier (loop calls) |
+| `DEEPSEEK_MODEL_FAST` | `~deepseek/deepseek-v4-flash-latest` | Model for the fast tier (loop calls) |
 | `DEEPSEEK_MODEL_SMART` | `deepseek/deepseek-v4-pro` | Model for the smart tier (global passes, reasoning on) |
 | `DEEPSEEK_REASONING` | _(unset)_ | Emergency override of the per-tier reasoning default (`on`/`off`); leave unset to use each tier's default |
 | `DEEPSEEK_MAX_TOKENS` | `8000` | Min token budget per DeepSeek call (matters mainly for the smart tier, where reasoning counts against it) |

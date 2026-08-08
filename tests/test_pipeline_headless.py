@@ -162,6 +162,79 @@ def test_pipeline_raises_without_key(monkeypatch, tmp_path):
         pipeline.run_pipeline_headless("voice.mp3", groq_key="")
 
 
+def test_pipeline_runs_visual_verify_when_enabled(_mock_stages, monkeypatch):
+    """Stage 7b is opt-in; when on, its telemetry rides along in ``attempts``."""
+    from core import visual_verify
+    seen = {}
+
+    monkeypatch.setattr(visual_verify, "enabled", lambda: True)
+
+    def _verify(shots, **kwargs):
+        seen["shots"] = len(shots)
+        seen["topic"] = kwargs.get("video_topic")
+        return {"calls": 2, "rejected": 1, "segments": 2}
+
+    monkeypatch.setattr(visual_verify, "verify_shot_candidates", _verify)
+    res = pipeline.run_pipeline_headless("voice.mp3", project_name="vv",
+                                         download=False)
+    assert seen["shots"] == 2 and seen["topic"] == "cars"
+    assert res["attempts"]["visual_verify"]["rejected"] == 1
+
+
+def test_pipeline_skips_visual_verify_when_disabled(_mock_stages, monkeypatch):
+    from core import visual_verify
+    monkeypatch.setattr(visual_verify, "enabled", lambda: False)
+    monkeypatch.setattr(visual_verify, "verify_shot_candidates",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("visual verify must not run")))
+    res = pipeline.run_pipeline_headless("voice.mp3", project_name="novv",
+                                         download=False)
+    assert "visual_verify" not in (res.get("attempts") or {})
+
+
+def test_pipeline_survives_a_broken_visual_verify(_mock_stages, monkeypatch):
+    """A Gemini outage must cost the run nothing but a logged error."""
+    from core import visual_verify
+    monkeypatch.setattr(visual_verify, "enabled", lambda: True)
+    monkeypatch.setattr(visual_verify, "verify_shot_candidates",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("gemini down")))
+    res = pipeline.run_pipeline_headless("voice.mp3", project_name="vvfail",
+                                         download=False)
+    assert res["n_selected"] == 2                     # selection still happened
+    assert any("gemini down" in e for e in res["errors"])
+
+
+def test_pipeline_fetches_related_images_when_configured(_mock_stages, monkeypatch):
+    """Related images (like extras) run automatically on every full job — but
+    only once Google Custom Search is configured."""
+    import core.related_images as ri
+    monkeypatch.setattr(ri, "cse_configured", lambda: True)
+    monkeypatch.setattr(ri, "fetch_related_images",
+                        lambda script, key, errors=None, per_query=None: [
+                            {"url": "https://x/a.jpg", "query": "toyota logo", "kind": "brand"}])
+    calls = []
+    monkeypatch.setattr(pipeline, "_store_related_images",
+                        lambda images, proj, errors, **kw: (
+                            calls.append((images, proj)) or (1, ["toyota logo"])))
+    res = pipeline.run_pipeline_headless("voice.mp3", project_name="imgproj", download=False)
+    assert calls and calls[0][0][0]["url"] == "https://x/a.jpg"
+    assert calls[0][1] == "imgproj"
+    assert res["attempts"]["related_images"] == 1
+
+
+def test_pipeline_skips_related_images_without_credentials(_mock_stages, monkeypatch):
+    """No Google credentials configured → silently skipped, no error noise."""
+    import core.related_images as ri
+    monkeypatch.setattr(ri, "cse_configured", lambda: False)
+    called = []
+    monkeypatch.setattr(pipeline, "_store_related_images",
+                        lambda *a, **k: called.append(1) or (0, []))
+    res = pipeline.run_pipeline_headless("voice.mp3", project_name="noimg", download=False)
+    assert called == []                       # never reached
+    assert "related_images" not in res["attempts"]
+    assert not any("related images" in e for e in res["errors"])
+
+
 def test_pipeline_calls_download_when_enabled(_mock_stages, monkeypatch):
     # The pipeline downloads via download_and_repair (download + reselect-on-fail).
     calls = {"n": 0}

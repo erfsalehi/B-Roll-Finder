@@ -138,8 +138,13 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
 #               (shot slicing, ranking, keywords). Fast, cheap, no CoT starvation.
 #   • "smart" → deepseek-v4-pro,  reasoning ON  — for the once-per-video global
 #               passes (topic, themes, structural pre-pass) that need synthesis.
+# The fast tier uses OpenRouter's "~author/family-latest" rolling alias (the
+# leading "~" is required syntax, not decoration) — it always resolves to the
+# newest DeepSeek V4 Flash snapshot, so we never have to bump a pinned version.
+# No such alias exists for pro on OpenRouter (checked their /models catalog),
+# so the smart tier stays pinned.
 DEEPSEEK_BASE = "https://openrouter.ai/api/v1/chat/completions"
-DEEPSEEK_FAST_DEFAULT = "deepseek/deepseek-v4-flash"
+DEEPSEEK_FAST_DEFAULT = "~deepseek/deepseek-v4-flash-latest"
 DEEPSEEK_SMART_DEFAULT = "deepseek/deepseek-v4-pro"
 
 

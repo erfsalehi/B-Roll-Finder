@@ -32,6 +32,13 @@ _DEFAULT_PRICING = {
     "deepseek-reasoner": (0.55, 2.19),
     "deepseek-chat": (0.27, 1.10),
     "deepseek": (0.27, 1.10),
+    # Gemini (visual verify). Video is billed as input tokens at the text rate,
+    # so the same pair covers a watched clip — a 15-min video at low resolution
+    # and 0.2 fps lands around 40k input tokens.
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini": (0.30, 2.50),
 }
 
 # USD per hour of audio for Whisper transcription (Groq whisper-large-v3).

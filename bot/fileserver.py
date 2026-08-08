@@ -1,7 +1,7 @@
 """Tiny tokenized HTTP file server for handing out project-zip download links.
 
 Telegram bots can only upload 50 MB, and clip bundles are usually bigger, so the
-bot also serves them over HTTP with short-lived, HMAC-signed URLs:
+bot also serves them over HTTP with HMAC-signed URLs:
 
     http://HOST:PORT/d/<project>.zip?e=<expiry>&t=<token>
 
@@ -9,6 +9,14 @@ The token is ``HMAC(secret, "<relpath>:<expiry>")`` — stateless, so no link
 table to maintain, and tamper-proof (you can't fetch a different path or extend
 the expiry without the secret). The secret defaults to a hash of the bot token
 so links survive restarts. Only files under ``downloads/`` are reachable.
+
+Links do NOT expire by default (``e=0``): this runs on our own server, and an
+expired link on a zip that's still on disk is pure friction — you had to
+re-issue it to download a file that never went away. The signature is still
+required, so a link stays unguessable and can't be pointed at another path. Set
+``BOT_LINK_TTL`` to a number of seconds to go back to time-limited links (e.g.
+``86400`` for a day); ``/files`` re-issues links for whatever is on disk either
+way.
 
 Enable with ``BOT_FILE_SERVER=1``; configure ``BOT_FILE_SERVER_PORT`` (default
 8770) and ``BOT_PUBLIC_HOST`` (the host/IP that goes into the URL).
@@ -24,7 +32,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DOWNLOADS_ROOT = os.path.abspath("downloads")
 DEFAULT_PORT = 8770
-DEFAULT_TTL = 24 * 3600  # link lifetime in seconds
+# 0 = links never expire (the default — see the module docstring). Any positive
+# value is a lifetime in seconds.
+DEFAULT_TTL = 0
+NEVER = 0   # the expiry value that marks a permanent link
 
 
 def _secret() -> bytes:
@@ -37,23 +48,43 @@ def _secret() -> bytes:
     return hashlib.sha256(("brollfs:" + seed).encode("utf-8")).digest()
 
 
+def link_ttl() -> int:
+    """Link lifetime in seconds from ``BOT_LINK_TTL``; 0 (the default) = never
+    expires. A malformed or negative value falls back to the default."""
+    raw = os.getenv("BOT_LINK_TTL", "").strip()
+    if not raw:
+        return DEFAULT_TTL
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_TTL
+
+
 def sign_token(relpath: str, expiry: int) -> str:
-    """HMAC token binding a relative path to an expiry timestamp."""
+    """HMAC token binding a relative path to an expiry timestamp (0 = forever)."""
     msg = f"{relpath}:{expiry}".encode("utf-8")
     return hmac.new(_secret(), msg, hashlib.sha256).hexdigest()[:32]
 
 
 def verify_token(relpath: str, expiry: int, token: str) -> bool:
-    if expiry < int(time.time()):
+    """True when ``token`` signs this path+expiry and the link is still live.
+
+    ``expiry == NEVER`` (0) is a permanent link, so only the signature is
+    checked — the timestamp gate is skipped. Every other expiry is enforced,
+    so links minted while ``BOT_LINK_TTL`` was set still lapse on schedule."""
+    if expiry != NEVER and expiry < int(time.time()):
         return False
     return hmac.compare_digest(sign_token(relpath, expiry), token or "")
 
 
 def build_link(abs_path: str, host: str = None, port: int = DEFAULT_PORT,
-               ttl: int = DEFAULT_TTL, scheme: str = "http",
+               ttl: int = None, scheme: str = "http",
                base: str = None) -> str | None:
     """Build a signed download URL for a file under downloads/. None if the file
     is outside the served root.
+
+    ``ttl`` defaults to :func:`link_ttl` (``BOT_LINK_TTL``, 0 ⇒ a permanent
+    link stamped ``e=0``).
 
     When ``base`` is given (e.g. ``https://broll.tovo.club`` from
     ``public_base_url()``) the link is built against that external base with no
@@ -63,7 +94,9 @@ def build_link(abs_path: str, host: str = None, port: int = DEFAULT_PORT,
     if rel.startswith("..") or os.path.isabs(rel):
         return None
     rel = rel.replace(os.sep, "/")
-    expiry = int(time.time()) + ttl
+    if ttl is None:
+        ttl = link_ttl()
+    expiry = NEVER if ttl <= 0 else int(time.time()) + ttl
     token = sign_token(rel, expiry)
     q = urllib.parse.urlencode({"e": expiry, "t": token})
     enc = urllib.parse.quote(rel)
@@ -97,6 +130,43 @@ def public_host() -> str:
         return "localhost"
 
 
+def expiry_note() -> str:
+    """One-line description of how long issued links live, for bot messages."""
+    ttl = link_ttl()
+    if ttl <= 0:
+        return "link doesn't expire"
+    if ttl % 3600 == 0:
+        return f"link expires in {ttl // 3600}h"
+    return f"link expires in {ttl // 60}min"
+
+
+def list_zips(root: str = None) -> list:
+    """Every ``.zip`` currently under ``downloads/``, newest first.
+
+    Returns dicts of ``{name, path, rel, size, mtime}`` — what ``/files`` needs
+    to list what's downloadable on the server right now and mint a fresh link
+    for each. Walks recursively so a zip written inside a project folder is
+    found too; unreadable entries are skipped rather than raising."""
+    base = os.path.abspath(root or DOWNLOADS_ROOT)
+    out = []
+    if not os.path.isdir(base):
+        return out
+    for dirpath, _dirs, files in os.walk(base):
+        for fn in files:
+            if not fn.lower().endswith(".zip"):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            rel = os.path.relpath(path, base).replace(os.sep, "/")
+            out.append({"name": fn, "path": path, "rel": rel,
+                        "size": st.st_size, "mtime": st.st_mtime})
+    out.sort(key=lambda f: f["mtime"], reverse=True)
+    return out
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet — don't spam the bot's stdout
         pass
@@ -108,10 +178,13 @@ class _Handler(BaseHTTPRequestHandler):
             return
         rel = urllib.parse.unquote(parsed.path[len("/d/"):])
         qs = urllib.parse.parse_qs(parsed.query)
+        # A missing or unparseable "e" reads as NEVER (0) — a permanent link.
+        # It still has to carry the matching signature for that expiry, so this
+        # is a shorthand, not a bypass.
         try:
-            expiry = int(qs.get("e", ["0"])[0])
+            expiry = int(qs.get("e", [str(NEVER)])[0])
         except ValueError:
-            expiry = 0
+            expiry = NEVER
         token = qs.get("t", [""])[0]
 
         if not verify_token(rel, expiry, token):
