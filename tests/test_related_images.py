@@ -2,7 +2,16 @@
 Google Custom Search call (resolution filtering), the library-only run, and the
 guarantee that stills never enter the video candidate pool."""
 
+import pytest
+
 import core.related_images as ri
+
+
+@pytest.fixture(autouse=True)
+def _no_serper(monkeypatch):
+    # These tests exercise the Custom Search backend; a real SERPER_API_KEY in the
+    # environment would route searches to Serper instead.
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
 
 
 # ── image-query rules ─────────────────────────────────────────────────────────

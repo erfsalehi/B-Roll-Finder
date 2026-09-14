@@ -208,52 +208,114 @@ def _align_to_words(text: str, words: list, hint_start: float,
     return start_t, end_t
 
 
+def _chunk_segments(segments: list, chunk_sec: float) -> list:
+    """Split time-ordered segments into consecutive groups spanning at most
+    ``chunk_sec`` each (a single over-long segment still forms its own group)."""
+    chunks, cur, cur_start = [], [], None
+    for s in segments:
+        if not s.get("text"):
+            continue
+        st, en = float(s["start"]), float(s["end"])
+        if cur and en - cur_start > chunk_sec:
+            chunks.append(cur)
+            cur, cur_start = [], None
+        if cur_start is None:
+            cur_start = st
+        cur.append(s)
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _mmss(t: float) -> str:
+    t = int(max(0, t))
+    return f"{t // 60:02d}:{t % 60:02d}"
+
+
 def extract_overlay_highlights(segments: list = None, script_text: str = "",
-                               groq_key: str = None) -> list:
+                               groq_key: str = None, diag: dict = None) -> list:
     """Reasoning pass: pick the overlay-worthy moments from the narration.
 
     Prefers timestamped ``segments`` (Whisper) so overlay timing matches the
     audio; falls back to bare ``script_text``. Returns a list of dicts with
     ``text, type, anim, sfx, start, end, emphasis``. Empty list on any failure.
+
+    A long transcript is split into ``OVERLAY_CHUNK_SEC`` (default 150 s) pieces
+    extracted in parallel. One call over a 10-minute video has to emit well over
+    a hundred overlays plus the reasoning model's chain-of-thought inside one
+    token budget and one read timeout — it came back truncated or timed out and
+    the video got zero overlays. ``diag`` (optional) receives ``chunks``,
+    ``failed_chunks`` and ``error`` so the caller can say WHY nothing came back.
     """
     from core.keywords import _call_llm_json
     try:
         from groq import Groq
     except Exception:
         Groq = None
+    if diag is None:
+        diag = {}
 
     system_prompt = _load_prompt()
     if segments:
-        lines = [
-            f"[{float(s['start']):.3f} - {float(s['end']):.3f}]: {s['text'].strip()}"
-            for s in segments if s.get("text")
-        ]
-        user_content = ("Timestamped transcript (use these exact times):\n\n"
-                        + "\n".join(lines))
+        try:
+            chunk_sec = max(30.0, float(os.getenv("OVERLAY_CHUNK_SEC", "150")))
+        except (TypeError, ValueError):
+            chunk_sec = 150.0
+        chunks = _chunk_segments(segments, chunk_sec)
+        contents = []
+        for k, chunk in enumerate(chunks, 1):
+            lines = [
+                f"[{float(s['start']):.3f} - {float(s['end']):.3f}]: {s['text'].strip()}"
+                for s in chunk
+            ]
+            body = "Timestamped transcript (use these exact times):\n\n" + "\n".join(lines)
+            if len(chunks) > 1:
+                note = (f"\n\n(This is part {k} of {len(chunks)} of a longer video, "
+                        f"{_mmss(chunk[0]['start'])}-{_mmss(chunk[-1]['end'])}. Caption "
+                        f"only the moments in this part. ")
+                note += ("If the video's title is spoken, it is in this part.)" if k == 1 else
+                         "The title was captioned in part 1 — use \"heading\" here, never "
+                         "\"title\".)")
+                body += note
+            contents.append(body)
     elif script_text:
-        user_content = f"Script for analysis:\n\n{script_text}"
+        contents = [f"Script for analysis:\n\n{script_text}"]
     else:
         return []
 
     client = Groq(api_key=groq_key) if (groq_key and Groq) else None
-    try:
+
+    def _one(user_content):
         # Overlays are cosmetic — allow_fallback so a DeepSeek/provider hiccup
         # degrades to Groq instead of dropping overlays entirely (paid-only mode).
-        # Generous token budget so a long video's many overlays aren't truncated
-        # mid-JSON (we'd rather over-caption and prune than miss items).
-        res = _call_llm_json(client, system_prompt, user_content,
-                             temperature=0.4, max_tokens=6000, tier="smart",
-                             allow_fallback=True)
-    except Exception as e:
-        print(f"[overlays] highlight extraction failed: {e}")
-        return []
+        return _call_llm_json(client, system_prompt, user_content,
+                              temperature=0.4, max_tokens=6000, tier="smart",
+                              allow_fallback=True)
+
+    try:
+        workers = max(1, int(os.getenv("OVERLAY_LLM_WORKERS", "3")))
+    except (TypeError, ValueError):
+        workers = 3
+    raw, failed, last_err = [], 0, ""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(contents))) as ex:
+        futures = [ex.submit(_one, c) for c in contents]
+        for fut in futures:
+            try:
+                raw.extend((fut.result() or {}).get("overlays") or [])
+            except Exception as e:
+                failed += 1
+                last_err = f"{type(e).__name__}: {e}"
+                print(f"[overlays] highlight extraction failed: {last_err}")
+    diag.update({"chunks": len(contents), "failed_chunks": failed})
+    if last_err:
+        diag["error"] = last_err[:300]
 
     # Per-word timings (when available) let us snap each overlay to the exact
     # moment its words are spoken instead of trusting the LLM's eyeballed times.
     words = _flatten_words(segments)
 
     out = []
-    for h in (res.get("overlays") or []):
+    for h in raw:
         text = (h.get("text") or "").strip()
         if not text:
             continue
@@ -585,14 +647,25 @@ def render_one_overlay(text: str, duration_sec: float, out_dir: str,
 
 
 def build_overlays(out_dir: str, segments: list = None, script_text: str = "",
-                   groq_key: str = None, fps: int = 30, shots: list = None) -> list:
+                   groq_key: str = None, fps: int = 30, shots: list = None,
+                   diag: dict = None) -> list:
     """Extract highlights then render them. Returns FCPXML-ready overlay dicts.
-    ``shots`` (optional) names each clip after the shot it overlays."""
-    highlights = extract_overlay_highlights(segments, script_text, groq_key)
+    ``shots`` (optional) names each clip after the shot it overlays. ``diag``
+    (optional) is filled with ``remotion`` (renderer installed?), ``highlights``
+    and ``rendered`` counts plus the extraction fields — see
+    :func:`extract_overlay_highlights`."""
+    if diag is None:
+        diag = {}
+    diag["remotion"] = remotion_available()
+    highlights = extract_overlay_highlights(segments, script_text, groq_key, diag=diag)
+    diag["highlights"] = len(highlights)
     if not highlights:
+        diag["rendered"] = 0
         return []
     # The active style preset (OVERLAY_STYLE, default bold_yellow) sets the look
     # for every overlay; OVERLAY_TEXT_COLOR / OVERLAY_ACCENT_COLOR still override
     # its palette for a one-off tweak.
-    return render_overlay_clips(highlights, out_dir, fps=fps,
-                                style=_resolve_style(), shots=shots)
+    rendered = render_overlay_clips(highlights, out_dir, fps=fps,
+                                    style=_resolve_style(), shots=shots)
+    diag["rendered"] = len(rendered)
+    return rendered

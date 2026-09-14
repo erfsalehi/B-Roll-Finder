@@ -203,9 +203,11 @@ def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
     for kw in keywords:
         term = kw["keyword"]
         # Fetch a buffer, filter, then keep the top per_kw.
+        # Over-fetch: the leftovers become spares that replace a pick whose
+        # download fails (see core.pipeline.swap_failed_extras).
         probe = {"slot_id": f"EX-{slot}", "priority": "low",
                  "search_queries": [term], "youtube_keywords": [term],
-                 "video_results": search_youtube_classic(term, num_results=per_kw * 2,
+                 "video_results": search_youtube_classic(term, num_results=per_kw * 3,
                                                           errors=errors)}
         if not probe["video_results"]:
             continue
@@ -218,7 +220,8 @@ def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
             except Exception as e:
                 errors.append(f"extras hd_filter '{term}': {e}")
 
-        picks = (probe.get("video_results") or [])[:per_kw]
+        pool = [c for c in (probe.get("video_results") or []) if c.get("url")]
+        picks, spares = pool[:per_kw], pool[per_kw:]
         for c in picks:
             if not c.get("url"):
                 continue
@@ -237,6 +240,7 @@ def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
                 "shot_intent": f"extra B-roll: {term}",
                 "selected_results": [c],
                 "auto_selected": True,
+                "extra_spares": [dict(sp) for sp in spares],
             })
             slot += 1
             cursor += clip_sec

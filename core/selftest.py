@@ -401,6 +401,21 @@ def _youtube_proxy_check():
     return (False, label + ": " + shown + cookie_warn) if cookie_warn else (True, f"{label}: {shown}")
 
 
+def _serper_check():
+    """One real Google Images search through Serper (costs 1 credit). Skipped
+    when no key is set — per-shot images then simply don't run."""
+    from core import related_images as ri
+    if not ri.serper_configured():
+        return None, "SERPER_API_KEY not set — per-shot Google images are off"
+    errs: list = []
+    imgs = ri.google_image_search("Toyota Camry", num=3, errors=errs)
+    if errs:
+        return False, errs[0][:200]
+    if not imgs:
+        return False, "search worked but returned no images ≥1280×720"
+    return True, f"ok — {len(imgs)} image(s), e.g. {imgs[0]['width']}×{imgs[0]['height']}"
+
+
 def run_self_test(do_downloads: bool = True, quality: str = "360",
                   progress=None) -> dict:
     """Run the preflight checks and return a structured report (see module
@@ -435,6 +450,7 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
         _run("Gemini (visual verify)", _gemini_check,
              critical=_visual_verify_requested())
         _run("Transcription (Whisper)", _transcription_check, critical=True)
+        _run("Google images (Serper)", _serper_check, critical=False)
         _run("Pexels search", lambda: _pexels_search_check(state),
              critical=bool(os.getenv("PEXELS_API_KEY")))
         _run("yt-dlp version", _ytdlp_version_check, critical=False)

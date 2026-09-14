@@ -11,10 +11,10 @@ the searchable Clip Library (source ``google_image``). They never go on a
 timeline and are never auto-injected into a video's candidate pool (stills would
 break a b-roll edit); the editor finds them by searching the library.
 
-Images come from the official Google Programmable Search (Custom Search JSON)
-API — set ``GOOGLE_CSE_API_KEY`` and ``GOOGLE_CSE_CX`` (a Programmable Search
-Engine configured to search the whole web with Image search enabled). Only
-images large enough for a 1080p edit are kept.
+Images come from Google Images via Serper.dev (``SERPER_API_KEY``) — preferred —
+or, when only those are set, the official Google Programmable Search (Custom
+Search JSON) API (``GOOGLE_CSE_API_KEY`` + ``GOOGLE_CSE_CX``; Google is retiring
+it on 2027-01-01). Only images large enough for a 1080p edit are kept.
 """
 
 import os
@@ -26,6 +26,8 @@ from core.extras import extract_extra_entities
 
 # Google Custom Search JSON API — image search endpoint.
 _CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
+# Serper.dev — Google Images results as JSON. One credit per query (≤10 results).
+_SERPER_ENDPOINT = "https://google.serper.dev/images"
 
 # Minimum pixel dimensions to be usable in a 1080p edit. 1280×720 is the floor
 # (upscales acceptably to fill a 1080p frame or sits fine as an inset); we prefer
@@ -35,10 +37,16 @@ _MIN_WIDTH = 1280
 _MIN_HEIGHT = 720
 
 
+def serper_configured() -> bool:
+    """True when a Serper.dev API key is present."""
+    return bool(os.getenv("SERPER_API_KEY", "").strip())
+
+
 def cse_configured() -> bool:
-    """True when both Google Custom Search credentials are present."""
-    return bool(os.getenv("GOOGLE_CSE_API_KEY", "").strip()
-                and os.getenv("GOOGLE_CSE_CX", "").strip())
+    """True when ANY Google image-search backend is configured — Serper.dev, or
+    both Google Custom Search credentials. (Name kept for existing callers.)"""
+    return serper_configured() or bool(os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+                                       and os.getenv("GOOGLE_CSE_CX", "").strip())
 
 
 def _int_env(name: str, default: int) -> int:
@@ -107,21 +115,83 @@ def build_image_queries(entities: dict, max_queries: int = None) -> list:
     return deduped[:max(0, max_queries)]
 
 
+def _serper_image_search(query: str, num: int, errors: list,
+                         min_width: int, min_height: int) -> list:
+    """Google Images via Serper.dev. Same return shape as
+    :func:`google_image_search`. Asks Google for large images (``tbs=isz:l``,
+    env ``SERPER_IMAGE_TBS``; blank disables) and retries once without that
+    filter if Serper rejects it."""
+    api_key = os.getenv("SERPER_API_KEY", "").strip()
+    tbs = os.getenv("SERPER_IMAGE_TBS", "isz:l").strip()
+    payload = {"q": query, "num": 10}
+    gl = os.getenv("SERPER_GL", "").strip()
+    if gl:
+        payload["gl"] = gl
+    if tbs:
+        payload["tbs"] = tbs
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+    data = None
+    for attempt in range(2):
+        try:
+            r = requests.post(_SERPER_ENDPOINT, json=payload, headers=headers, timeout=20)
+            if r.status_code == 400 and "tbs" in payload:
+                payload.pop("tbs")          # filter not accepted → plain query
+                continue
+            r.raise_for_status()
+            data = r.json()
+            break
+        except Exception as e:
+            errors.append(f"serper images '{query}': {e}")
+            return []
+    if data is None:
+        return []
+
+    out = []
+    for item in (data.get("images") or []):
+        link = (item.get("imageUrl") or "").strip()
+        if not link:
+            continue
+        try:
+            w = int(item.get("imageWidth") or 0)
+            h = int(item.get("imageHeight") or 0)
+        except (TypeError, ValueError):
+            w = h = 0
+        if w and h and (w < min_width or h < min_height):
+            continue
+        out.append({
+            "url": link,
+            "source": "google_image",
+            "title": (item.get("title") or query).strip(),
+            "thumbnail": (item.get("thumbnailUrl") or "").strip(),
+            "width": w,
+            "height": h,
+            "context": (item.get("link") or "").strip(),
+        })
+        if len(out) >= num:
+            break
+    return out
+
+
 def google_image_search(query: str, num: int = 5, errors: list = None,
                         min_width: int = _MIN_WIDTH,
                         min_height: int = _MIN_HEIGHT) -> list:
-    """Search Google Images via the Custom Search JSON API for ``query``.
+    """Search Google Images for ``query`` — through Serper.dev when
+    ``SERPER_API_KEY`` is set, else the Custom Search JSON API.
 
     Returns up to ``num`` image dicts ``{url, source, title, thumbnail, width,
     height, context}`` large enough for a 1080p edit (≥ ``min_width`` ×
-    ``min_height``). Returns ``[]`` (and appends to ``errors``) when the
-    credentials are missing or the request fails."""
+    ``min_height``). ``context`` is the page the image appears on. Returns ``[]``
+    (and appends to ``errors``) when no backend is configured or the request
+    fails."""
     if errors is None:
         errors = []
+    if serper_configured():
+        return _serper_image_search(query, num, errors, min_width, min_height)
     api_key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
     cx = os.getenv("GOOGLE_CSE_CX", "").strip()
     if not (api_key and cx):
-        errors.append("google images: GOOGLE_CSE_API_KEY / GOOGLE_CSE_CX not set")
+        errors.append("google images: SERPER_API_KEY (or GOOGLE_CSE_API_KEY / "
+                      "GOOGLE_CSE_CX) not set")
         return []
 
     params = {
@@ -182,8 +252,8 @@ def fetch_related_images(script_text: str, api_key: str, errors: list = None,
     if errors is None:
         errors = []
     if not cse_configured():
-        errors.append("related images: Google Custom Search not configured "
-                      "(set GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX)")
+        errors.append("related images: Google image search not configured "
+                      "(set SERPER_API_KEY)")
         return []
     if per_query is None:
         per_query = _int_env("RELATED_IMAGE_PER_QUERY", 4)

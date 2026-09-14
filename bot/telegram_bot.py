@@ -545,6 +545,27 @@ def format_verify_line(result: dict):
     return "  ·  ".join(parts)
 
 
+def format_assets_line(result: dict):
+    """Per-shot Google images + extra clips, or None when neither ran. Extras are
+    reported as downloaded/found so a batch of failed extra downloads is visible
+    instead of silently vanishing from the zip."""
+    shots = result.get("shots") or []
+    parts = []
+    with_imgs = [s for s in shots if s.get("images")]
+    if with_imgs:
+        n = sum(len(s["images"]) for s in with_imgs)
+        parts.append(f"🖼 {n} Google image(s) for {len(with_imgs)} shot(s)")
+    extras = [s for s in shots if s.get("is_extra")]
+    if extras:
+        have = sum(1 for s in extras for c in (s.get("selected_results") or [])
+                   if c.get("local_path") and os.path.exists(c["local_path"]))
+        if result.get("download") is not None:
+            parts.append(f"🎞 extras: {have}/{len(extras)} downloaded")
+        else:
+            parts.append(f"🎞 {len(extras)} extra clip(s) queued")
+    return "  ·  ".join(parts) or None
+
+
 def format_review(proj: str, result: dict) -> str:
     """Pre-download review: counts, per-shot clip spread, QA flags, errors, and
     the action prompt."""
@@ -562,6 +583,9 @@ def format_review(proj: str, result: dict) -> str:
     verify_line = format_verify_line(result)
     if verify_line:
         lines.append(verify_line)
+    assets_line = format_assets_line(result)
+    if assets_line:
+        lines.append(assets_line)
     lines += format_qa_block(result.get("qa") or {})
     lines += format_errors_block(result.get("errors") or [])
     lines.append("")
@@ -705,6 +729,9 @@ def format_summary(proj: str, result: dict) -> str:
     verify_line = format_verify_line(result)
     if verify_line:
         lines.append(verify_line)
+    assets_line = format_assets_line(result)
+    if assets_line:
+        lines.append(assets_line)
     verdict = qa.get("overall") or "—"
     lines.append(f"QA: {verdict}" + (f"  ⚠️ {n_issues} flag(s)" if n_issues else ""))
     cost_line = format_cost_line(result)
@@ -881,8 +908,8 @@ def handle_overlay_only(chat_id, file_id: str, suggested_name: str) -> dict:
     edit_message(chat_id, msg_id, f"🅰️ {proj} — ✅ {n} overlay clip(s) rendered")
     _LAST["project"] = proj
     if n == 0:
-        send_message(chat_id, "No overlay-worthy moments were found (or the overlay "
-                              "renderer isn't installed on the server yet).")
+        send_message(chat_id, f"No overlays were produced: "
+                              f"{result.get('reason') or 'unknown reason'}.")
         return result
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
@@ -928,8 +955,19 @@ def handle_extras_only(chat_id, file_id: str, suggested_name: str) -> dict:
     edit_message(chat_id, msg_id, f"🎞 {proj} — ✅ {n} extra clip(s) added to library")
     _LAST["project"] = proj
     if n == 0:
-        send_message(chat_id, "No named products / brands / models / parts were found "
-                              "in the script, so there were no extra clips to fetch.")
+        found = len(result.get("shots") or [])
+        if found:
+            # Clips WERE found — they just didn't download. Say so, with the
+            # reason, instead of claiming the script named nothing.
+            errs = [e for e in (result.get("errors") or []) if e]
+            reason = f"\nFirst error: {errs[0][:300]}" if errs else ""
+            send_message(chat_id, f"⚠️ Found {found} extra clip(s) but none could be "
+                                  f"downloaded (spares were tried too).{reason}\n"
+                                  f"Run /test to check YouTube downloads on the server.")
+        else:
+            send_message(chat_id, "No named products / brands / models / parts (or usable "
+                                  "theme footage) were found for this script, so there were "
+                                  "no extra clips to fetch.")
         return result
     send_message(chat_id, f"📚 Added {n} related clip(s) to the Clip Library — search "
                           f"for them by keyword when building a video. (No timeline is "

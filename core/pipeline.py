@@ -669,6 +669,38 @@ def repick_failed_shots(shots: list, slot_ids, groq_key: str = None,
     return repaired
 
 
+def swap_failed_extras(shots: list, blacklist: set = None) -> int:
+    """Give every extra shot that has no downloadable clip (its pick failed and
+    was purged) the next unused spare from its keyword's search results.
+
+    Extras can't go through :func:`repick_failed_shots` (they have no narration
+    to re-rank against), so without this a failed extra download simply vanished.
+    Spares are pre-filtered by the same Shorts/length/orientation/HD rules as
+    the original pick. Returns how many extras got a replacement."""
+    blacklist = blacklist or set()
+    in_use = {c.get("url") for s in shots for c in (s.get("selected_results") or [])
+              if not c.get("_dl_failed")}
+    swapped = 0
+    for s in shots:
+        if not s.get("is_extra") or s.get("priority") == "none":
+            continue
+        sel = s.get("selected_results") or []
+        if sel and all(not c.get("_dl_failed") for c in sel):
+            continue
+        for spare in (s.get("extra_spares") or []):
+            url = spare.get("url")
+            if not url or url in blacklist or url in in_use:
+                continue
+            c = dict(spare)
+            c["matched_query"] = s.get("extra_keyword", "") or c.get("matched_query", "")
+            s["selected_results"] = [c]
+            s["auto_selected"] = True
+            in_use.add(url)
+            swapped += 1
+            break
+    return swapped
+
+
 def ensure_youtube_coverage(shots: list, groq_key: str = None, video_topic: str = "",
                             errors: list = None, blacklist: set = None) -> int:
     """Guarantee at least one YouTube clip in every non-empty shot's selection.
@@ -792,6 +824,7 @@ def download_and_repair(shots: list, project_name: str, quality: str = "1080",
         repaired_total += repick_failed_shots(
             shots, dead_slots, groq_key=key, video_topic=video_topic,
             errors=errors, blacklist=blacklist)
+        repaired_total += swap_failed_extras(shots, blacklist)
 
         rep = download_selected_clips(shots, project_name, quality=quality,
                                       progress=progress, should_cancel=should_cancel,
@@ -1260,21 +1293,48 @@ def _sfx_list_from_overlays(overlays: list) -> list:
 
 
 def build_text_overlays(project_name: str, segments: list, groq_key: str,
-                        fps: int = 30, shots: list = None) -> tuple:
+                        fps: int = 30, shots: list = None, diag: dict = None) -> tuple:
     """Extract + render animated text overlays for a project. Returns
     ``(overlays, sfx_list)`` ready for write_fcpxml. Best-effort: returns
     ``([], [])`` if disabled, unavailable, or nothing qualifies. ``shots``
-    (optional) names each overlay clip after the shot it overlays."""
+    (optional) names each overlay clip after the shot it overlays. ``diag``
+    (optional) is filled with why the result is what it is — see
+    :func:`core.overlays_remotion.build_overlays` — plus ``error`` on a crash."""
+    if diag is None:
+        diag = {}
     try:
         from core.overlays_remotion import build_overlays
         ov_dir = os.path.join(os.path.abspath("downloads"),
                               _safe_for_fs(project_name, 50), "overlays")
         overlays = build_overlays(ov_dir, segments=segments, groq_key=groq_key,
-                                  fps=fps, shots=shots)
+                                  fps=fps, shots=shots, diag=diag)
         return overlays, _sfx_list_from_overlays(overlays)
     except Exception as e:
         print(f"[overlays] build failed: {e}")
+        diag["error"] = f"{type(e).__name__}: {e}"[:300]
         return [], []
+
+
+def overlay_failure_reason(diag: dict) -> str:
+    """Plain-language reason a run produced no overlays, from a
+    :func:`build_text_overlays` ``diag``. Empty string when overlays rendered."""
+    diag = diag or {}
+    if diag.get("rendered"):
+        return ""
+    chunks, failed = diag.get("chunks", 0), diag.get("failed_chunks", 0)
+    if chunks and failed >= chunks:
+        return f"the highlight-picking LLM call failed ({diag.get('error') or 'unknown error'})"
+    if diag.get("highlights"):
+        if diag.get("remotion") is False:
+            return "the overlay renderer (Remotion) isn't installed on the server"
+        return (f"all {diag['highlights']} overlay render(s) failed — check the server "
+                f"logs for '[overlays] render'")
+    if diag.get("error"):
+        return diag["error"]
+    if failed:
+        return (f"{failed} of {chunks} transcript part(s) failed and the rest had "
+                f"nothing overlay-worthy ({diag.get('error', '')})")
+    return "the LLM found no overlay-worthy moments"
 
 
 def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: str = "auto",
@@ -1530,7 +1590,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # into the Clip Library — never onto the timeline (stills aren't b-roll, and
     # inject_library_candidates already filters them out of the video candidate
     # pool). Silently skipped when Google Custom Search isn't configured, so this
-    # is a no-op until GOOGLE_CSE_API_KEY/GOOGLE_CSE_CX are set. Gate
+    # is a no-op until SERPER_API_KEY (or GOOGLE_CSE_*) is set. Gate
     # ENABLE_RELATED_IMAGES.
     if _flag_default("ENABLE_RELATED_IMAGES", True):
         try:
@@ -1544,6 +1604,26 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
                     state.attempts["related_images"] = n_saved
         except Exception as e:
             errors.append(f"related images: {e}")
+
+    # 8f — Per-shot Google images: for every timeline shot, write a dedicated
+    # image query (video queries read badly as image searches), pull Google
+    # Images results via Serper, and save SHOT_IMAGES_PER_SHOT (default 3) into
+    # images/shots/shot_NN/ — attached to the shot, never on the timeline.
+    # No-op until SERPER_API_KEY is set. Gate ENABLE_SHOT_IMAGES.
+    if _flag_default("ENABLE_SHOT_IMAGES", True):
+        try:
+            from core.related_images import cse_configured
+            if cse_configured():
+                from core.shot_images import fetch_shot_images
+                _p(8, "Finding Google images per shot")
+                state.attempts["shot_images"] = fetch_shot_images(
+                    shots, project_name, api_key=key, video_topic=topic,
+                    errors=errors, should_cancel=should_cancel,
+                    progress=lambda d, t: _p(8, f"Finding Google images per shot · {d}/{t}"))
+        except PipelineCancelled:
+            raise
+        except Exception as e:
+            errors.append(f"shot images: {e}")
 
     # 9 — QA review (optional)
     if run_qa:
@@ -1586,8 +1666,14 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # (finalize_project after /download) reuses them.
     if _flag_default("ENABLE_TEXT_OVERLAYS", True):
         _p(9, "Rendering text overlays")
+        ov_diag: dict = {}
         state.overlays, state.sfx_list = build_text_overlays(
-            project_name, segments, key, shots=shots)
+            project_name, segments, key, shots=shots, diag=ov_diag)
+        if not state.overlays:
+            errors.append(f"overlays: none rendered — {overlay_failure_reason(ov_diag)}")
+        elif ov_diag.get("failed_chunks"):
+            errors.append(f"overlays: {ov_diag['failed_chunks']} of {ov_diag['chunks']} "
+                          f"transcript part(s) failed ({ov_diag.get('error', '')})")
 
     # 10 — Download (optional) — capped at 1080p, with the repair loop so a
     # YouTube clip that 404s at download time is replaced by a live one.
@@ -1638,7 +1724,12 @@ def run_overlays_only(audio_path: str, groq_key: str = None, project_name: str =
         raise RuntimeError("Transcription returned nothing — bad audio or missing GROQ key.")
 
     _p(2, "Rendering text overlays")
-    overlays, sfx_list = build_text_overlays(project_name, segments, key, fps=fps)
+    ov_diag: dict = {}
+    overlays, sfx_list = build_text_overlays(project_name, segments, key, fps=fps,
+                                             diag=ov_diag)
+    if ov_diag.get("failed_chunks") and overlays:
+        errors.append(f"{ov_diag['failed_chunks']} of {ov_diag['chunks']} transcript "
+                      f"part(s) failed ({ov_diag.get('error', '')})")
 
     _p(3, "Writing Premiere XML")
     proj = _safe_for_fs(project_name, 50)
@@ -1649,7 +1740,9 @@ def run_overlays_only(audio_path: str, groq_key: str = None, project_name: str =
                                          xml_dir=os.path.dirname(xml_path)))
 
     return {"project_name": project_name, "n_overlays": len(overlays),
-            "overlays": overlays, "xml_path": xml_path, "errors": errors}
+            "overlays": overlays, "xml_path": xml_path, "errors": errors,
+            "overlay_diag": ov_diag,
+            "reason": overlay_failure_reason(ov_diag) if not overlays else ""}
 
 
 def run_extras_only(audio_path: str, groq_key: str = None, project_name: str = "auto",
@@ -1710,12 +1803,13 @@ def run_extras_only(audio_path: str, groq_key: str = None, project_name: str = "
             except Exception as e:
                 errors.append(f"proxy pool: {e}")
         _p(3, "Downloading extra clips")
-        dl = download_selected_clips(
+        # download_and_repair swaps a failed extra for a spare from the same
+        # keyword's results before giving up on it (swap_failed_extras).
+        dl = download_and_repair(
             shots, project_name, quality=cap_quality(quality),
-            should_cancel=should_cancel,
+            groq_key=key, errors=errors, should_cancel=should_cancel,
             progress=lambda done, tot: _p(3, f"Downloading extra clips · {done}/{tot}"))
         errors.extend(dl.get("errors") or [])
-        drop_undownloaded(shots)
 
     # Extras are library-only: downloading them (above) already stored each clip
     # in the searchable Clip Library, so there's no timeline/XML to write — the
@@ -1734,22 +1828,28 @@ _IMAGE_EXT_BY_CT = {
 }
 
 
-def _download_image(url: str, out_dir: str, index: int) -> str:
+def _download_image(url: str, out_dir: str, index: int, stem: str = None) -> str:
     """Download a still image to ``out_dir`` and return its local path (or "" on
-    failure). Extension is taken from the Content-Type, falling back to the URL's
-    own suffix, then .jpg."""
+    failure). Saved as ``<stem><ext>`` (default ``img-<index>``). Extension is
+    taken from the Content-Type, falling back to the URL's own suffix, then .jpg.
+    A response that isn't an image (a hotlink-protection HTML page, say) counts
+    as a failure rather than being saved with an image extension."""
     import requests
     os.makedirs(out_dir, exist_ok=True)
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; B-Roll-Finder/1.0)"}
+    headers = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"),
+               "Accept": "image/avif,image/webp,image/*,*/*;q=0.8"}
     try:
         r = requests.get(url, headers=headers, timeout=25, stream=True)
         r.raise_for_status()
         ct = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ct and not ct.startswith("image/") and ct != "application/octet-stream":
+            return ""
         ext = _IMAGE_EXT_BY_CT.get(ct, "")
         if not ext:
             url_ext = os.path.splitext(url.split("?")[0])[1].lower()
             ext = url_ext if url_ext in (".jpg", ".jpeg", ".png", ".webp", ".gif") else ".jpg"
-        path = os.path.join(out_dir, f"img-{index:03d}{ext}")
+        path = os.path.join(out_dir, f"{stem or f'img-{index:03d}'}{ext}")
         with open(path, "wb") as f:
             for chunk in r.iter_content(1 << 16):
                 if chunk:
@@ -1810,8 +1910,7 @@ def run_related_images(audio_path: str, groq_key: str = None, project_name: str 
                        should_cancel=None) -> dict:
     """On-demand path (the /images command): transcribe → mine the script for the
     subjects it discusses (brands, car models, products, car parts & systems, and
-    general ideas) → fetch related still images from Google (Custom Search JSON
-    API) → download each and store it in the searchable Clip Library.
+    general ideas) → fetch related still images from Google (via Serper) → download each and store it in the searchable Clip Library.
 
     Library-only, like extras: no timeline/XML is produced; the editor finds the
     images by searching the library. Returns
@@ -1837,8 +1936,7 @@ def run_related_images(audio_path: str, groq_key: str = None, project_name: str 
                 pass
 
     if not cse_configured():
-        raise ValueError("Google Custom Search isn't configured — set "
-                         "GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX.")
+        raise ValueError("Google image search isn't configured — set SERPER_API_KEY.")
 
     _p(1, "Transcribing voiceover")
     segments = transcribe_audio(audio_path, key)

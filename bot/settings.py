@@ -45,6 +45,9 @@ OPTIONS = [
                        "neon": "Neon Glow", "boxed_news": "Boxed News"}.get(v, v)},
     {"key": "extra_clips", "label": "Extra clips",    "type": "bool",   "env": "ENABLE_EXTRA_CLIPS"},
     {"key": "related_images", "label": "Related images", "type": "bool", "env": "ENABLE_RELATED_IMAGES"},
+    {"key": "shot_images", "label": "Google images / shot", "type": "bool", "env": "ENABLE_SHOT_IMAGES"},
+    {"key": "shot_images_num", "label": "Images per shot", "type": "choice", "env": "SHOT_IMAGES_PER_SHOT",
+     "choices": [1, 2, 3, 4, 5]},
     {"key": "detailed_queries", "label": "Detailed queries", "type": "bool", "env": "ENABLE_DETAILED_QUERIES"},
     {"key": "purge_after_zip", "label": "Delete clips after zip", "type": "bool"},
 ]
@@ -69,6 +72,9 @@ DEFAULTS = {
     "overlay_style": "bold_yellow",
     "extra_clips": True,
     "related_images": True,
+    # Needs SERPER_API_KEY (no-op without it); ~1 Serper credit per shot.
+    "shot_images": True,
+    "shot_images_num": 3,
     "detailed_queries": False,
     "purge_after_zip": True,
 }
