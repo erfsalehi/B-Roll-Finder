@@ -92,7 +92,7 @@ def _yt(title):
 def test_fetch_extra_shots_builds_placed_extras(monkeypatch):
     monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
     monkeypatch.setattr(extras, "extract_extra_entities",
-                        lambda script, key: {"brands": ["Toyota"], "models": [], "parts": []})
+                        lambda script, key, **k: {"brands": ["Toyota"], "models": [], "parts": []})
     import core.director_search as ds
     monkeypatch.setattr(ds, "search_youtube_classic",
                         lambda kw, num_results=3, errors=None: [_yt(f"{kw}-{i}") for i in range(num_results)])

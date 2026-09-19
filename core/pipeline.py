@@ -301,6 +301,16 @@ def _failures_to_qa(failures: list) -> dict:
     return {"overall": "Boundary validation", "issues": issues}
 
 
+def _reset_image_backends() -> None:
+    """Re-arm the image-search circuit breaker for a new job (a backend that ran
+    out of quota yesterday may be fine today)."""
+    try:
+        from core.related_images import reset_image_backends
+        reset_image_backends()
+    except Exception:
+        pass
+
+
 def _check_cancel(should_cancel) -> None:
     if should_cancel and should_cancel():
         raise PipelineCancelled("Cancelled by user.")
@@ -1094,6 +1104,32 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     return sum(1 for s in targets if s.get("selected_results"))
 
 
+def _swap_failing_extras(shots: list, report: dict, min_height: int = None) -> int:
+    """Replace each extra clip flagged in ``report`` with the first unused spare
+    from the same keyword's results that passes the output boundaries. Returns
+    how many were swapped."""
+    by_slot = {s.get("slot_id"): s for s in shots if s.get("is_extra")}
+    in_use = {c.get("url") for s in shots for c in (s.get("selected_results") or [])}
+    swapped = 0
+    for f in report.get("failures") or []:
+        s = by_slot.get(f.get("slot_id"))
+        sel = (s or {}).get("selected_results") or []
+        idx = f.get("clip_index", 0)
+        if not s or idx >= len(sel):
+            continue
+        for spare in s.get("extra_spares") or []:
+            url = spare.get("url")
+            if not url or url in in_use or _clip_violations(spare, min_height=min_height):
+                continue
+            c = dict(spare)
+            c["matched_query"] = s.get("extra_keyword", "") or c.get("matched_query", "")
+            sel[idx] = c
+            in_use.add(url)
+            swapped += 1
+            break
+    return swapped
+
+
 def enforce_timeline(shots: list, groq_key: str = None, video_topic: str = "",
                      errors: list = None, progress=None, min_height: int = None,
                      max_rounds: int = 3) -> dict:
@@ -1110,6 +1146,10 @@ def enforce_timeline(shots: list, groq_key: str = None, video_topic: str = "",
         errors = []
     rounds = 0
     report = validate_timeline(shots, min_height=min_height)
+    # Extras have no narration, so refine_flagged_shots skips them and a failing
+    # extra would simply be dropped. Swap in a passing spare from its own search.
+    if not report["ok"] and _swap_failing_extras(shots, report, min_height):
+        report = validate_timeline(shots, min_height=min_height)
     while not report["ok"] and rounds < max_rounds:
         rounds += 1
         failing = {f["slot_id"] for f in report["failures"] if f["slot_id"] is not None}
@@ -1382,6 +1422,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # time, so the tracker is global but job-scoped).
     from core import usage as _usage
     _usage.reset()
+    _reset_image_backends()
 
     # Fresh query cache per job: the cross-shot cache is meant to dedupe API
     # calls WITHIN one run. In the long-lived bot process, leftovers from a
@@ -1572,16 +1613,21 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     if _flag_default("ENABLE_EXTRA_CLIPS", True):
         _p(8, "Fetching extra contextual clips")
         try:
-            from core.extras import fetch_extra_shots
+            from core.extras import fetch_extra_shots, extras_empty_reason
             real = [s for s in shots if not s.get("is_extra")]
             last_end = max((float(s.get("end_timestamp", s.get("timestamp", 0)) or 0)
                             for s in real), default=0.0)
             next_slot = max((int(s.get("slot_id", 0) or 0) for s in real), default=0) + 1
+            ex_diag: dict = {}
             extra_shots = fetch_extra_shots(script_text, key, errors=errors,
-                                            start_slot_id=next_slot, start_sec=last_end)
+                                            start_slot_id=next_slot, start_sec=last_end,
+                                            diag=ex_diag)
+            state.attempts["extras_diag"] = ex_diag
             if extra_shots:
                 shots.extend(extra_shots)
                 state.attempts["extras"] = len(extra_shots)
+            else:
+                errors.append(f"extras: none found — {extras_empty_reason(ex_diag)}")
         except Exception as e:
             errors.append(f"extras: {e}")
 
@@ -1612,14 +1658,12 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # No-op until SERPER_API_KEY is set. Gate ENABLE_SHOT_IMAGES.
     if _flag_default("ENABLE_SHOT_IMAGES", True):
         try:
-            from core.related_images import cse_configured
-            if cse_configured():
-                from core.shot_images import fetch_shot_images
-                _p(8, "Finding Google images per shot")
-                state.attempts["shot_images"] = fetch_shot_images(
-                    shots, project_name, api_key=key, video_topic=topic,
-                    errors=errors, should_cancel=should_cancel,
-                    progress=lambda d, t: _p(8, f"Finding Google images per shot · {d}/{t}"))
+            from core.shot_images import fetch_shot_images
+            _p(8, "Finding Google images per shot")
+            state.attempts["shot_images"] = fetch_shot_images(
+                shots, project_name, api_key=key, video_topic=topic,
+                errors=errors, should_cancel=should_cancel,
+                progress=lambda d, t: _p(8, f"Finding Google images per shot · {d}/{t}"))
         except PipelineCancelled:
             raise
         except Exception as e:
@@ -1767,6 +1811,7 @@ def run_extras_only(audio_path: str, groq_key: str = None, project_name: str = "
     # Job-scoped API cost accounting + a fresh query cache, mirroring the full run.
     from core import usage as _usage
     _usage.reset()
+    _reset_image_backends()
     from core.director_search import clear_query_cache
     clear_query_cache()
 
@@ -1785,11 +1830,14 @@ def run_extras_only(audio_path: str, groq_key: str = None, project_name: str = "
     script_text = " ".join(s["text"].strip() for s in segments).strip()
 
     _p(2, "Mining named entities + fetching extra clips")
+    ex_diag: dict = {}
     shots = fetch_extra_shots(script_text, key, errors=errors,
-                              start_slot_id=1, start_sec=0.0)
+                              start_slot_id=1, start_sec=0.0, diag=ex_diag)
     if not shots:
+        from core.extras import extras_empty_reason
         return {"project_name": project_name, "shots": [], "n_clips": 0,
                 "download": None, "xml_path": None, "errors": errors,
+                "reason": extras_empty_reason(ex_diag),
                 "cost": _usage.summary()}
 
     dl = None
@@ -1926,6 +1974,7 @@ def run_related_images(audio_path: str, groq_key: str = None, project_name: str 
 
     from core import usage as _usage
     _usage.reset()
+    _reset_image_backends()
 
     def _p(step, label):
         _check_cancel(should_cancel)

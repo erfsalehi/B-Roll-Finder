@@ -21,6 +21,7 @@ Shorts). They're appended AFTER the last narration shot as extra "shots" named
 ``Extra - <keyword>``. YouTube-only by design.
 """
 
+import hashlib
 import os
 
 from core.keywords import _call_llm_json
@@ -67,20 +68,40 @@ def _theme_max() -> int:
         return 8
 
 
-def extract_extra_entities(script_text: str, api_key: str) -> dict:
+# Extras (8d) and related images (8e) both need the entities of the same
+# script. Remember the last successful extraction so the second stage doesn't pay
+# for, or risk, a second reasoning call. Keyed by a hash of the script text.
+_ENTITY_CACHE: dict = {}
+
+
+def extract_extra_entities(script_text: str, api_key: str, errors: list = None) -> dict:
     """Pull ``{brands, models, parts, products, themes}`` from the script — the
     named automotive entities plus a few concept/theme B-roll search phrases for
     the video's overall subject (so even an entity-less video still gets on-theme
-    extras). Returns empty lists on any failure."""
+    extras). Returns empty lists on any failure, and says why in ``errors``."""
     out = {"brands": [], "models": [], "parts": [], "products": [], "themes": []}
     if not api_key or not (script_text or "").strip():
         return out
+    ck = hashlib.sha1(script_text.encode("utf-8", "ignore")).hexdigest()
+    if ck in _ENTITY_CACHE:
+        return {k: list(v) for k, v in _ENTITY_CACHE[ck].items()}
     client = Groq(api_key=api_key) if Groq else None
     try:
+        # allow_fallback: extras are optional, so in paid-only mode a DeepSeek
+        # hiccup should drop to the free tier rather than silently yield nothing.
         data = _call_llm_json(client, _ENTITY_PROMPT,
-                              f"SCRIPT:\n{script_text[:12000]}", tier="smart")
+                              f"SCRIPT:\n{script_text[:12000]}", tier="smart",
+                              allow_fallback=True)
     except Exception as e:
         print(f"[extras] entity extraction failed: {e}")
+        if errors is not None:
+            errors.append(f"extras: entity extraction failed "
+                          f"({type(e).__name__}: {str(e)[:150]})")
+        return out
+    if not isinstance(data, dict):
+        if errors is not None:
+            errors.append(f"extras: entity extraction returned a "
+                          f"{type(data).__name__}, not a JSON object")
         return out
     for k in out:
         seen = set()
@@ -91,6 +112,8 @@ def extract_extra_entities(script_text: str, api_key: str) -> dict:
                 seen.add(key)
                 out[k].append(v)
     out["themes"] = out["themes"][:_theme_max()]   # bound the concept budget
+    _ENTITY_CACHE.clear()                            # one script at a time
+    _ENTITY_CACHE[ck] = {k: list(v) for k, v in out.items()}
     return out
 
 
@@ -161,6 +184,23 @@ def build_extra_keywords(entities: dict, max_keywords: int = None) -> list:
     return deduped[:max(0, max_keywords)]
 
 
+def extras_empty_reason(diag: dict) -> str:
+    """Plain-language reason :func:`fetch_extra_shots` returned no clips, from its
+    ``diag``. Empty string when it produced some."""
+    diag = diag or {}
+    if diag.get("clips"):
+        return ""
+    if not diag.get("entities"):
+        return "the script scan found nothing to search for (see any 'entity extraction' error)"
+    if not diag.get("keywords"):
+        return "no search keywords could be built from the script"
+    kw, empty, filt = diag["keywords"], diag.get("no_results", 0), diag.get("all_filtered", 0)
+    if empty >= kw:
+        return f"YouTube search returned nothing for all {kw} keyword(s)"
+    return (f"of {kw} keyword(s), {empty} had no YouTube results and {filt} had only "
+            f"Shorts / vertical / SD / over-long videos")
+
+
 def _extra_per_keyword() -> int:
     try:
         return max(1, int(os.getenv("EXTRA_PER_KEYWORD", "2") or 2))
@@ -170,7 +210,8 @@ def _extra_per_keyword() -> int:
 
 def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
                       start_slot_id: int = 1, start_sec: float = 0.0,
-                      clip_sec: float = None, min_height: int = 720) -> list:
+                      clip_sec: float = None, min_height: int = 720,
+                      diag: dict = None) -> list:
     """Build the extra "shots" to append after the timeline.
 
     Extracts entities → keywords → fetches 2-3 HD landscape YouTube clips per
@@ -189,8 +230,17 @@ def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
         except ValueError:
             clip_sec = 6.0
 
-    entities = extract_extra_entities(script_text, api_key)
+    # ``diag`` records how far the stage got, so "no extras" in the bot summary
+    # comes with a reason instead of the stage just being absent.
+    if diag is None:
+        diag = {}
+    diag.update({"entities": 0, "keywords": 0, "no_results": 0, "all_filtered": 0,
+                 "clips": 0})
+
+    entities = extract_extra_entities(script_text, api_key, errors=errors)
+    diag["entities"] = sum(len(v) for v in entities.values())
     keywords = build_extra_keywords(entities)
+    diag["keywords"] = len(keywords)
     if not keywords:
         return []
 
@@ -210,6 +260,7 @@ def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
                  "video_results": search_youtube_classic(term, num_results=per_kw * 3,
                                                           errors=errors)}
         if not probe["video_results"]:
+            diag["no_results"] += 1
             continue
         drop_shorts([probe])
         drop_long_videos([probe])
@@ -221,6 +272,9 @@ def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
                 errors.append(f"extras hd_filter '{term}': {e}")
 
         pool = [c for c in (probe.get("video_results") or []) if c.get("url")]
+        if not pool:
+            diag["all_filtered"] += 1
+            continue
         picks, spares = pool[:per_kw], pool[per_kw:]
         for c in picks:
             if not c.get("url"):
@@ -244,4 +298,5 @@ def fetch_extra_shots(script_text: str, api_key: str, errors: list = None,
             })
             slot += 1
             cursor += clip_sec
+    diag["clips"] = len(shots)
     return shots

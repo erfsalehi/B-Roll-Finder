@@ -28,7 +28,8 @@ import os
 import re
 import threading
 
-from core.related_images import cse_configured, google_image_search
+from core.related_images import (backend_tripped, google_image_search,
+                                  serper_configured)
 
 
 _BATCH = 40   # shots per query-writing LLM call
@@ -146,7 +147,14 @@ def fetch_shot_images(shots: list, project_name: str, api_key: str = None,
         errors = []
     if per_shot is None:
         per_shot = per_shot_count()
-    if per_shot <= 0 or not cse_configured():
+    if per_shot <= 0:
+        return 0
+    # Serper only. Google Custom Search's free tier is 100 queries a day, and a
+    # 10-minute video has 100+ shots, so the fallback just produced a wall of
+    # 429s. Related images (a few dozen queries) still accept it.
+    if not serper_configured():
+        errors.append("shot images: skipped — SERPER_API_KEY isn't set in this "
+                      "bot's environment (per-shot images don't use Google Custom Search)")
         return 0
 
     targets = [s for s in shots if not s.get("is_extra")
@@ -168,6 +176,11 @@ def fetch_shot_images(shots: list, project_name: str, api_key: str = None,
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
         for q, imgs in ex.map(_search, uniq):
             results[q] = imgs
+
+    # The backend refused (out of credits / bad key): the one error it logged
+    # says why, so don't add a "no images" line for every shot on top of it.
+    if backend_tripped("serper"):
+        return 0
 
     # Claim candidates shot by shot (in timeline order) so no URL repeats.
     claimed: set = set()

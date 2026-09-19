@@ -502,9 +502,12 @@ def format_qa_block(qa: dict, limit: int = 8) -> list:
 
 
 def _err_signature(msg: str) -> str:
-    """Collapse a specific error to its type: mask quoted queries/paths and
-    numbers so 3,000 'search failed for <query>' lines become one signature."""
-    s = re.sub(r"'[^']*'", "'…'", str(msg))
+    """Collapse a specific error to its type: mask quoted queries/paths, URL
+    query strings and numbers so 3,000 'search failed for <query>' lines become
+    one signature. Dropping query strings also keeps API keys that ride in a
+    request URL (Google Custom Search's ``key=``) out of the chat."""
+    s = re.sub(r"(https?://[^\s?'\"]+)\?[^\s'\"]*", r"\1", str(msg))
+    s = re.sub(r"'[^']*'", "'…'", s)
     s = re.sub(r"\d+", "#", s)
     return s.strip()[:180]
 
@@ -556,6 +559,11 @@ def format_assets_line(result: dict):
         n = sum(len(s["images"]) for s in with_imgs)
         parts.append(f"🖼 {n} Google image(s) for {len(with_imgs)} shot(s)")
     extras = [s for s in shots if s.get("is_extra")]
+    ex_diag = (result.get("attempts") or {}).get("extras_diag")
+    if not extras and ex_diag is not None:
+        # The stage ran and produced nothing — say so instead of omitting it.
+        from core.extras import extras_empty_reason
+        parts.append(f"🎞 extras: none — {extras_empty_reason(ex_diag)}")
     if extras:
         have = sum(1 for s in extras for c in (s.get("selected_results") or [])
                    if c.get("local_path") and os.path.exists(c["local_path"]))
@@ -965,9 +973,9 @@ def handle_extras_only(chat_id, file_id: str, suggested_name: str) -> dict:
                                   f"downloaded (spares were tried too).{reason}\n"
                                   f"Run /test to check YouTube downloads on the server.")
         else:
-            send_message(chat_id, "No named products / brands / models / parts (or usable "
-                                  "theme footage) were found for this script, so there were "
-                                  "no extra clips to fetch.")
+            send_message(chat_id, "⚠️ No extra clips: "
+                                  + (result.get("reason") or "nothing usable was found")
+                                  + ".")
         return result
     send_message(chat_id, f"📚 Added {n} related clip(s) to the Clip Library — search "
                           f"for them by keyword when building a video. (No timeline is "
@@ -1570,6 +1578,18 @@ def check_health(timeout: int = 8) -> list:
 
     ds = bool(os.getenv("DEEPSEEK_API_KEY"))
     checks.append(("DeepSeek (OpenRouter)", ds, "set" if ds else "not set (free tier)"))
+
+    # Google images: per-shot images need Serper; Custom Search alone can only
+    # serve the (small) related-images pass.
+    try:
+        from core.related_images import image_backend
+        ib = image_backend()
+        checks.append(("Google images", ib == "serper", {
+            "serper": "Serper",
+            "cse": "SERPER_API_KEY NOT SET — Custom Search only, so per-shot images are off",
+        }.get(ib, "not configured — set SERPER_API_KEY")))
+    except Exception:
+        pass
 
     # Visual verify — surface the mismatch that would otherwise fail silently:
     # the toggle on with no key means the stage no-ops for the whole run.

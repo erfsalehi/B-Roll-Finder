@@ -227,3 +227,109 @@ def test_overlay_failure_reason_messages():
     assert "render" in pl.overlay_failure_reason(
         {"chunks": 1, "failed_chunks": 0, "highlights": 5, "rendered": 0, "remotion": True})
     assert pl.overlay_failure_reason({"rendered": 3}) == ""
+
+
+# ── Backend failures: stop early, never leak keys ─────────────────────────────
+
+def test_cse_429_trips_breaker_and_redacts_key(monkeypatch):
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_CSE_API_KEY", "AIzaSECRET")
+    monkeypatch.setenv("GOOGLE_CSE_CX", "cx1")
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(params["q"])
+        return _Resp({}, 429)
+
+    monkeypatch.setattr(ri.requests, "get", fake_get)
+    errors = []
+    for q in ("a", "b", "c"):
+        assert ri.google_image_search(q, errors=errors) == []
+    assert calls == ["a"]                       # later queries never hit the API
+    assert len(errors) == 1 and "quota exhausted" in errors[0]
+    assert ri.backend_tripped("cse")
+    ri.reset_image_backends()
+    assert not ri.backend_tripped("cse")
+
+
+def test_redact_strips_query_string():
+    msg = ("429 Client Error: Too Many Requests for url: "
+           "https://www.googleapis.com/customsearch/v1?key=AIzaSECRET&cx=abc&q=x")
+    out = ri._redact(msg)
+    assert "AIzaSECRET" not in out and "cx=abc" not in out
+    assert out.endswith("https://www.googleapis.com/customsearch/v1")
+
+
+def test_serper_out_of_credits_trips_once(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "k")
+    calls = []
+    monkeypatch.setattr(ri.requests, "post",
+                        lambda *a, **k: calls.append(1) or _Resp({}, 402))
+    errors = []
+    ri.google_image_search("a", errors=errors)
+    ri.google_image_search("b", errors=errors)
+    assert len(calls) == 1
+    assert errors == ["google images: Serper account is out of credits — "
+                      "stopped searching after 'a'"]
+
+
+def test_shot_images_need_serper(monkeypatch, tmp_path):
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_CSE_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_CSE_CX", "cx")
+    monkeypatch.setattr(ri.requests, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no CSE call")))
+    errors = []
+    shots = [{"slot_id": i, "text": "line", "search_queries": ["q"]} for i in range(1, 50)]
+    assert si.fetch_shot_images(shots, "p", errors=errors) == 0
+    assert len(errors) == 1 and "SERPER_API_KEY" in errors[0]
+
+
+def test_bot_error_signature_hides_url_query():
+    from bot.telegram_bot import _err_signature
+    sig = _err_signature("google images 'x': 429 for url: "
+                         "https://www.googleapis.com/customsearch/v1?key=AIzaSECRET&q=y")
+    assert "AIzaSECRET" not in sig and "key=" not in sig
+
+
+# ── Extras: say why there are none; repair failing extras from spares ─────────
+
+def test_extras_extraction_failure_is_reported(monkeypatch):
+    import core.extras as ex
+
+    def boom(*a, **k):
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(ex, "_call_llm_json", boom)
+    errors, diag = [], {}
+    assert ex.fetch_extra_shots("a script", "k", errors=errors, diag=diag) == []
+    assert any("entity extraction failed" in e for e in errors)
+    assert "found nothing" in ex.extras_empty_reason(diag)
+
+
+def test_extras_entity_cache_shared_between_stages(monkeypatch):
+    import core.extras as ex
+    calls = []
+    monkeypatch.setattr(ex, "_call_llm_json",
+                        lambda *a, **k: calls.append(1) or {"brands": ["Ford"]})
+    first = ex.extract_extra_entities("same script", "k")
+    first["brands"].append("mutated")            # callers get a copy
+    assert ex.extract_extra_entities("same script", "k")["brands"] == ["Ford"]
+    assert len(calls) == 1
+
+
+def test_extras_empty_reason_youtube():
+    import core.extras as ex
+    assert "returned nothing for all 4" in ex.extras_empty_reason(
+        {"entities": 3, "keywords": 4, "no_results": 4, "all_filtered": 0, "clips": 0})
+    assert ex.extras_empty_reason({"clips": 2}) == ""
+
+
+def test_enforce_timeline_swaps_failing_extra_for_spare():
+    bad = {"url": "https://yt/bad", "source": "youtube", "width": 1080, "height": 1920}
+    good = {"url": "https://yt/good", "source": "youtube", "width": 1920, "height": 1080}
+    shots = [{"slot_id": 9, "is_extra": True, "timestamp": 0, "extra_keyword": "ford logo",
+              "selected_results": [bad], "extra_spares": [dict(bad), good]}]
+    rep = pl.enforce_timeline(shots, errors=[])
+    assert rep["ok"] and rep["dropped"] == 0
+    assert shots[0]["selected_results"][0]["url"] == "https://yt/good"

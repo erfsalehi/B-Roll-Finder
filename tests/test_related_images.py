@@ -49,6 +49,8 @@ def test_build_image_queries_dedupes():
 # ── Google Custom Search call ─────────────────────────────────────────────────
 
 class _FakeResp:
+    status_code = 200
+
     def __init__(self, payload):
         self._payload = payload
 
@@ -93,7 +95,7 @@ def test_fetch_related_images_dedupes_across_queries(monkeypatch):
     monkeypatch.setenv("GOOGLE_CSE_API_KEY", "k")
     monkeypatch.setenv("GOOGLE_CSE_CX", "cx")
     monkeypatch.setattr(ri, "extract_extra_entities",
-                        lambda script, key: {"brands": ["Toyota"], "models": [],
+                        lambda script, key, **k: {"brands": ["Toyota"], "models": [],
                                              "parts": [], "products": [], "themes": []})
     # Every query returns the SAME image URL — the final list must de-dup it.
     monkeypatch.setattr(ri, "google_image_search",

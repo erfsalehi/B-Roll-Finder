@@ -18,6 +18,7 @@ it on 2027-01-01). Only images large enough for a 1080p edit are kept.
 """
 
 import os
+import re
 
 import requests
 
@@ -49,11 +50,62 @@ def cse_configured() -> bool:
                                        and os.getenv("GOOGLE_CSE_CX", "").strip())
 
 
+def image_backend() -> str:
+    """Which backend :func:`google_image_search` will use: ``"serper"``,
+    ``"cse"`` or ``""`` (none configured)."""
+    if serper_configured():
+        return "serper"
+    if cse_configured():
+        return "cse"
+    return ""
+
+
 def _int_env(name: str, default: int) -> int:
     try:
         return max(0, int(os.getenv(name, str(default)) or default))
     except ValueError:
         return default
+
+
+def _redact(msg) -> str:
+    """Error text safe to show in chat: requests puts the full request URL in an
+    HTTPError message, and a Custom Search URL carries the API key and cx as
+    query parameters. Drop every URL's query string."""
+    return re.sub(r"(https?://[^\s?'\"]+)\?[^\s'\"]*", r"\1", str(msg))
+
+
+# ── Circuit breaker ───────────────────────────────────────────────────────────
+# Once a backend says "quota exhausted / out of credits / bad key", every further
+# query in the run fails the same way. Without this, a 100-shot video fired 100+
+# doomed requests and buried the run summary in one error per query. The first
+# hard failure trips the backend; later searches return [] without a request.
+# The pipeline calls reset_image_backends() at the start of every job.
+_TRIPPED: dict = {}   # backend -> reason
+
+
+def reset_image_backends() -> None:
+    _TRIPPED.clear()
+
+
+def backend_tripped(backend: str = None) -> str:
+    """The reason ``backend`` (default: the active one) was switched off for this
+    run, or "" when it's usable."""
+    return _TRIPPED.get(backend or image_backend(), "")
+
+
+def _trip(backend: str, status: int, errors: list, query: str) -> None:
+    if backend in _TRIPPED:
+        return
+    why = {
+        "cse": {429: "Google Custom Search quota exhausted (the free tier is 100 queries/day)",
+                403: "Google Custom Search rejected the key (API not enabled or key restricted)"},
+        "serper": {401: "Serper rejected SERPER_API_KEY",
+                   402: "Serper account is out of credits",
+                   403: "Serper rejected SERPER_API_KEY",
+                   429: "Serper rate limit hit"},
+    }.get(backend, {}).get(status, f"HTTP {status}")
+    _TRIPPED[backend] = why
+    errors.append(f"google images: {why} — stopped searching after '{query}'")
 
 
 def build_image_queries(entities: dict, max_queries: int = None) -> list:
@@ -137,11 +189,14 @@ def _serper_image_search(query: str, num: int, errors: list,
             if r.status_code == 400 and "tbs" in payload:
                 payload.pop("tbs")          # filter not accepted → plain query
                 continue
+            if r.status_code in (401, 402, 403, 429):
+                _trip("serper", r.status_code, errors, query)
+                return []
             r.raise_for_status()
             data = r.json()
             break
         except Exception as e:
-            errors.append(f"serper images '{query}': {e}")
+            errors.append(f"serper images '{query}': {_redact(e)}")
             return []
     if data is None:
         return []
@@ -185,6 +240,8 @@ def google_image_search(query: str, num: int = 5, errors: list = None,
     fails."""
     if errors is None:
         errors = []
+    if backend_tripped():
+        return []
     if serper_configured():
         return _serper_image_search(query, num, errors, min_width, min_height)
     api_key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
@@ -207,10 +264,13 @@ def google_image_search(query: str, num: int = 5, errors: list = None,
     }
     try:
         r = requests.get(_CSE_ENDPOINT, params=params, timeout=20)
+        if r.status_code in (403, 429):
+            _trip("cse", r.status_code, errors, query)
+            return []
         r.raise_for_status()
         data = r.json()
     except Exception as e:
-        errors.append(f"google images '{query}': {e}")
+        errors.append(f"google images '{query}': {_redact(e)}")
         return []
 
     out = []
@@ -258,7 +318,7 @@ def fetch_related_images(script_text: str, api_key: str, errors: list = None,
     if per_query is None:
         per_query = _int_env("RELATED_IMAGE_PER_QUERY", 4)
 
-    entities = extract_extra_entities(script_text, api_key)
+    entities = extract_extra_entities(script_text, api_key, errors=errors)
     queries = build_image_queries(entities)
     if not queries:
         return []
