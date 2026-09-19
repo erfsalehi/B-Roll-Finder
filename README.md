@@ -1,229 +1,380 @@
 # B-Roll Finder
 
-**From script to Premiere-ready sequence — automatically.**
+**From voiceover to Premiere-ready project, hands-free.**
 
-B-Roll Finder takes a voiceover script and audio file, transcribes it, breaks it into shots, searches YouTube / Pexels / Pixabay for the right footage, lets you review and pick clips, generates on-screen text overlays with sound effects, and exports a complete FCP7 XML that drops straight into Premiere Pro.
+Send a voiceover to a Telegram bot. B-Roll Finder transcribes it, cuts it into shots, searches YouTube, Pexels and your own clip library for footage, ranks and picks clips for every shot, optionally has Gemini watch the YouTube picks to confirm they match, renders animated text overlays, downloads everything, and delivers a zipped project with a Premiere Pro XML ready to import.
 
----
-
-## The problem it solves
-
-Editors working on video-heavy content (tutorials, documentaries, product explainers) spend hours manually searching stock sites for B-roll, downloading clips, naming files, and building text overlay graphics. For recurring topics — like automotive content — the same clips get found and re-downloaded across projects, wasting time and API quota.
-
-B-Roll Finder automates the search-and-select loop entirely, and builds a **local clip library** that gets smarter with every project: clips your team has confirmed and downloaded are indexed semantically so future searches surface them first.
-
-It can run fully hands-off (**context-aware keywords + auto-selection** turn a transcript into a finished, download-ready sequence with no manual picking), runs on **free LLMs by default** with an optional **paid DeepSeek tier** for higher quality, and lets editors on **separate machines pool their libraries** by exporting and merging.
+It runs as an **always-on Telegram bot** on a server (the main way to use it) or as a **Streamlit app** on your desktop when you want to pick clips by hand.
 
 ---
 
-## Workflow
+## Contents
+
+- [What a run does](#what-a-run-does)
+- [Telegram bot](#telegram-bot)
+- [What you get](#what-you-get)
+- [How it picks footage](#how-it-picks-footage)
+- [Self-healing: no empty shots, no broken XML](#self-healing-no-empty-shots-no-broken-xml)
+- [Text overlays](#text-overlays)
+- [Extras and images](#extras-and-images)
+- [Clip Library](#clip-library)
+- [Deploying on a server](#deploying-on-a-server)
+- [YouTube on a server: cookies and proxies](#youtube-on-a-server-cookies-and-proxies)
+- [Streamlit desktop app](#streamlit-desktop-app)
+- [API keys](#api-keys)
+- [LLM providers and cost](#llm-providers-and-cost)
+- [Configuration](#configuration)
+- [Project layout](#project-layout)
+- [Tests](#tests)
+
+---
+
+## What a run does
+
+The headless pipeline (`core/pipeline.py`) runs these stages in order. It checks for cancellation between every stage.
 
 ```
-Upload script + audio
-        ↓
-  Transcribe (Whisper via Groq)
-        ↓
-  Generate shot list  ←  AI director assigns intent, type, queries per shot
-                         (optional context-aware pre-pass anchors queries to
-                          the macro-subject in play at each timestamp)
-        ↓
-  Fetch candidates    ←  Pexels · Pixabay · YouTube · 📚 Clip Library
-        ↓
-  LLM ranking         ←  Judge filters irrelevant clips, sorts by fit
-                         (optional auto-select binds the top clip per shot)
-        ↓
-  Human review        ←  Pick clips in a gallery UI — or just review/override
-                          the auto-selected picks
-        ↓
-  Download            ←  Parallel, deduped, cross-session cached
-        ↓
-  AI text overlays    ←  On-screen captions, SFX, animations
-        ↓
-  Export              ←  Premiere Pro XML  ·  shot_list.json  ·  .srt
+ 1   Transcribe            Whisper via Groq, word-level timestamps
+ 2   Topic                 one "smart" LLM pass names what the video is about
+ 3   Context pre-pass      optional: map the script into subject segments
+ 4   Shot list             AI director: timing, intent, 2–3 search queries per shot
+ 5   Fetch                 YouTube (yt-dlp) · Pexels · Clip Library, in parallel
+ 6   Filter                drop SD (YouTube Data API), Shorts, vertical, over-long clips
+ 7   Rank                  LLM-as-judge, batched, orders candidates per shot
+ 7b  Visual verify         optional: Gemini watches the shortlisted YouTube clips
+ 8   Auto-select           per-shot quota of Pexels + YouTube clips
+ 8b  Fill empty shots      multi-pass re-fetch, YouTube-first
+ 8c  Topic fallback        generic on-topic clip for anything still empty
+ 8d  Extra clips           brand / model / part / theme B-roll → Clip Library
+ 8e  Related images        Google stills → Clip Library
+ 8f  Per-shot images       3 Google images per shot, saved in the project
+ 9   QA review             AI "executive producer" reads the whole timeline
+ 9b  Auto-refine           re-pick the shots QA flagged, then review again
+ 9c  Boundary gate         every clip must pass quality/duration/orientation
+ 9e  YouTube coverage      every shot carries at least one YouTube clip
+ 9d  Text overlays         animated transparent overlays rendered with Remotion
+       ── review gate: the bot pauses here for /download or /refine ──
+10   Download              parallel, deduped, cached, with a repair loop
+     Export                Premiere XML (validated + repaired) · shot SRT · links
 ```
 
----
-
-## Fully Automatic Mode
-
-Upload your voiceover, click **🚀 Run everything automatically**, and the app drives the entire pipeline with default settings — transcribe → topic → shot list → fetch → drop SD YouTube → rank → auto-select → **Step 5.5 QA review** — then stops so you can review and download. A progress bar + live status panel show each stage. Tick **"Also download automatically"** to have it kick off the download too once the review is done. Everything below still works step-by-step if you'd rather drive it manually.
-
-### Telegram bot (run jobs from your phone)
-
-The same pipeline runs **headless** (`core/pipeline.py`), so you can trigger it remotely. Run `python -m bot.telegram_bot` on an always-on machine (e.g. the office laptop), then **send the bot a voice message or audio file**: it runs the full pipeline — including downloading the clips and writing the Premiere XML into the project folder — and replies with a summary + the FCPXML attached, posting per-stage progress as it goes. By the time you reach the office, the project is downloaded and ready to edit. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USERS` (fail-closed allowlist) in `.env`.
-
-Commands (from your phone):
-- **`/status`** — confirm the laptop is up and ready: internet/API reachability, ffmpeg, configured keys, pipeline health, and whether a job is already running.
-- **`/cancel`** — stop the job in progress (it halts at the next stage boundary).
-- **`/files`** — list every project zip sitting on the server with a fresh download link each. Links are **HMAC-signed but don't expire** (it's your own server — an expired link on a zip that's still on disk is pure friction), so this is also the fix when an old URL stops working. Set `BOT_LINK_TTL=<seconds>` if you'd rather they lapse.
-
-Jobs run in a background thread, so the bot stays responsive to `/status` and `/cancel` while a job is running, and a second audio file is deferred rather than run concurrently.
-
-**Keep it running (Windows):** just **double-click `start_bot.bat`** in the project root — it activates the venv, launches the bot in a titled window, and auto-restarts it if it ever crashes. Keep the window open while you want the bot running; close it to stop. To start it automatically on boot, drop a shortcut to `start_bot.bat` in the Startup folder (press <kbd>Win+R</kbd> → `shell:startup` → paste the shortcut), or create a Task Scheduler task ("At log on" → Start a program → `start_bot.bat`).
+Every API call is metered, so each job ends with a token and cost breakdown.
 
 ---
 
-## What each step does
+## Telegram bot
 
-**Step 1 — Transcribe & chunk**  
-Whisper transcribes the voiceover via Groq. The transcript is split into ~2-minute chunks at sentence boundaries so you can work one section at a time within API rate limits.
+Start it on an always-on machine:
 
-**Step 2 — Generate shot list**  
-An LLM reads each chunk and produces a structured shot list: timestamp range, visual intent, shot type (wide / close-up / aerial / abstract), 2–3 search queries per shot, and priority. Talking-head moments are marked `none` and skipped automatically. The table is editable before you fetch.
+```bash
+python -m bot.telegram_bot
+```
 
-*Optional — Context-aware keywords (`🧭`):* for structured videos (listicles, ranked countdowns, multi-product reviews) a fast pre-pass first maps the whole transcript into subject segments (e.g. *"BMW M3 E90" → 75s–165s*). The director then anchors each shot's queries to the subject active at that timestamp — so "the transmission is jerky" searches for *that car's* gearbox instead of a generic one. Toggle it on in Step 2; it degrades silently to the flat path if the pre-pass fails.
+Then **send the bot a voice message or audio file**. It posts progress for each stage, stops at the review gate with a summary and QA report, and after `/download` delivers the project. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USERS` in `.env`. The allowlist fails closed: if it's empty, nobody can use the bot.
 
-**Step 3 — Fetch candidates**  
-All queries fan out in parallel across your chosen sources. The **Clip Library** source runs a semantic search over your own previously-downloaded footage first — no API calls, no re-downloading.
+On Windows, double-click **`start_bot.bat`**. It activates the venv, runs the bot in its own window, and restarts it if it crashes. To start it on boot, put a shortcut to it in `shell:startup`.
 
-**Step 4 — Rank**  
-An LLM-as-Judge reads each candidate's title, description, dimensions, and the query that found it, then ranks by relevance to the shot's narration and intent. Off-topic clips are hidden from the review grid automatically. Candidates are judged in **batches** (multiple shots per LLM call) with **jittered pacing** between calls, so large projects stay under provider rate limits instead of triggering 429 storms.
+### The review gate
 
-*Optional — Drop SD YouTube (`🎥`):* a one-click filter checks each YouTube candidate's HD/SD via the Data API — batched (≈1 quota unit per 50 clips) and capped — and removes confirmed-SD clips so only HD footage reaches ranking and selection. Stock clips (already HD) are skipped.
+With **Pause to review** on (the default), a run stops after selection, QA and overlays. Then you choose:
 
-*Optional — Auto-selection (`🤖`):* when enabled, ranking also **binds the best clips to each shot automatically**, so every shot becomes download-ready with no manual pass. It picks **multiple clips scaled to the shot's length** (≈ one per 5s, min 2) — so a 30s shot gets ~6 clips spread across it, and even a short shot gets a couple of alternatives — while a deterministic variety guard avoids repeating the same clip back-to-back. You choose the **starting shot number** here (bounded to your shot count) — e.g. hand-pick an intro yourself and auto-select from shot 4 onward. A **Re-apply** button changes the start without re-ranking; manual picks are always preserved.
+- `/details`: a per-shot breakdown of what was picked.
+- `/refine`: re-pick every shot QA flagged. `/refine 4 9` re-picks only shots 4 and 9.
+- `/redo`: re-fetch shots that still have no clip.
+- `/download`: download the clips and build the project.
 
-*Optional — Visual verify (`👁`, Gemini):* everything above judges a YouTube candidate by its **title**. The yt-dlp search returns no description at all, so a clickbait title can outrank a perfect but plainly-named video, and nothing in the metadata tells you *which part* of a 12-minute upload matches the shot. Turn this on and Gemini 2.5 Flash actually **watches** the clips a shot would bind, then reports per shot whether the footage is really there and the timestamps where it is. Two things follow: clips that turn out to be talking heads or the wrong subject get demoted and skipped by selection, and the ones that survive carry a verified in-point, so the timeline starts on the moment that matches instead of frame 0 of a long video.
+Paused projects are saved to `.cache/`, so a crash or `/forcestop` doesn't lose them.
 
-It's opt-in per chat (`/settings` → **Gemini watches clips**) and needs a `GEMINI_API_KEY`, because unlike every other stage it costs money per video watched. The defaults are tuned hard for that: low media resolution (66 tokens/frame instead of 258), one sampled frame every 5 seconds, thinking off, and **one request per video** regardless of how many shots shortlisted it — the same upload is usually a candidate for several. That puts a 15-minute video near 40k input tokens (**~$0.01**) against the ~270k Gemini's defaults would charge. Verdicts are cached in `.cache/visual_verify.json`, so re-runs and videos that recur across projects are free, and a per-run budget (`VERIFY_MAX_VIDEOS` / `VERIFY_MAX_MINUTES`) spends the quota on the videos that answer for the most shots first. Any failure — no key, an API error, a spent budget — leaves the run exactly as ranking left it.
+### Commands
 
-**Step 5 — Review & select**  
-A paginated gallery per shot. Clip Library results appear with a purple border and a similarity % + usage count. Select clips, skip shots, or refetch individual shots with new queries. With auto-selection on, this step becomes **optional review/override** — auto-picks are flagged with a `🤖` badge, and picking a different clip clears the badge.
+| Command | What it does |
+|---|---|
+| *(send audio)* | Full run: footage, overlays, images, XML |
+| `/settings` | Inline menu of per-chat options (see below) |
+| `/status` | Checks the bot is up: API reachability, ffmpeg, keys, cookies, whether a job is running |
+| `/test` | Preflight: live-tests the LLM, transcription, Pexels, yt-dlp search **and real downloads** (plus Gemini if on) in about 30 s. `/test quick` skips downloads |
+| `/details` | Per-shot breakdown of the project waiting for review |
+| `/download` | Download and build the reviewed project |
+| `/refine [shots]` | Re-pick QA-flagged shots, or only the shots you name |
+| `/redo` | Re-fetch empty shots, YouTube-first |
+| `/cancel` | Stops at the next stage boundary, or discards a paused project |
+| `/forcestop` | Hard stop plus bot restart, for when `/cancel` doesn't take |
+| `/overlay` | Next audio file gets animated text overlays only, no footage |
+| `/overlaytext <secs> <text>` | Renders one overlay clip for exact text and duration |
+| `/extras` | Next audio file gets only the extra contextual clips |
+| `/images` | Next audio file gets only related Google stills (into the Clip Library) |
+| `/zip [name]` | Zips a finished project: attached if under ~50 MB, plus a download link |
+| `/files [name]` | Lists every zip on the server, each with a fresh link |
+| `/links [name]` | Per-shot source links, for re-downloading empty shots by hand |
+| `/proxies` | Shows the validated YouTube proxy pool. `/proxies refresh` searches the list again |
+| `/cleanup [name\|all\|overlays]` | Deletes projects or clears the overlay render cache. The Clip Library is kept |
+| `/logs` | Sends this session's bot log as a file |
+| `/cookies` | How to give the bot YouTube cookies. You can also just send `cookies.txt` |
+| *(send `.xml`)* | Teach it your trims: send a Premiere XML export after editing |
 
-**Step 5.5 — Final QA review (optional)**  
-An AI "executive producer" reads your whole *selected* timeline in one pass (the smart/reasoning tier) and flags thematic breaks, repeated visuals, pacing problems, or clips that don't match the narration — each pinned to a shot number with a concrete fix. Returns an empty list when the timeline reads as coherent. Run it after selecting, before downloading; jump back to Step 5 to swap any flagged shot.
+Jobs run in a background thread, so `/status` and `/cancel` keep working while a job runs. A second audio file waits for the first job to finish.
 
-**Step 6 — AI text overlays**  
-Extract highlights from your script automatically (money amounts, statistics, headings, key concepts). Generate transparent 1920×1080 PNGs with:
-- Per-category colors · font family selector · font size · text opacity
-- Background rounded-rectangle box · 8-direction text outline or drop shadow  
-- Emoji category prefix (📌 💰 📊 💡) · auto font scaling for long headings
-- Animation per overlay: Fade In/Out · Slide Up · Slide In Left · **Random**
-- Per-category animation suppression
-- Freesound SFX download matched to each overlay moment
+### `/settings`
 
-**Step 7 — Export**  
-FCP7 XML with two video tracks (B-roll + overlay PNGs) and an audio track (SFX). Animations are written as keyframe effects so they play back immediately in Premiere. Also exports `shot_list.json`, `shot_list.txt`, and a `.srt` transcription.
+Each chat has its own settings, saved to `.cache/bot_settings.json`. The `.env` values are only the defaults a new chat starts with.
+
+| Setting | Default | |
+|---|---|---|
+| Pexels / YouTube / Clip Library | on | Sources to search |
+| Per-query counts | 3 / 4 / 5 | Candidates fetched per query (library: per shot) |
+| Min height | 720p | Drop candidates below this |
+| Download quality | 1080p | Download cap |
+| Gemini watches clips | off | [Visual verify](#visual-verify-gemini) (costs money) |
+| Verify strictness | normal (4+) | Minimum Gemini match score to keep a clip |
+| QA review | on | Stage 9 |
+| Auto-refine flagged | on | Stage 9b |
+| Auto-fill empty shots | on | Stage 8b multi-pass fill |
+| Pause to review | on | The review gate |
+| Text overlays / Overlay style | on / Bold Yellow | Also: Clean White, Neon Glow, Boxed News |
+| Extra clips / Related images | on | Library-only extras |
+| Google images / shot, Images per shot | on, 3 | Needs `SERPER_API_KEY` |
+| Detailed queries | off | Per-subject queries for shots that mention several subjects |
+| Delete clips after zip | on | Keep only the zip on disk |
+
+### Delivery
+
+Telegram limits bot uploads to 50 MB, so the bot attaches small zips directly. For anything bigger it also sends a download link from its own file server. Turn it on with `BOT_FILE_SERVER=1`, `BOT_FILE_SERVER_PORT` (8770) and `BOT_PUBLIC_HOST`. The links are HMAC-signed, so they can't be guessed or pointed at another file. They **don't expire** unless you set `BOT_LINK_TTL`. `/files` gives you fresh links for every zip on disk.
+
+Telegram also limits the files a bot can *receive* to 20 MB. For longer voiceovers, send a mono 64 kbps MP3 (a 30-minute voiceover is about 14 MB), or run a local Bot API server and set `TELEGRAM_API_BASE`.
+
+---
+
+## What you get
+
+```
+downloads/<project>/
+├── <project>.xml            Premiere / FCP7 XML: B-roll on V1, overlays on V2, SFX on audio
+├── <project>.shots.srt      one subtitle per shot number, to find shots on the timeline
+├── download_links.txt       source URL of every clip
+├── <clips>.mp4              named by shot number + query
+├── overlays/                transparent ProRes 4444 .mov overlays (true alpha)
+└── images/shots/shot_NN/    Google images per shot, plus sources.txt
+```
+
+Clips are placed on **speech onsets** rather than an even grid, so cuts land where the speaker starts a new beat. When Gemini supplied an in-point, or you taught the bot a trim, the clip starts on that moment instead of at 0:00.
+
+Before the XML is written it is **evaluated and repaired**: shot timings, SRT and XML structure are all checked. Gaps are filled by extending the previous clip (`FCPXML_FILL_GAPS`), so the B-roll track never has a hole, and the XML only references files that are actually on disk.
+
+---
+
+## How it picks footage
+
+**Shot list.** An LLM director reads the transcript in blocks and writes one entry per shot: timing (taken from the transcript segments), visual intent, shot type and 2–3 search queries. Talking-head moments are marked `none` and skipped.
+
+- **Context-aware keywords** (`ENABLE_CONTEXT_AWARE_KEYWORDS`): made for listicles and multi-product reviews. A pre-pass maps the script into subject segments (for example *"BMW M3 E90", 75–165 s*). Each shot's queries are then tied to the subject being discussed at that point, so "the transmission is jerky" searches for *that car's* gearbox.
+- **Detailed queries** (`/settings`): when a shot names several subjects, each one gets its own query.
+
+**Sources.** YouTube is searched with **yt-dlp + keywords**. The YouTube Data API is only used to find and drop SD clips (about 1 quota unit per 50 clips). Pexels rotates through several keys (`PEXELS_API_KEY_2`, …) when one hits its hourly limit. The Clip Library adds your own past footage without any API calls. Shorts, vertical clips and over-long uploads are filtered out. Downloads are capped at 1080p.
+
+**Ranking.** An LLM judge ranks each shot's candidates against the narration and intent, several shots per call with jittered pacing, so large projects stay under rate limits.
+
+**Selection.** Each shot gets a quota based on its length:
+
+| Shot length | Pexels | YouTube |
+|---|---|---|
+| under 4 s | 1 | 1 |
+| 4 s and longer | 2 | about one per 5 s (`ceil(dur/5)`) |
+
+Every shot gets at least one YouTube clip. A look-back check keeps the same clip from appearing in consecutive shots.
+
+### Visual verify (Gemini)
+
+Ranking only sees a YouTube video's **title**, since yt-dlp search results have no description. A clickbait title can outrank a perfect video, and nothing says *where* in a 12-minute upload the matching footage is. With **Gemini watches clips** on, Gemini 2.5 Flash watches the clips each shot would use. It scores each one 0–10 for each shot and returns timestamps for the usable footage. Talking heads and wrong subjects are demoted, and the clips that pass get a verified in-point.
+
+It's opt-in because it costs money per video watched, so the defaults keep it cheap:
+
+- low media resolution (66 tokens per frame instead of 258)
+- one frame every 5 s, with thinking off
+- **one request per video**, however many shots shortlisted it
+
+A 15-minute video comes to about 40k tokens, **around $0.01**. Verdicts are cached in `.cache/visual_verify.json`. `VERIFY_MAX_VIDEOS` and `VERIFY_MAX_MINUTES` cap each run's spend, and the videos that serve the most shots are watched first. If Gemini fails for any reason, the run continues with the ranking as it was.
+
+### QA review and auto-refine
+
+An AI "executive producer" reads the whole selected timeline in one pass. It flags thematic breaks, repeated visuals, pacing problems and clips that don't match the narration, each tied to a shot number with a suggested fix. With auto-refine on, the flagged shots get new keywords from the reviewer's suggestion and are fetched, ranked and selected again. Then QA runs once more, so the report you see reflects the fixes.
+
+---
+
+## Self-healing: no empty shots, no broken XML
+
+A single failed search or a dead YouTube link shouldn't leave a black hole in the edit. After selection:
+
+1. **Fill** (`AUTO_FILL`): any shot without a clip is re-fetched over several passes, YouTube first.
+2. **Topic fallback** (`FILL_EMPTY_WITH_TOPIC`): a shot that is still empty gets a generic on-topic Pexels clip.
+3. **Boundary gate**: every selected clip must pass the quality, duration and orientation rules. Shots that fail are re-picked for up to 3 rounds. If a clip still fails, it's dropped rather than breaking the XML.
+4. **Download repair**: if a YouTube clip fails to download, another clip is picked for that shot and downloaded in its place. Clips that never made it to disk are removed before export.
+5. **Gap fill**: when the XML is rendered, the previous clip is extended across any gap that remains.
+
+---
+
+## Text overlays
+
+A reasoning LLM picks the headings, stats, money figures and emphasis words worth showing on screen. It works on transcript chunks of about 150 s in parallel, so long videos don't get cut short. Each overlay is rendered with **Remotion** (`remotion/`) as a **transparent ProRes 4444 `.mov`** with its sound effect baked in. Animations are chosen by overlay type (title card, stat pop, money count, lower third, emphasis pop). Overlay timing follows the word-level timestamps, and each overlay shows its title word for word.
+
+- Four style presets: **Bold Yellow**, **Clean White**, **Neon Glow**, **Boxed News** (`/settings` or `OVERLAY_STYLE`).
+- `/overlay` renders only the overlays for a voiceover. `/overlaytext 3.5 47% LESS WEAR` renders a single overlay.
+- Rendering needs Node plus `npm ci` in `remotion/`. The Docker image includes both. If overlays fail, the main job still completes.
+
+The Streamlit app also has its original PNG caption generator (fonts, outlines, emoji prefixes, Freesound SFX).
+
+---
+
+## Extras and images
+
+These give the editor spare material. **None of it is placed on the timeline.**
+
+- **Extra clips** (`ENABLE_EXTRA_CLIPS`, `/extras`): finds the brands, car models, parts and products the script names, plus the video's overall theme. It then downloads 2–3 HD landscape YouTube clips for each (brand → logo and factory, model → POV drive and review, part → "how it works", theme → iconic imagery). The clips go into the Clip Library as `Extra - <keyword>`.
+- **Per-shot Google images** (`ENABLE_SHOT_IMAGES`): one short LLM call turns each shot into an image query. [Serper.dev](https://serper.dev) returns real Google Images results, and 3 per shot are saved to `images/shots/shot_NN/`. A `sources.txt` lists each image's page, since Google Images results **aren't licensed for reuse**. Costs about 1 Serper credit per shot.
+- **Related images** (`ENABLE_RELATED_IMAGES`, `/images`): high-resolution stills of brands, models, products, parts and concepts. They are saved to the Clip Library, not the project. Uses Serper, or the Google Custom Search API as a fallback (Google shuts that API down on 2027-01-01).
 
 ---
 
 ## Clip Library
 
-Every clip your team downloads and confirms gets saved to a local SQLite database (`.cache/clip_library.db`) with a semantic embedding (`sentence-transformers/all-MiniLM-L6-v2`, 384-dim). On the next project, the Clip Library source runs a cosine similarity search against that database before hitting any external API — results are ranked by relevance and weighted by how often a clip has been used before.
+Every clip you download is stored in a local SQLite database (`.cache/clip_library.db`, or `CLIP_LIBRARY_DB`) with a 384-dim embedding of its shot description (`all-MiniLM-L6-v2` via **fastembed/ONNX**, so no torch or GPU is needed). Later projects search it before any external API. Results are ranked by similarity and weighted by how often a clip has been used. Over time it becomes the fastest and cheapest source for topics you cover often. `/cleanup` never touches it.
 
-Over time the library becomes the **first and fastest source** for recurring content categories (car engines, tools, road shots, etc.) — no quota, no network latency, no re-downloading.
+**Learned trims.** Send the bot, or import in the app, a Premiere/FCP7 XML after you've edited it. The app records how you cut each clip (in and out points) in `clip_preferred_trims`. When the same footage comes up again, your trim is used. A learned trim takes priority over Gemini's in-point.
 
-### What's stored
+**Sharing between machines** (Streamlit sidebar → Library Health): **Export my library** writes a small JSON bundle (metadata, embeddings, trims). **Merge a teammate's export** combines it with yours, deduplicated by URL, and is safe to run twice. Only metadata is shared; the videos are downloaded again from their source URLs when reused.
 
-**Per downloaded clip** (`clips` table):
+<details>
+<summary>What's stored per clip</summary>
 
 | Field | What it is |
-|-------|------------|
-| `clip_url` | Original source URL (Pexels/Pixabay/YouTube) — the dedup key, and what enables re-download |
-| `shot_description` | Narration/intent text for the shot — this is what gets embedded |
-| `embedding` | 384-dim vector of the description (powers semantic search) |
-| `clip_title`, `source` | Title and which provider it came from |
-| `keywords`, `search_query` | The queries that found the clip |
-| `project`, `slot_index` | Which project/shot it was used in |
-| `duration`, `thumbnail_url`, `local_path` | Clip length, thumbnail, and where the file landed on this machine |
+|---|---|
+| `clip_url` | Source URL, used for deduplication and re-downloading |
+| `shot_description` / `embedding` | The narration or intent text, and its vector |
+| `clip_title`, `source`, `keywords`, `search_query` | Provenance |
+| `project`, `slot_index` | Which project and shot it was used in |
+| `duration`, `thumbnail_url`, `local_path` | Clip info and where the file is on this machine |
 | `usage_count`, `last_used_at`, `created_at` | Reuse stats |
 
-The actual video file is **not** stored in the database — it lives in `downloads/`, referenced by `local_path` (and re-fetchable from `clip_url`).
-
-**Learned trims from XML re-import** (`clip_preferred_trims` table): when you re-import a Premiere/FCP7 XML, the app learns how you actually cut each clip. It records the trim `in_seconds` / `out_seconds`, the `shot_description` it applied to, the source XML path, and `confirmed_at` — so the next time that clip is reused, your proven trim is suggested instead of the full length. Re-import also creates minimal `clips` rows for any footage not already in the library (no embedding until you run **Re-embed**, so those stay invisible to search but fully usable for trims).
-
-### Sharing across machines
-
-Editors on separate machines can pool footage without a server:
-
-- **⬇️ Export my library** writes a small portable JSON bundle (clip metadata + embeddings + learned trims).
-- **🔀 Merge a teammate's export** pulls their clips into yours, deduped by `clip_url` — new clips are searchable immediately (embeddings travel in the bundle), known clips get their embedding backfilled and usage count raised, and trims merge newest-wins. Re-merging is idempotent.
-
-Only the small metadata bundle is shared — **the actual videos never travel**; when a teammate reuses a clip, it re-downloads from its stored source URL. Both buttons live in the sidebar **Library Health** panel, which also flags clips missing embeddings and offers a one-click **Re-embed**.
+</details>
 
 ---
 
-## Quick start
+## Deploying on a server
 
-**Prerequisites:** Python 3.10+ · FFmpeg on PATH
+The production setup is the bot in Docker on a CPU-only Linux server (about 8 vCPU / 16 GB). There's no torch or GPU, and transcription runs remotely on Groq. Full guide: **[deploy/README.md](deploy/README.md)** (Docker, Coolify, or venv + systemd).
 
 ```bash
-# Windows
-run.bat
-
-# macOS / Linux
-chmod +x run.sh && ./run.sh
+git clone https://github.com/erfsalehi/B-Roll-Finder.git && cd B-Roll-Finder
+docker build -t broll-finder .
+docker run -d --name broll-bot --restart unless-stopped --env-file .env \
+  -p 8770:8770 \
+  -v "$PWD/downloads:/app/downloads" \
+  -v "$PWD/.cache:/app/.cache" \
+  -v "$PWD/cookies:/app/cookies:ro" \
+  broll-finder
 ```
 
-Opens at `http://localhost:8501`. The launcher creates a venv and installs dependencies automatically.
+- The image includes ffmpeg, Deno and Node (for yt-dlp's JS challenge solver) and Remotion's headless Chrome.
+- The health check is `GET /health` on port 8000. Run **one instance only**: two bots polling the same token cause Telegram `409 Conflict`. In Coolify, force-stop the old container before deploying.
+- Keep `/app/.cache` and `/app/downloads` on persistent volumes. They hold cookies, caches, the Clip Library and finished projects.
+- yt-dlp updates itself daily, because YouTube breaks old versions. `/test` shows the installed version.
+- Optional thread caps: `BROLL_TORCH_THREADS`, `BROLL_FFMPEG_THREADS`, `BROLL_NORMALIZE_CONCURRENCY`.
 
-**Manual install:**
+---
+
+## YouTube on a server: cookies and proxies
+
+YouTube blocks datacenter IPs. If it isn't set up, you'll see "Sign in to confirm you're not a bot" or "This content isn't available", and runs quietly fall back to Pexels only.
+
+1. **Cookies.** Export `cookies.txt` (Netscape format) from a browser that's logged into YouTube. Either drop it in `cookies/`, where any `*.txt` is picked up automatically, or just **send it to the bot**. Use a throwaway account. If a download fails with cookies, it's retried once without them.
+2. **Proxy for downloads only.** `YT_DLP_PROXY` takes one proxy or a list of them, used in rotation with failover. A residential proxy is the reliable choice. Search runs direct, so only downloads go through the proxy.
+3. **Free proxy lists.** Point `YT_DLP_PROXY_URL` at a list such as ProxyScrape. The bot tests proxies against YouTube, keeps a small pool of ones that work, and refills it as they die. See `/proxies`.
+
+Run **`/test`** after any change. It performs real searches and downloads and tests the YouTube clients to show exactly what's blocked.
+
+---
+
+## Streamlit desktop app
+
+For choosing clips by hand, with a gallery for each shot:
+
 ```bash
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run app.py
+run.bat                          # Windows
+chmod +x run.sh && ./run.sh      # macOS / Linux
 ```
+
+It opens at `http://localhost:8501`, and the launcher creates the venv and installs dependencies. The app walks you through: **transcribe → shot list → fetch → rank (optional HD filter, auto-select) → review gallery → QA → PNG text overlays → export** (XML, `shot_list.json`, `.srt`). **🚀 Run everything automatically** runs the same pipeline with default settings and stops for review. Clip Library results show a purple border with a similarity % and usage count, and auto-picked clips get a 🤖 badge.
+
+Manual install: `python -m venv venv`, activate it, `pip install -r requirements.txt`, `streamlit run app.py`. Needs Python 3.10+ and FFmpeg on PATH.
 
 ---
 
 ## API keys
 
-Enter keys in the in-app Setup expander or copy `.env.example` → `.env`.
+Copy `.env.example` to `.env`. Every option is documented there.
 
-| Key | Required | Powers |
-|-----|----------|--------|
-| `GROQ_API_KEY` | **yes** | Whisper transcription, shot-list LLM, ranking LLM, overlay extraction |
-| `PEXELS_API_KEY` | optional | Pexels stock footage |
-| `PIXABAY_API_KEY` | optional | Pixabay stock footage |
-| `YOUTUBE_API_KEY` | optional | YouTube Data API v3 (100 quota units/search) |
-| `DEEPSEEK_API_KEY` | optional | **An OpenRouter key — routes the paid `deepseek-v4-pro` model; preferred for all AI steps when set** |
-| `OPENROUTER_API_KEY` | optional | Automatic free fallback when Groq hits rate limits |
-| `FREESOUND_API_KEY` | optional | SFX download for text overlays |
+| Key | Needed | Powers |
+|---|---|---|
+| `GROQ_API_KEY` (+ `_2`) | **yes** | Whisper transcription, and the free LLM tier |
+| `DEEPSEEK_API_KEY` | recommended | **An OpenRouter key.** The paid DeepSeek tier, used first for every AI step |
+| `PEXELS_API_KEY` (+ `_2`, `_3`…) | recommended | Pexels stock footage, rotated through on rate limits |
+| `YOUTUBE_API_KEY` | optional | HD/SD check only (search uses yt-dlp) |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` | for the bot | The bot and its allowlist |
+| `GEMINI_API_KEY` (+ `_2`) | optional | Visual verify |
+| `SERPER_API_KEY` | optional | Per-shot and related Google images |
+| `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | optional | Related images fallback |
+| `OPENROUTER_API_KEY` | optional | Free LLM fallback |
+| `PIXABAY_API_KEY` | optional | Pixabay (Streamlit app only) |
+| `FREESOUND_API_KEY` | optional | SFX for the Streamlit PNG overlays |
 
-At least one of Pexels, Pixabay, or YouTube must be enabled. Groq is free to start at [console.groq.com](https://console.groq.com/) and stays required even with DeepSeek set, because it also does the Whisper audio transcription.
+---
 
-### LLM provider priority
+## LLM providers and cost
 
-All text-LLM steps (shot list, ranking, keywords, topic, the context segmenter) route through one dispatcher with automatic fallback:
+Every text-LLM call goes through one dispatcher (`core/keywords.py`) that falls back automatically:
 
 ```
-DeepSeek (if DEEPSEEK_API_KEY set)  →  Groq (cycles GROQ_API_KEY / _2)  →  OpenRouter
+DeepSeek via OpenRouter (if DEEPSEEK_API_KEY)  →  Groq (key rotation)  →  OpenRouter free
 ```
 
-The DeepSeek tier is reached **through OpenRouter** — put an OpenRouter key in `DEEPSEEK_API_KEY`. It leads when available and transparently falls back to the free providers on any error.
-
-DeepSeek runs as **two model tiers, switched per call with the same key**, matching each task to the right model:
+DeepSeek runs in two tiers with the same key:
 
 | Tier | Model | Reasoning | Used for |
-|------|-------|-----------|----------|
-| **fast** | `~deepseek/deepseek-v4-flash-latest` | off | High-volume loop calls — shot slicing, ranking, keywords. Fast & cheap; no chain-of-thought to starve the JSON answer. Rolling alias — always the newest Flash snapshot. |
-| **smart** | `deepseek/deepseek-v4-pro` | on | Once-per-video global passes — video topic, global themes, the structural pre-pass. Single calls that benefit from synthesis, so no rate-limit risk. No `-latest` alias exists for pro on OpenRouter, so this is pinned. |
+|---|---|---|---|
+| **fast** | `~deepseek/deepseek-v4-flash-latest` | off | High-volume calls: shot slicing, ranking, keywords |
+| **smart** | `deepseek/deepseek-v4-pro` | on | Once-per-video passes: topic, themes, segmenter, QA, overlay extraction |
 
-Override slugs with `DEEPSEEK_MODEL_FAST` / `DEEPSEEK_MODEL_SMART`.
+You can override the models with `DEEPSEEK_MODEL_FAST` and `DEEPSEEK_MODEL_SMART`. `DEEPSEEK_NO_FALLBACK=true` retries DeepSeek with backoff instead of dropping to the free tiers. OpenRouter routing only sends calls to providers that support JSON mode and reasoning, and skips providers that return empty responses.
 
-### Advanced configuration (`.env`)
+**Cost report.** Every LLM and Whisper call is metered (`core/usage.py`), and each job ends with a token and dollar breakdown. The prices are estimates; set `API_PRICING_JSON` / `WHISPER_USD_PER_HOUR` to match your actual rates (for example, 0 on a free Groq tier).
 
-Optional toggles and tuning knobs, all off/default unless set:
+---
+
+## Configuration
+
+The most useful settings (all in `.env.example` with comments):
 
 | Variable | Default | Effect |
-|----------|---------|--------|
-| `ENABLE_CONTEXT_AWARE_KEYWORDS` | `false` | Run the subject-segmentation pre-pass (Step 2 `🧭`) |
-| `ENABLE_AUTO_SELECTION` | `false` | Auto-bind the top-ranked clip per shot (Step 4 `🤖`) |
-| `AUTO_SELECT_LOOKBACK` | `3` | Auto-select variety guard: don't reuse the same clip within this many recent shots (picks the next alternative instead). `0` disables |
-| `AUTO_SELECT_SECONDS_PER_CLIP` | `5` | Auto-select binds ~1 clip per this many seconds of shot duration (a 30s shot → ~6 clips, spread across it) |
-| `AUTO_SELECT_MIN_CLIPS` | `2` | Minimum clips auto-bound per shot — even a short shot gets alternatives for the editor |
-| `AUTO_SELECT_MAX_CLIPS` | `8` | Cap on clips auto-bound per shot |
-| `DIRECTOR_BLOCK_SIZE` | `20` | Transcription segments per shot-list LLM call. Raise it (e.g. `40`) on long transcripts to cut the number of calls and ease rate limits |
-| `DEEPSEEK_MODEL_FAST` | `~deepseek/deepseek-v4-flash-latest` | Model for the fast tier (loop calls) |
-| `DEEPSEEK_MODEL_SMART` | `deepseek/deepseek-v4-pro` | Model for the smart tier (global passes, reasoning on) |
-| `DEEPSEEK_REASONING` | _(unset)_ | Emergency override of the per-tier reasoning default (`on`/`off`); leave unset to use each tier's default |
-| `DEEPSEEK_MAX_TOKENS` | `8000` | Min token budget per DeepSeek call (matters mainly for the smart tier, where reasoning counts against it) |
-| `RANK_BATCH_SIZE` | `6` | Shots judged per ranking LLM call |
-| `RANK_MAX_WORKERS` | `3` | Concurrent ranking calls (lower under rate pressure) |
-| `RANK_JITTER_MIN` / `RANK_JITTER_MAX` | `0.5` / `1.5` | Random delay (s) before each ranking call; set `MAX=0` to disable |
-
-The two `ENABLE_*` toggles are also surfaced as checkboxes in the app's Step 2.
+|---|---|---|
+| `AUTO_USE_PEXELS` / `AUTO_USE_YOUTUBE` / `AUTO_USE_LIBRARY` | `true` | Sources for automatic runs |
+| `AUTO_PEXELS_NUM` / `AUTO_YOUTUBE_NUM` / `AUTO_LIBRARY_NUM` | `3` / `4` / `5` | Candidates per query or shot |
+| `AUTO_MIN_HEIGHT` | `720` | Minimum candidate height |
+| `ENABLE_QA_REVIEW` / `AUTO_REFINE` / `AUTO_FILL` | `true` / `false` / `true` | QA stages (the bot turns refine on per chat) |
+| `FILL_EMPTY_WITH_TOPIC` / `FCPXML_FILL_GAPS` | `true` | Empty-shot fallbacks |
+| `ENABLE_TEXT_OVERLAYS`, `OVERLAY_STYLE`, `OVERLAY_CHUNK_SEC` | `true`, `bold_yellow`, `150` | Overlays |
+| `ENABLE_EXTRA_CLIPS`, `EXTRA_PER_KEYWORD`, `EXTRA_MAX_KEYWORDS` | `true`, `2`, `12` | Extras |
+| `ENABLE_SHOT_IMAGES`, `SHOT_IMAGES_PER_SHOT` | `true`, `3` | Per-shot images |
+| `ENABLE_RELATED_IMAGES` | `true` | Related stills |
+| `ENABLE_VISUAL_VERIFY`, `VERIFY_MODEL`, `VERIFY_MIN_MATCH` | off, `gemini-2.5-flash`, `4` | Visual verify |
+| `VERIFY_MAX_VIDEOS` / `VERIFY_MAX_MINUTES` | `40` / `90` | Per-run Gemini budget |
+| `ENABLE_CONTEXT_AWARE_KEYWORDS` / `ENABLE_DETAILED_QUERIES` | off | Query modes |
+| `AUTO_SELECT_SHORT_SEC` / `AUTO_SELECT_YT_SECONDS` / `AUTO_SELECT_MIN_PEXELS` | `4` / `5` / `2` | Selection quota |
+| `AUTO_SELECT_LOOKBACK` | `3` | Variety guard window |
+| `DIRECTOR_BLOCK_SIZE` | `20` | Segments per shot-list call (raise it for long scripts) |
+| `RANK_BATCH_SIZE` / `RANK_MAX_WORKERS` | `6` / `3` | Ranking throughput |
+| `CLIP_LIBRARY_DB` | `.cache/clip_library.db` | Library location |
+| `BOT_FILE_SERVER`, `BOT_PUBLIC_HOST`, `BOT_LINK_TTL` | off, auto, `0` (never expires) | Download links |
+| `YT_DLP_PROXY`, `YT_DLP_PROXY_URL`, `YT_DOWNLOAD_NO_COOKIES` | none | YouTube access |
+| `APP_PROXY` / `BOT_PROXY` | none | Route app / Telegram traffic through a local VPN proxy |
 
 ---
 
@@ -231,24 +382,52 @@ The two `ENABLE_*` toggles are also surfaced as checkboxes in the app's Step 2.
 
 ```
 B-Roll Finder/
-├── app.py                    # Streamlit UI — all 7 steps
+├── app.py                     Streamlit UI
+├── bot/
+│   ├── telegram_bot.py        commands, review gate, delivery
+│   ├── settings.py            per-chat /settings menu
+│   ├── pending_store.py       paused projects survive restarts
+│   ├── fileserver.py          HMAC-signed download links
+│   ├── healthserver.py        GET /health
+│   └── logsetup.py            per-session logs for /logs
 ├── core/
-│   ├── transcription.py      # Groq Whisper wrapper
-│   ├── timing.py             # Audio duration, sentence-aware chunking
-│   ├── director.py           # Shot list generation + context-aware segmenter pre-pass
-│   ├── director_search.py    # Parallel candidate fetch
-│   ├── director_rank.py      # LLM-as-Judge ranking (batched) + auto-selection
-│   ├── stock_apis.py         # Pexels / Pixabay / YouTube clients
-│   ├── captions.py           # Text overlay PNG generation
-│   ├── clip_library.py       # Local RAG clip database (SQLite + embeddings) + export/merge
-│   ├── sfx.py                # Freesound SFX search & download
-│   ├── download_manager.py   # Parallel downloads, retries, dedup, cache
-│   ├── output.py             # FCP7 XML, shot list, SRT export
-│   ├── xml_reimport.py       # Premiere/FCP7 XML re-import → learned trims
-│   └── keywords.py           # LLM dispatcher (DeepSeek→Groq→OpenRouter) + classic keywords
-├── prompts/                  # LLM system prompts (director, ranking, segmenter, …)
-├── tests/                    # pytest suite
-├── .env.example
-├── requirements.txt
-└── run.bat / run.sh
+│   ├── pipeline.py            headless end-to-end pipeline + self-healing loops
+│   ├── transcription.py       Groq Whisper
+│   ├── timing.py              audio duration, chunking, speech onsets
+│   ├── director.py            topic, segmenter pre-pass, shot list
+│   ├── director_search.py     parallel candidate fetch + query cache
+│   ├── director_rank.py       LLM ranking, per-shot quota auto-select
+│   ├── visual_verify.py       Gemini watches clips (stage 7b)
+│   ├── youtube.py             yt-dlp search/download, cookies, client fallbacks
+│   ├── proxy_pool.py          validated YouTube proxy pool
+│   ├── stock_apis.py          Pexels (key rotation) / Pixabay / YouTube Data API
+│   ├── download_manager.py    parallel downloads, retries, dedup
+│   ├── download_cache.py      cross-session URL → file registry
+│   ├── extras.py              extra contextual clips
+│   ├── shot_images.py         per-shot Google images (Serper)
+│   ├── related_images.py      related stills → Clip Library
+│   ├── overlays_remotion.py   overlay extraction + Remotion rendering
+│   ├── captions.py            PNG overlays (Streamlit)
+│   ├── clip_library.py        SQLite + fastembed library, export/merge
+│   ├── xml_reimport.py        XML re-import → learned trims
+│   ├── output.py              XML, SRT, zip; evaluate + repair
+│   ├── selftest.py            /test preflight
+│   ├── usage.py               per-job token/cost accounting
+│   └── keywords.py            LLM dispatcher (DeepSeek → Groq → OpenRouter)
+├── prompts/                   LLM system prompts
+├── remotion/                  overlay renderer (Node / Remotion)
+├── deploy/                    server guide + systemd unit
+├── tests/                     pytest suite
+├── Dockerfile · start_bot.bat · run.bat · run.sh
+└── .env.example
 ```
+
+---
+
+## Tests
+
+```bash
+pytest tests/
+```
+
+Run `pytest tests/`, not bare `pytest`: the repo also has one-off scripts under `scratch/` that pytest would otherwise collect.
