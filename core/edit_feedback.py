@@ -18,8 +18,13 @@ uses:
 * **Image sites** — pages whose images get used float up; sites never used
   sink.
 
+Human reviewers (:mod:`core.ratings`) feed the same signals: their yes/no per
+clip joins the similar-line history (with their written reason) and gets its
+own track record, the good segments they mark become that clip's in-point, and
+clips they suggest are offered as candidates on similar lines.
+
 Everything no-ops (returns empty/None) until at least one project has been
-learned. ``EDIT_LEARNING=0`` switches it all off.
+learned or rated. ``EDIT_LEARNING=0`` switches it all off.
 """
 
 import os
@@ -51,11 +56,18 @@ def enabled() -> bool:
 
 class History:
     def __init__(self):
-        self.lines: list = []            # {text, emb, kept: [asset], dropped: [asset]}
+        self.lines: list = []            # {text, emb, kept, dropped, suggested: [asset]}
         self.clip_record = defaultdict(lambda: [0, 0])     # asset_key → [kept, delivered]
         self.creator_record = defaultdict(lambda: [0, 0])  # "source:creator" → [kept, delivered]
         self.site_record = defaultdict(lambda: [0, 0])     # image domain → [kept, delivered]
         self.in_starts = defaultdict(list)                  # source → [editor in-point]
+        self.rater_record = defaultdict(lambda: [0, 0])     # asset_key → [usable, rated]
+        self.rated_starts = defaultdict(list)               # asset_key → [good segment start]
+        # Who to credit when a signal changes a pick (asset_key → rater ids).
+        self.credit_yes = defaultdict(set)
+        self.credit_no = defaultdict(set)
+        self.credit_seg = defaultdict(set)
+        self.suggester = defaultdict(set)
         self.n_projects = 0
 
     def empty(self) -> bool:
@@ -102,17 +114,22 @@ def _creator_key(source: str, creator: str) -> str:
 
 
 def _build_history() -> History:
-    project_store.init_db()
+    from core import ratings
+    ratings.init_db()
     h = History()
+    labels = ratings.item_labels()
     with project_store._conn() as c:
         pids = [r[0] for r in c.execute("SELECT id FROM projects WHERE status='learned'")]
-        if not pids:
+        all_pids = sorted(set(pids) | {l["project_id"] for l in labels})
+        if not all_pids:
             return h
-        h.n_projects = len(pids)
-        qs = ",".join("?" * len(pids))
+        h.n_projects = len(all_pids)
+        qa = ",".join("?" * len(all_pids))
         shots = [dict(r) for r in c.execute(
             f"""SELECT project_id, slot_id, text, embedding FROM project_shots
-                 WHERE project_id IN ({qs}) AND is_extra=0""", pids)]
+                 WHERE project_id IN ({qa}) AND is_extra=0""", all_pids)]
+        # Editor verdicts only exist for learned projects.
+        qs = ",".join("?" * len(pids)) or "NULL"
         assets = [dict(r) for r in c.execute(
             f"SELECT * FROM project_assets WHERE project_id IN ({qs})", pids)]
         usages = [dict(r) for r in c.execute(
@@ -122,9 +139,17 @@ def _build_history() -> History:
                    AND u.verdict IN ('used_here','used_elsewhere')""", pids)]
 
     by_line = {(s["project_id"], s["slot_id"]): {"text": s["text"] or "", "kept": [],
-                                                 "dropped": [], "emb": s["embedding"]}
+                                                 "dropped": [], "suggested": [],
+                                                 "emb": s["embedding"]}
                for s in shots}
+    # Reviewers may have confirmed or corrected the automatic labels.
+    overrides = ratings.reviewed_labels()
     for a in assets:
+        if a["id"] in overrides:
+            verdict, slot = overrides[a["id"]]
+            a = dict(a, verdict=verdict, used_slot_id=slot or a["used_slot_id"])
+        if a["verdict"] == "neutral":
+            continue          # fine clip, just not needed: no signal either way
         kept = a["verdict"] in KEPT
         if a["kind"] == "image":
             site = _site(a["page_url"] or a["url"])
@@ -166,11 +191,39 @@ def _build_history() -> History:
         if rule in ("default", "habit") or (not rule and (u["exported_in_sec"] or 0) < 0.05):
             h.in_starts[(u["source"] or "").lower()].append(u["in_sec"])
 
+    _add_ratings(h, labels, by_line)
+
     lines = [dict(v, key=k) for k, v in by_line.items()
-             if v["text"].strip() and (v["kept"] or v["dropped"])]
+             if v["text"].strip() and (v["kept"] or v["dropped"] or v["suggested"])]
     _attach_embeddings(lines)
     h.lines = lines
     return h
+
+
+def _add_ratings(h: History, labels: list, by_line: dict) -> None:
+    """Fold reviewer ratings (aggregated per clip) into the history. A clip the
+    reviewers mostly marked usable counts as kept on its line, mostly not usable
+    as dropped. 'Good clip, wrong line' is a verdict on the line, not the clip,
+    so it doesn't count against the clip's own record."""
+    for l in labels:
+        line = by_line.get((l["project_id"], l["slot_id"]))
+        entry = dict(l, note=(l["notes"] or [""])[0])
+        if line is not None:
+            if l["yes"] > l["no"]:
+                (line["suggested"] if l["role"] == "suggested" else line["kept"]).append(entry)
+            elif l["no"] > l["yes"]:
+                line["dropped"].append(entry)
+        key = l["page_url"]
+        if key:
+            rec = h.rater_record[key]
+            rec[0] += l["yes"]
+            rec[1] += l["yes"] + max(0, l["no"] - l["other_line"])
+            h.rated_starts[key] += [segs[0][0] for segs in l["segments"] if segs]
+            h.credit_yes[key].update(l.get("yes_raters") or [])
+            h.credit_no[key].update(l.get("no_raters") or [])
+            h.credit_seg[key].update(l.get("seg_raters") or [])
+            if l["role"] == "suggested" and l.get("suggested_by"):
+                h.suggester[key].add(l["suggested_by"])
 
 
 # ── similarity ──────────────────────────────────────────────────────────────
@@ -246,7 +299,8 @@ def similar_lines(history: History, text: str, k: int = 2) -> list:
 def _asset_label(a: dict) -> str:
     title = (a.get("title") or a.get("filename") or "?")[:70]
     q = f' (query "{a["matched_query"]}")' if a.get("matched_query") else ""
-    return f"[{(a.get('source') or '?').upper()}] {title}{q}"
+    why = f' — reviewer: "{a["note"][:100]}"' if a.get("note") else ""
+    return f"[{(a.get('source') or '?').upper()}] {title}{q}{why}"
 
 
 def history_note(history: History, text: str) -> str:
@@ -255,10 +309,15 @@ def history_note(history: History, text: str) -> str:
     for ln in similar_lines(history, text):
         kept = "; ".join(_asset_label(a) for a in ln["kept"][:3]) or "none"
         dropped = "; ".join(_asset_label(a) for a in ln["dropped"][:3]) or "none"
-        out.append(f'- "{ln["text"][:140]}" → kept: {kept} | dropped: {dropped}')
+        line = f'- "{ln["text"][:140]}" → kept: {kept} | dropped: {dropped}'
+        if ln["suggested"]:
+            line += " | reviewer suggested: " + "; ".join(
+                _asset_label(a) for a in ln["suggested"][:2])
+        out.append(line)
     if not out:
         return ""
-    return "EDITOR HISTORY (what the editor did on similar lines in past videos):\n" + "\n".join(out)
+    return ("EDITOR HISTORY (what the editor and reviewers chose on similar lines "
+            "in past videos):\n" + "\n".join(out))
 
 
 def track_record(history: History, cand: dict) -> str:
@@ -271,7 +330,32 @@ def track_record(history: History, cand: dict) -> str:
     rec = history.creator_record.get(ck) if ck else None
     if rec and rec[1] >= 2:
         parts.append(f"{project_store.creator_of(cand)[:40]} kept {rec[0]}/{rec[1]}")
+    rec = history.rater_record.get(project_store.asset_key(cand))
+    if rec and rec[1]:
+        parts.append(f"reviewers: usable {rec[0]}/{rec[1]}")
     return "editor record: " + ", ".join(parts) if parts else ""
+
+
+def suggested_candidates(history: History, text: str) -> list:
+    """YouTube clips reviewers suggested on lines similar to ``text``, as fresh
+    candidate dicts (downloadable, in-point at the first good segment)."""
+    out, seen = [], set()
+    for ln in similar_lines(history, text, k=3):
+        for a in ln["suggested"]:
+            if a.get("source") != "youtube" or a["page_url"] in seen:
+                continue
+            seen.add(a["page_url"])
+            first = next((segs[0][0] for segs in a.get("segments") or [] if segs), None)
+            out.append({
+                "url": a["page_url"], "page_url": a["page_url"], "source": "youtube",
+                "title": a.get("title") or a["page_url"],
+                "description": "suggested by a human reviewer for a similar line"
+                               + (f': "{a["note"][:150]}"' if a.get("note") else ""),
+                "matched_query": "reviewer suggestion",
+                "duration": None, "is_short": False, "width": None, "height": None,
+                "verified_in_sec": first, "reviewer_suggested": True,
+            })
+    return out
 
 
 def annotate_for_ranking(shots: list, history: History = None) -> None:
@@ -287,6 +371,11 @@ def annotate_for_ranking(shots: list, history: History = None) -> None:
             s["edit_history"] = note
         else:
             s.pop("edit_history", None)
+        have = {project_store.asset_key(c) for c in s.get("video_results") or []}
+        extra = [c for c in suggested_candidates(history, s.get("text") or "")
+                 if c["page_url"] not in have]
+        if extra:
+            s["video_results"] = list(s.get("video_results") or []) + extra
         for c in s.get("video_results") or []:
             rec = track_record(history, c)
             if rec:
@@ -294,9 +383,13 @@ def annotate_for_ranking(shots: list, history: History = None) -> None:
 
 
 def _rejected(history: History, cand: dict) -> bool:
-    """Dropped in at least two edits and never kept."""
-    rec = history.clip_record.get(project_store.asset_key(cand))
-    return bool(rec) and rec[0] == 0 and rec[1] >= 2
+    """Dropped in at least two edits and never kept, or judged not usable by
+    at least two reviewers and usable by none."""
+    key = project_store.asset_key(cand)
+    for rec in (history.clip_record.get(key), history.rater_record.get(key)):
+        if rec and rec[0] == 0 and rec[1] >= 2:
+            return True
+    return False
 
 
 def demote_rejected(shots: list, history: History = None) -> int:
@@ -312,7 +405,45 @@ def demote_rejected(shots: list, history: History = None) -> int:
         if bad and len(bad) < len(cands):
             s["video_results"] = [c for c in cands if not _rejected(history, c)] + bad
             moved += len(bad)
+            for c in bad:
+                key = project_store.asset_key(c)
+                _credit(history.credit_no.get(key), "blocked_bad_clip", key, c.get("title"))
     return moved
+
+
+def _credit(rater_ids, kind, key, title="", project_id=None, once=False) -> None:
+    if not rater_ids:
+        return
+    try:
+        from core import ratings
+        ratings.log_impact(rater_ids, kind, key, title or "", project_id, once=once)
+    except Exception as e:
+        print(f"[edit_feedback] couldn't credit reviewers: {e}")
+
+
+def credit_delivery(project_id: int, shots: list, history: History = None) -> None:
+    """At delivery, credit the reviewers whose work shaped the final picks: a
+    suggestion that got picked, a rated good part that set the in-point, a clip
+    they rated usable that got picked."""
+    history = history or load_history()
+    if not history:
+        return
+    for s in shots or []:
+        for c in s.get("selected_results") or []:
+            if c.get("_dl_failed"):
+                continue
+            key = project_store.asset_key(c)
+            if not key:
+                continue
+            ref = f"{project_id}:{key}"
+            if c.get("reviewer_suggested"):
+                _credit(history.suggester.get(key), "suggestion_used", ref, c.get("title"),
+                        project_id, once=True)
+            if c.get("in_rule") == "rated":
+                _credit(history.credit_seg.get(key), "in_point_used", ref, c.get("title"),
+                        project_id, once=True)
+            _credit(history.credit_yes.get(key), "helped_pick", ref, c.get("title"),
+                    project_id, once=True)
 
 
 # ── in-points ───────────────────────────────────────────────────────────────
@@ -328,6 +459,16 @@ def learned_in_offset(source: str, history: History = None, min_samples: int = 5
         return None
     med = starts[len(starts) // 2]
     return med if med > 0.5 else None
+
+
+def rated_in_point(cand: dict, history: History = None):
+    """Where reviewers said the good part of this exact clip starts (median of
+    their first marked segment), or None."""
+    history = history or load_history()
+    if not history:
+        return None
+    starts = sorted(history.rated_starts.get(project_store.asset_key(cand), []))
+    return starts[len(starts) // 2] if starts else None
 
 
 # ── images ──────────────────────────────────────────────────────────────────

@@ -680,6 +680,78 @@ def _download_link_for(abs_path: str):
             else fileserver.build_link(abs_path, fileserver.public_host(), port))
 
 
+def _server_base():
+    """Base URL of the bot's file server (TLS domain when set), or None if off."""
+    port = _FILESERVER.get("port")
+    if not port:
+        return None
+    return fileserver.public_base_url() or f"http://{fileserver.public_host()}:{port}"
+
+
+def handle_rate(chat_id, operator: dict) -> None:
+    """Send a reviewer their personal rating-page link."""
+    from bot import rating_page
+    from core import ratings
+    base = _server_base()
+    if not base:
+        send_message(chat_id, "The rating page needs the file server — set BOT_FILE_SERVER=1 "
+                              "(and BOT_PUBLIC_URL or BOT_PUBLIC_HOST) on the bot.")
+        return
+    try:
+        ratings.upsert_rater(operator["id"], operator.get("name", ""))
+        q = ratings.queue_size()
+        mine = ratings.contribution_summary(operator["id"], recent=0)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't open the rating queue: {e}")
+        return
+    todo = q["items"] - q["rated"]
+    labels_todo = q["labels"] - q["labels_checked"]
+    changed = sum(v for k, v in mine["impact"].items() if not k.startswith("label_"))
+    send_message(chat_id,
+                 f"⭐ Your review link (personal — don't share it):\n"
+                 f"{rating_page.rate_link(operator['id'], base)}\n\n"
+                 f"• {todo} clip(s) waiting for a first review — mark each Yes / With a "
+                 "trim / No, say why, mark the good parts, suggest better clips.\n"
+                 f"• {labels_todo} editor label(s) to check — confirm or correct what the "
+                 "bot read from finished edits.\n"
+                 f"So far you've rated {mine['rated']} clip(s), checked "
+                 f"{mine['labels_checked']} label(s), and changed {changed} pick(s). "
+                 "Details in the 'My impact' tab.")
+
+
+def format_rules(rules: list) -> str:
+    if not rules:
+        return ("No house rules yet — they're written automatically once reviewers "
+                "have left enough notes (or run /rules refresh).")
+    return "📏 House rules (from reviewers' notes, used when ranking):\n" + "\n".join(
+        f"{i}. {r}" for i, r in enumerate(rules, 1))
+
+
+def refresh_rules(chat_id) -> None:
+    """/rules refresh — re-distil house rules now (LLM call, run off the poll loop)."""
+    from core import ratings
+    try:
+        rules = ratings.distill_house_rules(force=True)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't write rules: {e}")
+        return
+    send_message(chat_id, "No reviewer notes yet." if rules is None else format_rules(rules))
+
+
+def format_raters(stats: list) -> str:
+    if not stats:
+        return "No reviews yet. Send reviewers their link with /rate."
+    pct = lambda a, n: f"{round(100 * a / n)}%" if n else "–"
+    lines = ["⭐ Reviewers (agreement with other reviewers · with the real editor):"]
+    for s in stats:
+        lines.append(f"• {s['name'] or s['rater_id']}: {s['rated']} rated, {s['notes']} notes, "
+                     f"{s.get('labels', 0)} labels checked, {s.get('changed', 0)} picks changed · "
+                     f"peers {pct(s['peer_agree'], s['peer_shared'])} "
+                     f"({s['peer_shared']}) · editor {pct(s['editor_agree'], s['editor_shared'])} "
+                     f"({s['editor_shared']})")
+    return "\n".join(lines)
+
+
 def deliver_project(chat_id, project: str) -> None:
     """Zip the finished project and hand it over as one zip: attached to Telegram
     when it fits under the upload cap, plus a signed download link (when the file
@@ -873,6 +945,12 @@ def _deliver_completed(chat_id, proj, result) -> None:
                                           topic=result.get("topic", ""))
         except Exception as e:
             print(f"[bot] project store: couldn't record delivery: {e}")
+        try:
+            from core import edit_feedback, ratings
+            ratings.record_candidates(project_id, result.get("shots") or [])
+            edit_feedback.credit_delivery(project_id, result.get("shots") or [])
+        except Exception as e:
+            print(f"[bot] ratings: couldn't queue candidates: {e}")
     send_message(chat_id, format_summary(proj, result))
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
@@ -1681,6 +1759,9 @@ _BOT_COMMANDS = [
     ("zip", "Bundle a finished project (link + attach)"),
     ("files", "List zips on the server with fresh download links"),
     ("projects", "Recent projects: who ran them, delivered, learned"),
+    ("rate", "Get your link to review the bot's clip picks"),
+    ("rules", "House rules learned from reviewers (/rules refresh)"),
+    ("raters", "Reviewer activity and agreement"),
     ("extras", "Next voice file → extra clips only (brand/model/part B-roll)"),
     ("images", "Next voice file → related still images into the library (Google)"),
     ("overlaytext", "Render one overlay clip: /overlaytext 4 YOUR TEXT"),
@@ -2116,6 +2197,10 @@ _HELP = (
     "/logs — export the bot logs as a file\n"
     "/cookies — how to give me YouTube cookies (or just send cookies.txt)\n"
     "/projects — recent projects: title, who ran it, delivered / learned\n"
+    "/rate — your review link: rate the bot's picks per line, say why, mark good parts, "
+    "suggest better clips (reviewers in TELEGRAM_RATERS can use this too)\n"
+    "/rules — house rules learned from reviewers' notes (/rules refresh to rewrite)\n"
+    "/raters — who's reviewing, and how often they agree with each other and the editor\n"
     "📥 Send the Premiere XML of a finished edit and pick its project — I'll learn "
     "which clips and images were used on their shot, moved to another shot, or "
     "dropped, plus the cut points you used."
@@ -2234,6 +2319,23 @@ def format_projects(projects: list) -> str:
 
 def is_projects_command(text: str) -> bool:
     return _command(text) == "/projects"
+
+
+def is_rate_command(text: str) -> bool:
+    return _command(text) in ("/rate", "/review")
+
+
+def is_rules_command(text: str) -> bool:
+    return _command(text) == "/rules"
+
+
+def is_raters_command(text: str) -> bool:
+    return _command(text) in ("/raters", "/reviewers")
+
+
+_RATER_HELP = ("⭐ You're a reviewer. Send /rate to get your personal review link: rate the "
+               "clips the bot picks for each line, say why, mark the good parts, and suggest "
+               "better clips. Every review makes the picker better.")
 
 
 def _clear_all_projects() -> tuple:
@@ -2420,9 +2522,34 @@ def main() -> None:
                 continue
             user_id = (msg.get("from") or {}).get("id")
             chat_id = (msg.get("chat") or {}).get("id")
-            if not is_allowed(user_id, allowed):
-                continue
             text = msg.get("text") or ""
+            if not is_allowed(user_id, allowed):
+                # Reviewers (TELEGRAM_RATERS) only get the rating link.
+                from bot import rating_page
+                if user_id in rating_page.rater_ids():
+                    if is_rate_command(text):
+                        handle_rate(chat_id, operator_from(msg))
+                    elif text:
+                        send_message(chat_id, _RATER_HELP)
+                continue
+
+            if is_rate_command(text):
+                handle_rate(chat_id, operator_from(msg))
+                continue
+
+            if is_rules_command(text):
+                from core import ratings
+                if "refresh" in text.lower():
+                    send_message(chat_id, "📏 Re-writing house rules from reviewers' notes…")
+                    threading.Thread(target=refresh_rules, args=(chat_id,), daemon=True).start()
+                else:
+                    send_message(chat_id, format_rules(ratings.get_house_rules()))
+                continue
+
+            if is_raters_command(text):
+                from core import ratings
+                send_message(chat_id, format_raters(ratings.rater_stats()))
+                continue
 
             if is_help_command(text):
                 send_message(chat_id, _help_text())

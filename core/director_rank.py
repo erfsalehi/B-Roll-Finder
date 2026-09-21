@@ -637,7 +637,15 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
     if video_topic and video_topic.strip():
         custom_block += f"OVERALL VIDEO TOPIC: {video_topic.strip()}\n"
     if custom_instructions and custom_instructions.strip():
-        custom_block += f"USER STYLE NOTES: {custom_instructions.strip()}"
+        custom_block += f"USER STYLE NOTES: {custom_instructions.strip()}\n"
+    try:
+        from core.ratings import get_house_rules
+        rules = get_house_rules()
+        if rules:
+            custom_block += ("HOUSE RULES (distilled from human reviewers' notes — follow "
+                             "them):\n" + "\n".join(f"- {r}" for r in rules))
+    except Exception as e:
+        print(f"[rank] house rules unavailable: {e}")
     system_prompt = system_prompt.replace("{custom_instructions_block}", custom_block)
     system_prompt += _BATCH_SCHEMA_INSTRUCTION
 

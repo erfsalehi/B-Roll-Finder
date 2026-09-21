@@ -339,6 +339,7 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
 
     1. A trim learned from a re-imported Premiere edit — a human editor's actual
        cut of this exact footage, so it always wins when we have one.
+    1b. The good segment human reviewers marked on this clip (rating page).
     2. ``verified_in_sec``, where :mod:`core.visual_verify` saw the matching
        footage start. This is what stops a 12-minute YouTube upload from being
        cut at its intro when the subject only shows up at 4:20.
@@ -364,7 +365,7 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
 def _pick_in_frame(clip_url, filename, duration_frames, media_dur_frames, fps,
                    candidate) -> tuple:
     """``(rule, in_frame)`` for :func:`_preferred_in_frame`; rule is one of
-    trim / verified / habit / default."""
+    trim / rated / verified / habit / default."""
     if not clip_url and not filename and not candidate:
         return "default", 0
     try:
@@ -377,6 +378,15 @@ def _pick_in_frame(clip_url, filename, duration_frames, media_dur_frames, fps,
                 in_frame = sec_to_frames(float(trim["in_seconds"]), fps)
                 if _fits(in_frame, duration_frames, media_dur_frames):
                     return "trim", in_frame
+    except Exception:
+        pass
+    try:
+        from core.edit_feedback import rated_in_point
+        rated = rated_in_point(candidate or {"url": clip_url})
+        if rated is not None:
+            in_frame = sec_to_frames(float(rated), fps)
+            if _fits(in_frame, duration_frames, media_dur_frames):
+                return "rated", in_frame
     except Exception:
         pass
     try:

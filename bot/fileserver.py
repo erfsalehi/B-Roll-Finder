@@ -1,4 +1,5 @@
-"""Tiny tokenized HTTP file server for handing out project-zip download links.
+"""Tiny tokenized HTTP file server for handing out project-zip download links
+(and the reviewer rating page, see :mod:`bot.rating_page`).
 
 Telegram bots can only upload 50 MB, and clip bundles are usually bigger, so the
 bot also serves them over HTTP with HMAC-signed URLs:
@@ -172,6 +173,10 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        # Reviewer rating page (/rate…) lives on the same server.
+        from bot import rating_page
+        if rating_page.handle(self):
+            return
         parsed = urllib.parse.urlparse(self.path)
         if not parsed.path.startswith("/d/"):
             self.send_error(404)
@@ -253,6 +258,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         # Lets download managers probe size / Accept-Ranges before fetching.
         self.do_GET()
+
+    def do_POST(self):
+        from bot import rating_page
+        if not rating_page.handle(self):
+            self.send_error(404)
 
 
 def start_server(port: int = None) -> int | None:
