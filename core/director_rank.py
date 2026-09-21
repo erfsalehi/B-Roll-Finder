@@ -62,6 +62,8 @@ def _format_candidate(i: int, c: dict) -> str:
     parts.append(f"| {w}x{h} ({orient})")
     if query:
         parts.append(f'| query: "{query}"')
+    if c.get('edit_record'):
+        parts.append(f"| {c['edit_record']}")
     return " ".join(parts)
 
 
@@ -122,10 +124,12 @@ def _apply_ranked_to_shot(shot: dict, ranked: list) -> None:
 def _format_shot_block(shot: dict) -> str:
     """Render one shot (narration + intent + indexed candidates) for a batch."""
     candidate_lines = [_format_candidate(i, c) for i, c in enumerate(shot['video_results'])]
+    history = f"{shot['edit_history']}\n" if shot.get('edit_history') else ""
     return (
         f"=== SHOT shot_id={shot.get('slot_id')} ===\n"
         f"NARRATION: \"{shot.get('text', '')}\"\n"
         f"SHOT INTENT: {shot.get('shot_intent', '')}\n"
+        f"{history}"
         f"CANDIDATES:\n" + "\n".join(candidate_lines)
     )
 
@@ -643,6 +647,18 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
             progress_callback(1.0)
         return shots
 
+    # What the editor kept/dropped on similar lines in past edits, and each
+    # candidate's track record — rendered into the prompt. No-op until an
+    # edited XML has been learned.
+    history = None
+    try:
+        from core import edit_feedback
+        history = edit_feedback.load_history()
+        if history:
+            edit_feedback.annotate_for_ranking(rankable, history)
+    except Exception as e:
+        print(f"[rank] edit history unavailable: {e}")
+
     # Group consecutive rankable shots into batches.
     batch_size = _rank_batch_size()
     batches = [rankable[i:i + batch_size] for i in range(0, len(rankable), batch_size)]
@@ -680,4 +696,10 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
             if progress_callback:
                 progress_callback(done / total)
 
+    if history:
+        try:
+            from core import edit_feedback
+            edit_feedback.demote_rejected(rankable, history)
+        except Exception as e:
+            print(f"[rank] couldn't apply edit history: {e}")
     return shots

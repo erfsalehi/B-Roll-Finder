@@ -16,5 +16,8 @@ def _reset_module_caches():
 
 @pytest.fixture(autouse=True)
 def _isolated_project_store(monkeypatch, tmp_path):
-    """Never let a test write the real .cache/projects.db."""
+    """Never let a test write the real .cache/projects.db (or reuse another
+    test's learned edit history)."""
+    import core.edit_feedback as ef
     monkeypatch.setenv("PROJECTS_DB", str(tmp_path / "projects.db"))
+    ef._CACHE.update(stamp=None, history=None)

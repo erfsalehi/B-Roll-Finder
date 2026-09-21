@@ -127,6 +127,32 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_usage_project ON asset_usage(project_id);
         """)
+        # Columns added after the first release; ALTER is a no-op error once present.
+        for table, col in (("project_assets", "channel TEXT DEFAULT ''"),
+                           ("project_assets", "in_rule TEXT DEFAULT ''"),
+                           ("project_shots", "embedding BLOB")):
+            try:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
+
+
+def creator_of(c: dict) -> str:
+    """The YouTube channel / Pexels author of a candidate, or ''. YouTube API
+    results carry ``channel``; otherwise it's packed into the description as
+    'by <name> — …' (YouTube) or 'By <name>' (Pexels)."""
+    if c.get("channel"):
+        return str(c["channel"]).strip()
+    desc = (c.get("description") or "").strip()
+    if desc[:3].lower() == "by ":
+        return desc[3:].split(" — ")[0].strip()
+    return ""
+
+
+def asset_key(c: dict) -> str:
+    """Stable identity of a clip across projects: the video page (a Pexels file
+    link changes with the chosen quality; the page doesn't)."""
+    return (c.get("page_url") or c.get("url") or "").strip()
 
 
 # ── projects ────────────────────────────────────────────────────────────────
@@ -263,13 +289,14 @@ def record_delivery(project_id: int, shots: list, xml_path: str = None,
                 c.execute(
                     """INSERT INTO project_assets
                        (project_id, slot_id, kind, position, filename, url, source, title,
-                        matched_query, exported_start_sec, exported_end_sec,
-                        exported_in_sec, exported_out_sec)
-                       VALUES (?, ?, 'clip', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        matched_query, page_url, channel, in_rule, exported_start_sec,
+                        exported_end_sec, exported_in_sec, exported_out_sec)
+                       VALUES (?, ?, 'clip', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (project_id, slot, pos, fname, res.get("url") or "",
                      res.get("source") or "", res.get("title") or "",
-                     res.get("matched_query") or "", ts, te,
-                     it.get("in_seconds"), it.get("out_seconds")))
+                     res.get("matched_query") or "", asset_key(res), creator_of(res),
+                     res.get("in_rule") or "",
+                     ts, te, it.get("in_seconds"), it.get("out_seconds")))
                 asset_names.add(fname.lower())
                 n_clips += 1
 

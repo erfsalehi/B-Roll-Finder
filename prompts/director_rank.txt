@@ -47,6 +47,11 @@ CRITICAL RULES:
    - "index": the original 0-based index of the candidate (required)
    - "reason": one short sentence for the top pick only (required for index 0)
    - "irrelevant": true if the candidate does not match the shot at all (optional, omit if relevant)
+9. EDITOR HISTORY — some shots include an "EDITOR HISTORY" block: what this video's editor actually
+   kept and dropped on similar narration lines in past videos. Some candidates also carry an
+   "editor record" (how often that clip, or that channel/author, survived the edit). Treat these as
+   the editor's taste: rank candidates like the kept ones higher and ones like the dropped ones lower.
+   Relevance rules 1–5b still come first — never rank an off-topic clip up because of history.
 
 {custom_instructions_block}
 

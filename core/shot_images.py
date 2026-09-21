@@ -182,6 +182,13 @@ def fetch_shot_images(shots: list, project_name: str, api_key: str = None,
     if backend_tripped("serper"):
         return 0
 
+    # Sites whose images the editor used float up; never-used sites sink.
+    try:
+        from core.edit_feedback import order_image_candidates
+        results = {q: order_image_candidates(imgs) for q, imgs in results.items()}
+    except Exception as e:
+        print(f"[shot_images] edit history unavailable: {e}")
+
     # Claim candidates shot by shot (in timeline order) so no URL repeats.
     claimed: set = set()
     plan = []   # (shot, query, [candidates])

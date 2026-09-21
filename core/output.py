@@ -334,7 +334,7 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
                         media_dur_frames: int, fps: float,
                         candidate: dict = None) -> int:
     """
-    Source in-point (frames) for a clip. Two things can move it off frame 0, in
+    Source in-point (frames) for a clip. Three things can move it off frame 0, in
     this order of authority:
 
     1. A trim learned from a re-imported Premiere edit — a human editor's actual
@@ -342,13 +342,31 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
     2. ``verified_in_sec``, where :mod:`core.visual_verify` saw the matching
        footage start. This is what stops a 12-minute YouTube upload from being
        cut at its intro when the subject only shows up at 4:20.
+    3. The editor's habit for this source, learned from edited XMLs (e.g. they
+       start YouTube clips ~6s in, past the intro) — see
+       :func:`core.edit_feedback.learned_in_offset`.
 
-    Returns 0 when neither applies, when the in-point wouldn't leave room for
+    Records the rule used as ``candidate["in_rule"]``.
+
+    Returns 0 when none applies, when the in-point wouldn't leave room for
     the timeline slot, or on any error — so the export never breaks because of
     this lookup.
     """
+    rule, in_frame = _pick_in_frame(clip_url, filename, duration_frames,
+                                    media_dur_frames, fps, candidate)
+    if isinstance(candidate, dict):
+        # Which rule chose it, so edit learning can tell the editor's own start
+        # apart from one we derived (see core.edit_feedback.learned_in_offset).
+        candidate["in_rule"] = rule
+    return in_frame
+
+
+def _pick_in_frame(clip_url, filename, duration_frames, media_dur_frames, fps,
+                   candidate) -> tuple:
+    """``(rule, in_frame)`` for :func:`_preferred_in_frame`; rule is one of
+    trim / verified / habit / default."""
     if not clip_url and not filename and not candidate:
-        return 0
+        return "default", 0
     try:
         from core import clip_library
         row = clip_library.find_clip_by_path_or_url(clip_url=clip_url, filename=filename)
@@ -358,17 +376,27 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
             if trim:
                 in_frame = sec_to_frames(float(trim["in_seconds"]), fps)
                 if _fits(in_frame, duration_frames, media_dur_frames):
-                    return in_frame
+                    return "trim", in_frame
     except Exception:
         pass
     try:
         verified = (candidate or {}).get("verified_in_sec")
-        if verified is None:
-            return 0
-        in_frame = sec_to_frames(float(verified), fps)
-        return in_frame if _fits(in_frame, duration_frames, media_dur_frames) else 0
+        if verified is not None:
+            in_frame = sec_to_frames(float(verified), fps)
+            if _fits(in_frame, duration_frames, media_dur_frames):
+                return "verified", in_frame
     except Exception:
-        return 0
+        pass
+    try:
+        from core.edit_feedback import learned_in_offset
+        habit = learned_in_offset((candidate or {}).get("source", ""))
+        if habit:
+            in_frame = sec_to_frames(float(habit), fps)
+            if _fits(in_frame, duration_frames, media_dur_frames):
+                return "habit", in_frame
+    except Exception:
+        pass
+    return "default", 0
 
 
 def clip_base_dir(project_name: str) -> str:
