@@ -73,9 +73,14 @@ _FILESERVER = {"port": None}
 # Last completed project name, so /zip knows what to bundle by default.
 _LAST = {"project": None}
 
-# Audio waiting on the user's "clear disk?" answer before the job starts.
-# chat_id → {"file_id", "name"}.
+# Audio waiting on the user's title reply, then the mode / "clear disk?" answer,
+# before the job starts. chat_id → {"file_id", "name", "awaiting_title",
+# "title", "operator", "overlay_only", "extras_only", "images_only"}.
 _PENDING_START: dict = {}
+
+# An uploaded (edited) Premiere XML waiting on "which project is this for?".
+# chat_id → {"path", "name"}.
+_PENDING_XML: dict = {}
 
 # Chats that ran /overlay — their NEXT upload is offered as text-overlay-only.
 _OVERLAY_NEXT: set = set()
@@ -232,6 +237,22 @@ def project_name_from(suggested_name: str, fallback: str = "") -> str:
     return (base or fallback or "voice")[:50]
 
 
+def safe_title(title: str) -> str:
+    """A typed project title made safe to use as the project folder / file name:
+    keeps letters (any script), digits, spaces, '-' and '_'; everything else
+    (':', '/', '?', …) becomes a space."""
+    cleaned = "".join(c if (c.isalnum() or c in " -_") else " " for c in title or "")
+    return " ".join(cleaned.split())[:50]
+
+
+def operator_from(message_or_cb: dict) -> dict:
+    """``{"id", "name"}`` of the Telegram user who sent a message / tapped a button."""
+    u = (message_or_cb or {}).get("from") or {}
+    name = u.get("username") or " ".join(
+        p for p in (u.get("first_name"), u.get("last_name")) if p)
+    return {"id": u.get("id"), "name": name or ""}
+
+
 # ── Telegram API (thin wrappers over requests) ─────────────────────────────────
 
 def _call(method: str, _timeout: int = 60, **params) -> dict:
@@ -341,6 +362,38 @@ def handle_settings_callback(cb: dict) -> None:
     message_id = msg.get("message_id")
     cb_id = cb.get("id")
 
+    # "Use the file name" instead of typing a project title.
+    if data == "title:default":
+        pend = _PENDING_START.get(chat_id)
+        if not pend or not pend.get("awaiting_title"):
+            edit_message(chat_id, message_id, "↪️ That prompt expired — resend the audio file.")
+            answer_callback(cb_id, "Expired")
+            return
+        title = project_name_from(pend["name"], time.strftime("video_%Y%m%d_%H%M%S"))
+        edit_message(chat_id, message_id, f"🏷 Title: {title}")
+        answer_callback(cb_id, "OK")
+        apply_title(chat_id, title, operator_from(cb))
+        return
+
+    # Which project an uploaded XML belongs to: "learn:<project_id|trims|cancel>".
+    if data.startswith("learn:"):
+        choice = data.split(":", 1)[1]
+        pend = _PENDING_XML.pop(chat_id, None)
+        if not pend:
+            edit_message(chat_id, message_id, "↪️ That prompt expired — resend the XML.")
+            answer_callback(cb_id, "Expired")
+            return
+        answer_callback(cb_id, "OK")
+        if choice == "cancel":
+            _remove_quietly(pend["path"])
+            edit_message(chat_id, message_id, "✖️ XML ignored.")
+            return
+        edit_message(chat_id, message_id, "🧠 Reading the edit…")
+        learn_from_xml(chat_id, pend["path"], pend["name"],
+                       project_id=None if choice == "trims" else int(choice),
+                       imported_by=operator_from(cb).get("id"))
+        return
+
     # Answer to the upload prompt: "start:<mode>:<disk>" where mode is
     # full|overlay and disk is clear|keep (#6 disk-clear + the Full vs
     # text-overlay-only mode choice).
@@ -351,7 +404,9 @@ def handle_settings_callback(cb: dict) -> None:
             answer_callback(cb_id, "Bad option")
             return
         pend = _PENDING_START.pop(chat_id, None)
-        if not pend:
+        if not pend or pend.get("awaiting_title"):
+            if pend:
+                _PENDING_START[chat_id] = pend   # still waiting on the title
             edit_message(chat_id, message_id, "↪️ That start prompt expired — resend the audio file.")
             answer_callback(cb_id, "Expired")
             return
@@ -376,7 +431,8 @@ def handle_settings_callback(cb: dict) -> None:
         elif mode == "images":
             _start_job(handle_related_images, chat_id, pend["file_id"], pend["name"])
         else:
-            _start_job(handle_audio, chat_id, pend["file_id"], pend["name"])
+            _start_job(handle_audio, chat_id, pend["file_id"], pend["name"],
+                       title=pend.get("title"), operator=pend.get("operator"))
         return
 
     if data == "settings:close":
@@ -806,7 +862,17 @@ def send_shots_srt(chat_id, proj: str, shots: list) -> None:
 def _deliver_completed(chat_id, proj, result) -> None:
     """Final reporting for a fully-processed (downloaded) project: summary, the
     Premiere XML, the shot-number SRT, then the zipped bundle (Telegram attach +
-    download link)."""
+    download link). Also snapshots every delivered clip and image into the
+    project store, so the editor's final XML can be compared against it."""
+    project_id = result.get("project_id")
+    if project_id:
+        try:
+            from core import project_store
+            project_store.record_delivery(project_id, result.get("shots") or [],
+                                          xml_path=result.get("xml_path"),
+                                          topic=result.get("topic", ""))
+        except Exception as e:
+            print(f"[bot] project store: couldn't record delivery: {e}")
     send_message(chat_id, format_summary(proj, result))
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
@@ -823,12 +889,30 @@ def _deliver_completed(chat_id, proj, result) -> None:
         send_document(chat_id, links_path,
                       caption=f"⚠️ {len(empty)} shot(s) have no footage — links to re-download them")
     deliver_project(chat_id, proj)
+    if project_id:
+        send_message(chat_id, "🧠 When the edit is finished, send me the Premiere XML "
+                              "export (File → Export → Final Cut Pro XML) and pick this "
+                              "project — I'll learn which clips and images worked.")
 
 
-def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
+def _project_status(project_id, status: str, topic: str = None) -> None:
+    """Best-effort project-store status update — never breaks a job."""
+    if not project_id:
+        return
+    try:
+        from core import project_store
+        project_store.set_status(project_id, status, topic=topic)
+    except Exception as e:
+        print(f"[bot] project store: couldn't set status: {e}")
+
+
+def handle_audio(chat_id, file_id: str, suggested_name: str,
+                 title: str = None, operator: dict = None) -> dict:
     """Download the audio and run the pipeline under the chat's settings. With
     the review gate on, stops after selection + QA and waits for /download;
-    otherwise downloads and delivers end-to-end."""
+    otherwise downloads and delivers end-to-end. The run is recorded in the
+    project store (title + operator) so the editor's final XML can be matched
+    back to it later."""
     from core.pipeline import run_pipeline_headless, PipelineCancelled
 
     proj = project_name_from(suggested_name, time.strftime("video_%Y%m%d_%H%M%S"))
@@ -838,12 +922,23 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
     settings = bot_settings.get_settings(chat_id)
     review_gate = bool(settings.get("review_gate"))
 
+    project_id = None
+    try:
+        from core import project_store
+        operator = operator or {}
+        project_id = project_store.create_project(
+            title or proj, proj, operator_id=operator.get("id"),
+            operator_name=operator.get("name", ""), chat_id=chat_id)
+    except Exception as e:
+        print(f"[bot] project store: couldn't create project: {e}")
+
     status = send_message(chat_id, f"🎬 Received '{proj}'. Downloading…")
     msg_id = status.get("message_id")
     try:
         download_telegram_file(file_id, audio_path)
     except Exception as e:
         send_message(chat_id, f"❌ Couldn't fetch the audio: {e}")
+        _project_status(project_id, "failed")
         return {}
 
     progress = _progress_logger(chat_id, proj, msg_id)
@@ -859,15 +954,19 @@ def handle_audio(chat_id, file_id: str, suggested_name: str) -> dict:
             )
     except PipelineCancelled:
         send_message(chat_id, f"⏹ Cancelled '{proj}'.")
+        _project_status(project_id, "cancelled")
         return {}
     except Exception as e:
         send_message(chat_id, f"❌ Pipeline failed for '{proj}': {e}")
+        _project_status(project_id, "failed")
         return {}
 
     edit_message(chat_id, msg_id, f"🎬 {proj} — ✅ stages complete")
     _LAST["project"] = proj
+    result["project_id"] = project_id
 
     if review_gate:
+        _project_status(project_id, "review", topic=result.get("topic", ""))
         _PENDING[chat_id] = {
             "project": proj, "shots": result.get("shots") or [],
             "qa": result.get("qa") or {}, "topic": result.get("topic", ""),
@@ -1126,6 +1225,9 @@ def _run_download(chat_id) -> None:
         return
     result["download"] = fin["download"]
     result["xml_path"] = fin["xml_path"]
+    # pend["shots"] is what was refined and downloaded; after a restart it is no
+    # longer the same object as result["shots"], so hand delivery the real one.
+    result["shots"] = pend["shots"]
     _PENDING.pop(chat_id, None)
     _persist_pending()
     _deliver_completed(chat_id, proj, result)
@@ -1303,28 +1405,109 @@ def handle_library_upload(chat_id, file_id: str, name: str) -> None:
         "Imported clips are re-downloaded from their source URL when selected.")
 
 
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def build_project_pick_keyboard(projects: list, counts: dict) -> dict:
+    """One button per candidate project for an uploaded XML. Projects whose
+    delivered files appear in the XML come first, starred, with the match
+    count; then the most recent others."""
+    ordered = sorted(projects, key=lambda p: (-counts.get(p["id"], 0), -p["id"]))
+    rows = []
+    for p in ordered[:8]:
+        n = counts.get(p["id"], 0)
+        date = (p.get("created_at") or "")[:10]
+        label = f"{'⭐ ' if n else ''}{p['title'][:30]} · {date}"
+        if n:
+            label += f" · {n} files match"
+        rows.append([{"text": label, "callback_data": f"learn:{p['id']}"}])
+    rows.append([{"text": "None of these — just learn trims", "callback_data": "learn:trims"}])
+    rows.append([{"text": "✖️ Cancel", "callback_data": "learn:cancel"}])
+    return {"inline_keyboard": rows}
+
+
+def format_learn_summary(s: dict) -> str:
+    """Bot reply after comparing an editor's final XML with a project."""
+    def _line(label, c):
+        total = sum(c.values())
+        return (f"• {label}: {total} delivered — {c.get('used_here', 0)} used on their shot, "
+                f"{c.get('used_elsewhere', 0)} used on another shot, "
+                f"{c.get('unused', 0)} not used")
+    lines = [f"🧠 Learned from the edit of '{s['title']}':",
+             _line("Clips", s.get("clips") or {}),
+             _line("Images", s.get("images") or {})]
+    if s.get("external_clips") or s.get("external_images"):
+        lines.append(f"• Editor's own footage: {s.get('external_clips', 0)} clip(s), "
+                     f"{s.get('external_images', 0)} image(s)")
+    if s.get("median_in_move_sec") is not None:
+        lines.append(f"• Typical in-point change: {s['median_in_move_sec']:+.1f}s")
+    if s.get("shift_sec"):
+        lines.append(f"• Whole edit was shifted {s['shift_sec']:+.1f}s (accounted for)")
+    miss = s.get("shots_without_our_footage") or []
+    if miss:
+        shown = ", ".join(miss[:15]) + (" …" if len(miss) > 15 else "")
+        lines.append(f"• Shots with none of our footage: {shown}")
+    return "\n".join(lines)
+
+
 def handle_xml_upload(chat_id, file_id: str, name: str) -> None:
-    """Learn the editor's preferred trims from an exported (and Premiere-edited)
-    FCP7 XML: each clip's in/out is recorded against the Clip Library so future
-    projects reuse your cut points. Writes to the persistent DB; idempotent."""
+    """An edited Premiere XML came in. When projects are on record, ask which
+    one it belongs to (projects whose files appear in the XML are suggested
+    first); the answer arrives as a ``learn:`` callback. With no projects on
+    record, just learn trims as before."""
     import tempfile
-    from core.xml_reimport import ingest_reimported_xml
-    tmp = os.path.join(tempfile.gettempdir(), f"reimport_{int(time.time())}.xml")
+    tmp = os.path.join(tempfile.gettempdir(), f"reimport_{chat_id}_{int(time.time())}.xml")
     try:
         download_telegram_file(file_id, tmp)
     except Exception as e:
         send_message(chat_id, f"❌ Couldn't download the XML: {e}")
         return
+
+    projects, counts = [], {}
     try:
-        s = ingest_reimported_xml(tmp)
+        from core import project_store
+        projects = project_store.list_projects(limit=30)
+        if projects:
+            from core.xml_reimport import parse_fcpxml
+            counts = project_store.match_counts(parse_fcpxml(tmp))
+    except Exception as e:
+        print(f"[bot] project store: couldn't match XML: {e}")
+    if not projects:
+        learn_from_xml(chat_id, tmp, name)
+        return
+
+    old = _PENDING_XML.pop(chat_id, None)
+    if old:
+        _remove_quietly(old["path"])
+    _PENDING_XML[chat_id] = {"path": tmp, "name": name}
+    send_message(chat_id, f"📥 Got '{name}'. Which project is this edit for?",
+                 reply_markup=build_project_pick_keyboard(projects, counts))
+
+
+def learn_from_xml(chat_id, path: str, name: str, project_id: int = None,
+                   imported_by=None) -> None:
+    """Learn from an edited XML: always records preferred trims in the Clip
+    Library; with ``project_id`` also labels every clip/image delivered for
+    that project (used on its shot / moved / unused) in the project store."""
+    from core.xml_reimport import ingest_reimported_xml, parse_fcpxml
+    try:
+        s = ingest_reimported_xml(path)
+        if project_id:
+            from core import project_store
+            summary = project_store.analyze_import(project_id, parse_fcpxml(path),
+                                                   imported_by=imported_by, filename=name)
+            send_message(chat_id, format_learn_summary(summary)
+                         + f"\n• Preferred trims recorded: {s['recorded']}")
+            return
     except Exception as e:
         send_message(chat_id, f"❌ Couldn't parse '{name}': {e}")
         return
     finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        _remove_quietly(path)
     lines = [
         f"✅ Learned trims from '{name}':",
         f"• clips parsed: {s['parsed']} ({s['video']} video)",
@@ -1497,6 +1680,7 @@ _BOT_COMMANDS = [
     ("forcestop", "Hard stop + restart the bot"),
     ("zip", "Bundle a finished project (link + attach)"),
     ("files", "List zips on the server with fresh download links"),
+    ("projects", "Recent projects: who ran them, delivered, learned"),
     ("extras", "Next voice file → extra clips only (brand/model/part B-roll)"),
     ("images", "Next voice file → related still images into the library (Google)"),
     ("overlaytext", "Render one overlay clip: /overlaytext 4 YOUR TEXT"),
@@ -1931,8 +2115,10 @@ _HELP = (
     "/cleanup [name|all|overlays] — list/delete projects or clear the overlay cache (free disk)\n"
     "/logs — export the bot logs as a file\n"
     "/cookies — how to give me YouTube cookies (or just send cookies.txt)\n"
-    "📥 Send an exported .xml (after editing in Premiere) to teach me your preferred "
-    "trims — I'll reuse those cut points when the same footage comes up again."
+    "/projects — recent projects: title, who ran it, delivered / learned\n"
+    "📥 Send the Premiere XML of a finished edit and pick its project — I'll learn "
+    "which clips and images were used on their shot, moved to another shot, or "
+    "dropped, plus the cut points you used."
 )
 
 
@@ -1940,10 +2126,10 @@ def _help_text() -> str:
     return _HELP
 
 
-def _job_thread(fn, chat_id, *args) -> None:
+def _job_thread(fn, chat_id, *args, **kwargs) -> None:
     """Background-thread wrapper: run one unit of work and always clear busy."""
     try:
-        fn(chat_id, *args)
+        fn(chat_id, *args, **kwargs)
     except Exception as e:
         send_message(chat_id, f"❌ Unexpected error: {e}")
     finally:
@@ -1987,6 +2173,69 @@ def build_start_keyboard(overlay_only: bool = False, extras_only: bool = False,
     return {"inline_keyboard": rows}
 
 
+def ask_title(chat_id, file_id: str, name: str, operator: dict,
+              overlay_only: bool = False, extras_only: bool = False,
+              images_only: bool = False) -> None:
+    """First step after an audio upload: ask for the project title. The reply
+    (or the 'use file name' button) goes to :func:`apply_title`."""
+    _PENDING_START[chat_id] = {
+        "file_id": file_id, "name": name, "awaiting_title": True, "operator": operator,
+        "overlay_only": overlay_only, "extras_only": extras_only, "images_only": images_only,
+    }
+    default = project_name_from(name, "voice")
+    send_message(chat_id, "🏷 What's the project title? Reply with a title "
+                          f"(or tap below to use '{default}').",
+                 reply_markup={"inline_keyboard": [[
+                     {"text": f"Use '{default[:40]}'", "callback_data": "title:default"}]]})
+
+
+def apply_title(chat_id, title: str, operator: dict = None) -> bool:
+    """Store the title on the waiting upload and show the mode keyboard. The
+    title (made filesystem-safe) also becomes the project/folder name. Returns
+    False when no upload is waiting for a title."""
+    pend = _PENDING_START.get(chat_id)
+    if not pend or not pend.get("awaiting_title"):
+        return False
+    title = " ".join((title or "").split())[:80]
+    folder = safe_title(title)
+    if not folder:
+        send_message(chat_id, "That title has no letters or numbers — try another.")
+        return True
+    ext = os.path.splitext(pend["name"] or "")[1] or ".mp3"
+    pend.update(awaiting_title=False, title=title, name=folder + ext,
+                operator=pend.get("operator") or operator or {})
+    send_message(
+        chat_id,
+        f"🎬 Ready: '{title}'.\n"
+        "Pick a mode — and whether to clear old projects first "
+        "(frees disk; keeps Clip Library & cookies):",
+        reply_markup=build_start_keyboard(overlay_only=pend.get("overlay_only", False),
+                                          extras_only=pend.get("extras_only", False),
+                                          images_only=pend.get("images_only", False)),
+    )
+    return True
+
+
+_STATUS_ICON = {"running": "⏳", "review": "📋", "delivered": "📦", "learned": "🧠",
+                "failed": "❌", "cancelled": "⏹"}
+
+
+def format_projects(projects: list) -> str:
+    if not projects:
+        return "No projects recorded yet. Send a voice file to start one."
+    lines = ["🗂 Recent projects (📦 delivered · 🧠 learned from the edit):"]
+    for p in projects:
+        who = f" · by {p['operator_name']}" if p.get("operator_name") else ""
+        lines.append(f"{_STATUS_ICON.get(p.get('status'), '•')} {p['title']} · "
+                     f"{(p.get('created_at') or '')[:10]}{who} · "
+                     f"{p.get('n_clips', 0)} clips, {p.get('n_images', 0)} images")
+    return "\n".join(lines)
+
+
+def is_projects_command(text: str) -> bool:
+    return _command(text) == "/projects"
+
+
 def _clear_all_projects() -> tuple:
     """Delete every downloaded project folder and every top-level .zip under
     downloads/. Keeps .cache (Clip Library DB, cookies). Returns
@@ -2014,14 +2263,14 @@ def _clear_all_projects() -> tuple:
     return len(usage), freed
 
 
-def _start_job(fn, chat_id, file_id: str, name: str) -> None:
+def _start_job(fn, chat_id, file_id: str, name: str, **kwargs) -> None:
     """Claim the busy slot and run ``fn`` (handle_audio or handle_overlay_only)
     for an uploaded audio file, in a background thread."""
     _BUSY.update(active=True,
                  project=project_name_from(name, time.strftime("video_%Y%m%d_%H%M%S")),
                  cancel=threading.Event(), started=time.time())
     threading.Thread(target=_job_thread, args=(fn, chat_id, file_id, name),
-                     daemon=True).start()
+                     kwargs=kwargs, daemon=True).start()
 
 
 # ── polling loop ────────────────────────────────────────────────────────────────
@@ -2229,9 +2478,15 @@ def main() -> None:
                     send_message(chat_id, f"⏹ Cancelling '{_BUSY.get('project')}' — it stops at "
                                           "the next stage/shot. If it won't stop, use /forcestop.")
                 elif _PENDING.get(chat_id):
-                    proj = _PENDING.pop(chat_id)["project"]
+                    pend = _PENDING.pop(chat_id)
                     _persist_pending()
-                    send_message(chat_id, f"⏹ Discarded pending project '{proj}'.")
+                    _project_status((pend.get("result") or {}).get("project_id"), "cancelled")
+                    send_message(chat_id, f"⏹ Discarded pending project '{pend['project']}'.")
+                elif _PENDING_START.pop(chat_id, None):
+                    send_message(chat_id, "⏹ Dropped the uploaded voice file.")
+                elif _PENDING_XML.get(chat_id):
+                    _remove_quietly(_PENDING_XML.pop(chat_id)["path"])
+                    send_message(chat_id, "⏹ Ignored the uploaded XML.")
                 else:
                     send_message(chat_id, "Nothing is running right now.")
                 continue
@@ -2248,6 +2503,14 @@ def main() -> None:
 
             if is_zip_command(text):
                 handle_zip(chat_id, text)
+                continue
+
+            if is_projects_command(text):
+                try:
+                    from core import project_store
+                    send_message(chat_id, format_projects(project_store.list_projects(15)))
+                except Exception as e:
+                    send_message(chat_id, f"❌ Couldn't read projects: {e}")
                 continue
 
             if is_files_command(text):
@@ -2369,16 +2632,14 @@ def main() -> None:
                 _OVERLAY_NEXT.discard(chat_id)
                 _EXTRAS_NEXT.discard(chat_id)
                 _IMAGES_NEXT.discard(chat_id)
-                _PENDING_START[chat_id] = {"file_id": file_id, "name": name}
-                send_message(
-                    chat_id,
-                    f"🎬 Ready: '{project_name_from(name, 'voice')}'.\n"
-                    "Pick a mode — and whether to clear old projects first "
-                    "(frees disk; keeps Clip Library & cookies):",
-                    reply_markup=build_start_keyboard(overlay_only=overlay_only,
-                                                      extras_only=extras_only,
-                                                      images_only=images_only),
-                )
+                # Ask the project title first; the reply then shows the mode
+                # keyboard (see apply_title).
+                ask_title(chat_id, file_id, name, operator_from(msg),
+                          overlay_only=overlay_only, extras_only=extras_only,
+                          images_only=images_only)
+            elif text and not text.startswith("/") and apply_title(chat_id, text,
+                                                                   operator_from(msg)):
+                continue
             elif text:
                 send_message(chat_id, _help_text())
 
