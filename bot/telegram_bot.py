@@ -375,6 +375,17 @@ def handle_settings_callback(cb: dict) -> None:
         apply_title(chat_id, title, operator_from(cb))
         return
 
+    # Which saved project to download: "dl:<project_id|cancel>".
+    if data.startswith("dl:"):
+        choice = data.split(":", 1)[1]
+        answer_callback(cb_id, "OK")
+        if choice == "cancel" or not choice.isdigit():
+            edit_message(chat_id, message_id, "✖️ Download cancelled.")
+            return
+        edit_message(chat_id, message_id, "⬇️ Starting…")
+        _start_project_download(chat_id, int(choice))
+        return
+
     # Which project an uploaded XML belongs to: "learn:<project_id|trims|cancel>".
     if data.startswith("learn:"):
         choice = data.split(":", 1)[1]
@@ -940,6 +951,7 @@ def _deliver_completed(chat_id, proj, result) -> None:
     if project_id:
         try:
             from core import project_store
+            project_store.save_snapshot(project_id, result, quality=result.get("quality"))
             project_store.record_delivery(project_id, result.get("shots") or [],
                                           xml_path=result.get("xml_path"),
                                           topic=result.get("topic", ""))
@@ -982,6 +994,21 @@ def _project_status(project_id, status: str, topic: str = None) -> None:
         project_store.set_status(project_id, status, topic=topic)
     except Exception as e:
         print(f"[bot] project store: couldn't set status: {e}")
+
+
+def _snapshot_project(project_id, result: dict, quality=None) -> None:
+    """Save the project's selection to the DB (so it can be re-downloaded or
+    reviewed later) and queue its shots for reviewers. Best-effort."""
+    if not project_id:
+        return
+    try:
+        from core import project_store, ratings
+        shots = result.get("shots") or []
+        project_store.save_snapshot(project_id, result, quality=quality)
+        project_store.record_shots(project_id, shots)
+        ratings.record_candidates(project_id, shots)
+    except Exception as e:
+        print(f"[bot] project store: couldn't save snapshot: {e}")
 
 
 def handle_audio(chat_id, file_id: str, suggested_name: str,
@@ -1042,9 +1069,11 @@ def handle_audio(chat_id, file_id: str, suggested_name: str,
     edit_message(chat_id, msg_id, f"🎬 {proj} — ✅ stages complete")
     _LAST["project"] = proj
     result["project_id"] = project_id
+    result["quality"] = str(settings.get("quality", 1080))
 
     if review_gate:
         _project_status(project_id, "review", topic=result.get("topic", ""))
+        _snapshot_project(project_id, result, settings.get("quality", 1080))
         _PENDING[chat_id] = {
             "project": proj, "shots": result.get("shots") or [],
             "qa": result.get("qa") or {}, "topic": result.get("topic", ""),
@@ -1267,9 +1296,11 @@ def handle_overlay_text(chat_id, text: str) -> None:
                           "drop on your top video track.")
 
 
-def _run_download(chat_id) -> None:
-    """Review gate → /download: fetch the approved selection and deliver."""
-    pend = _PENDING.get(chat_id)
+def _run_download(chat_id, pend_chat=None) -> None:
+    """Review gate → /download: fetch the approved selection and deliver.
+    ``pend_chat`` downloads a project paused in another chat (delivered here)."""
+    pend_chat = chat_id if pend_chat is None else pend_chat
+    pend = _PENDING.get(pend_chat)
     if not pend:
         send_message(chat_id, "Nothing is waiting for /download. Send a voice file first.")
         return
@@ -1306,8 +1337,152 @@ def _run_download(chat_id) -> None:
     # pend["shots"] is what was refined and downloaded; after a restart it is no
     # longer the same object as result["shots"], so hand delivery the real one.
     result["shots"] = pend["shots"]
-    _PENDING.pop(chat_id, None)
+    _PENDING.pop(pend_chat, None)
     _persist_pending()
+    _deliver_completed(chat_id, proj, result)
+
+
+# ── /download of any saved project ─────────────────────────────────────────
+
+def _pending_chat_for(project_id):
+    """The chat whose review gate holds ``project_id``, or None."""
+    for cid, pend in _PENDING.items():
+        if (pend.get("result") or {}).get("project_id") == project_id:
+            return cid
+    return None
+
+
+def build_download_keyboard(projects: list) -> dict:
+    rows = []
+    for p in projects:
+        state = {"review": "awaiting review", "delivered": "delivered", "learned": "edited",
+                 "running": "running", "failed": "failed", "cancelled": "cancelled"}
+        label = (f"{p['title'][:32]} · {(p.get('created_at') or '')[:10]} · "
+                 f"{state.get(p.get('status'), p.get('status') or '')}")
+        rows.append([{"text": label, "callback_data": f"dl:{p['id']}"}])
+    rows.append([{"text": "✖️ Cancel", "callback_data": "dl:cancel"}])
+    return {"inline_keyboard": rows}
+
+
+def handle_download_lookup(chat_id, query: str) -> None:
+    """/download <name> (or bare /download with nothing pending here): find the
+    project and start it, or ask which one when several match."""
+    from core import project_store
+    try:
+        found = project_store.find_projects(query, limit=8)
+    except Exception as e:
+        send_message(chat_id, f"❌ Couldn't search projects: {e}")
+        return
+    # A project that's genuinely still running is blocked by the busy check when
+    # it's picked; one left "running" by a crash can still be rebuilt.
+    if not found:
+        send_message(chat_id, (f"No saved project matches '{query}'. " if query else
+                               "No saved projects yet. ") + "/projects lists them.")
+        return
+    if query and len(found) == 1:
+        _start_project_download(chat_id, found[0]["id"])
+        return
+    send_message(chat_id, "⬇️ Which project do you want to download?",
+                 reply_markup=build_download_keyboard(found))
+
+
+def _start_project_download(chat_id, project_id: int) -> None:
+    if _BUSY.get("active"):
+        send_message(chat_id, f"⏳ Busy with '{_BUSY.get('project')}'. Try again once it's done.")
+        return
+    from core import project_store
+    p = project_store.get_project(project_id)
+    if not p:
+        send_message(chat_id, "That project no longer exists.")
+        return
+    _BUSY.update(active=True, project=p["title"], cancel=threading.Event(), started=time.time())
+    threading.Thread(target=_job_thread, args=(_run_download_project, chat_id, project_id),
+                     daemon=True).start()
+
+
+def _project_files_on_disk(proj: str) -> tuple:
+    """``(has_clip_folder, zip_path_or_None)`` for a project's files under downloads/."""
+    from core.output import _safe_for_fs, clip_base_dir
+    base = clip_base_dir(proj)
+    has_clips = os.path.isdir(base) and any(
+        f.lower().endswith(".mp4") for f in os.listdir(base))
+    zp = os.path.join(os.path.abspath("downloads"), f"{_safe_for_fs(proj, 50)}.zip")
+    return has_clips, (zp if os.path.isfile(zp) else None)
+
+
+def _send_existing_zip(chat_id, proj: str, zip_path: str) -> None:
+    size = os.path.getsize(zip_path)
+    lines = [f"📦 {proj} — {_human_size(size)} (already on the server)"]
+    link = _download_link_for(zip_path)
+    if link:
+        lines.append(f"🔗 {link}\n({fileserver.expiry_note()} — /files re-issues it)")
+    lines.append(f"scp USER@SERVER:'{zip_path}' .")
+    send_message(chat_id, "\n".join(lines))
+    if size <= _TG_UPLOAD_LIMIT:
+        send_document(chat_id, zip_path, caption=f"{proj} — clips + XML")
+
+
+def _run_download_project(chat_id, project_id: int) -> None:
+    """Deliver a saved project: straight from disk when its files are still
+    there, otherwise re-download its saved selection and rebuild the XML."""
+    from core import project_store
+    p = project_store.get_project(project_id)
+    proj = p["project_name"] or p["title"]
+
+    pend_chat = _pending_chat_for(project_id)
+    if pend_chat is not None:
+        _run_download(chat_id, pend_chat=pend_chat)
+        return
+
+    has_clips, zip_path = _project_files_on_disk(proj)
+    if has_clips:
+        send_message(chat_id, f"📂 '{p['title']}' is still on the server — bundling it.")
+        deliver_project(chat_id, proj)
+        return
+    if zip_path:
+        _send_existing_zip(chat_id, proj, zip_path)
+        return
+
+    snap = project_store.load_snapshot(project_id)
+    if not snap or not snap.get("shots"):
+        send_message(chat_id, f"'{p['title']}' has no files left on the server and no saved "
+                              "selection (it was made before projects were saved), so it "
+                              "can't be rebuilt. Re-run it from the voice file.")
+        return
+
+    from core.pipeline import finalize_project, PipelineCancelled
+    shots = snap["shots"]
+    # Rendered overlays live in the project folder; if that was cleaned up they're
+    # gone, and the XML must not point at missing files.
+    overlays = [o for o in snap.get("overlays") or [] if os.path.exists(o.get("filepath", ""))]
+    sfx = [s for s in snap.get("sfx_list") or [] if os.path.exists(s.get("filepath", ""))]
+    settings = bot_settings.get_settings(chat_id)
+    quality = snap.get("quality") or str(settings.get("quality", 1080))
+    status = send_message(chat_id, f"⬇️ Rebuilding '{p['title']}' from its saved selection…")
+    msg_id = status.get("message_id")
+    errors: list = []
+    try:
+        with bot_settings.apply_env(settings):
+            fin = finalize_project(
+                shots, proj, quality=quality, should_cancel=_should_cancel(),
+                progress=lambda d, t: edit_message(chat_id, msg_id,
+                                                   f"⬇️ {p['title']}: downloaded {d}/{t} clip(s)…"),
+                overlays=overlays, sfx_list=sfx, video_topic=snap.get("topic", ""),
+                errors=errors, status=lambda label: edit_message(chat_id, msg_id,
+                                                                  f"⬇️ {p['title']}: {label}"))
+    except PipelineCancelled:
+        send_message(chat_id, f"⏹ Cancelled '{p['title']}'.")
+        return
+    except Exception as e:
+        send_message(chat_id, f"❌ Download failed for '{p['title']}': {e}")
+        return
+    if snap.get("overlays") and len(overlays) < len(snap["overlays"]):
+        send_message(chat_id, "(Text overlays were cleaned up from the server, so this "
+                              "rebuild has footage only.)")
+    result = {k: snap.get(k) for k in ("topic", "qa", "n_shots", "n_selected", "n_clips")}
+    result.update(project_id=project_id, shots=shots, quality=quality, overlays=overlays,
+                  sfx_list=sfx, download=fin["download"], xml_path=fin["xml_path"],
+                  errors=errors)
     _deliver_completed(chat_id, proj, result)
 
 
@@ -1751,7 +1926,7 @@ _BOT_COMMANDS = [
     ("test", "Preflight: test yt-dlp/Pexels/LLM before a real run"),
     ("proxies", "Show the working proxy pool (/proxies refresh to re-research)"),
     ("details", "Per-shot clip breakdown (pending project)"),
-    ("download", "Fetch clips for the reviewed project"),
+    ("download", "Fetch the reviewed project, or /download <name> for any saved one"),
     ("refine", "Re-pick QA-flagged shots (or /refine 4 9)"),
     ("redo", "Re-fetch shots with no clip (YouTube-first)"),
     ("cancel", "Stop the running job / discard pending"),
@@ -2184,7 +2359,8 @@ _HELP = (
     "real downloads before a long run (/test quick = no downloads)\n"
     "/proxies — show the validated proxy pool (/proxies refresh to re-research the list)\n"
     "/details — per-shot breakdown of the project awaiting review\n"
-    "/download — fetch clips for the reviewed project\n"
+    "/download — fetch clips for the reviewed project; /download <name> gets any saved "
+    "project (from the server, or re-downloaded from its saved selection)\n"
     "/refine [shots] — re-pick QA-flagged shots (or named ones, e.g. /refine 4 9)\n"
     "/redo — re-fetch shots with no clip (YouTube-first)\n"
     "/cancel — stop the running job (graceful; or discard a pending one)\n"
@@ -2314,6 +2490,7 @@ def format_projects(projects: list) -> str:
         lines.append(f"{_STATUS_ICON.get(p.get('status'), '•')} {p['title']} · "
                      f"{(p.get('created_at') or '')[:10]}{who} · "
                      f"{p.get('n_clips', 0)} clips, {p.get('n_images', 0)} images")
+    lines.append("Get any of them with /download <name>.")
     return "\n".join(lines)
 
 
@@ -2456,6 +2633,15 @@ def main() -> None:
                                   "or /cancel to discard.")
             except Exception:
                 pass
+
+    # Queue projects already in the DB that reviewers haven't been given yet.
+    try:
+        from core import ratings
+        n = ratings.backfill_queue()
+        if n:
+            print(f"[bot] queued {n} clip(s) from earlier projects for review.")
+    except Exception as e:
+        print(f"[bot] review backfill failed: {e}")
 
     allowed = allowed_user_ids()
     if not allowed:
@@ -2710,6 +2896,14 @@ def main() -> None:
             if xfid:
                 handle_xml_upload(chat_id, xfid, xname)
                 continue
+
+            # /download <project> — or bare /download with nothing paused here —
+            # delivers any saved project (from disk, or rebuilt from its snapshot).
+            if is_download_command(text):
+                arg = text.strip().split(maxsplit=1)[1].strip() if len(text.split()) > 1 else ""
+                if arg or not _PENDING.get(chat_id):
+                    handle_download_lookup(chat_id, arg)
+                    continue
 
             # Review-gate actions: need a pending project and a free worker.
             if is_download_command(text) or is_refine_command(text) or is_redo_command(text):

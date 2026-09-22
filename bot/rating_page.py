@@ -12,7 +12,8 @@ removing someone from the list revokes their link.
 Routes:
     GET  /rate                    the page (tabs: Rate clips · Check editor labels · My impact)
     GET  /rate/api/meta           reason chips + queue counts
-    GET  /rate/api/next           next shot to rate (?skip=pid:slot,pid:slot)
+    GET  /rate/api/projects       projects with something to review + progress
+    GET  /rate/api/next           next shot to rate (?skip=pid:slot,…&project=<id>)
     POST /rate/api/submit         {project_id, slot_id, ratings: [...], suggestions: [...]}
     GET  /rate/api/labels/next    next shot of editor-XML labels to check
     POST /rate/api/labels/submit  {reviews: [{asset_id, action, verdict, used_slot_id, note}]}
@@ -109,8 +110,14 @@ def handle(handler) -> bool:
                 p, _, s = tok.partition(":")
                 if p.isdigit() and s:
                     skip.append((int(p), s))
+            proj = (qs.get("project") or [""])[0]
             fn = ratings.next_label_task if "labels" in path else ratings.next_task
-            _send(handler, 200, fn(rid, skip=skip) or {"done": True})
+            _send(handler, 200, fn(rid, skip=skip, project_id=int(proj) if proj.isdigit()
+                                   else None) or {"done": True})
+            return True
+
+        if path == "/rate/api/projects" and handler.command == "GET":
+            _send(handler, 200, {"projects": ratings.project_progress(rid)})
             return True
 
         if path == "/rate/api/impact" and handler.command == "GET":
@@ -190,6 +197,9 @@ header { position: sticky; top: 0; z-index: 5; background: var(--bg);
        color: var(--muted); padding: 10px 10px; white-space: nowrap; }
 .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
 main { max-width: 880px; margin: 0 auto; padding: 16px; }
+.picker { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+.picker label { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.picker select { flex: 1; min-width: 0; }
 .shot { background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
         padding: 16px; margin-bottom: 16px; }
 .eyebrow { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
@@ -282,6 +292,7 @@ const Q = new URLSearchParams(location.search);
 const AUTH = "r=" + encodeURIComponent(Q.get("r") || "") + "&t=" + encodeURIComponent(Q.get("t") || "");
 const skipped = { rate: [], labels: [] };
 let mode = "rate", REASONS = [], task = null, cards = [], suggestions = [], players = {}, ytReady = null;
+let project = "", PROJECTS = [];
 
 function api(path, opts) {
   const sep = path.includes("?") ? "&" : "?";
@@ -507,21 +518,38 @@ async function renderImpact() {
   } catch (e) { main.replaceChildren(el("div", { class: "empty" }, e.message)); }
 }
 
+// ── project picker ──────────────────────────────────────────────────────────
+async function loadProjects() {
+  try { PROJECTS = (await api("projects")).projects || []; } catch (e) { PROJECTS = []; }
+}
+function picker() {
+  const labels = mode === "labels";
+  const list = PROJECTS.filter(p => labels ? p.labels : p.clips);
+  const sel = el("select", { id: "project", "aria-label": "Project", on: { change: e => {
+    project = e.target.value; skipped.rate = []; skipped.labels = []; next(); } } },
+    el("option", { value: "" }, labels ? "All finished edits — fewest checks first" : "All projects — fewest reviews first"),
+    ...list.map(p => el("option", { value: String(p.id), selected: String(p.id) === project },
+      p.title + " · " + (p.created_at || "").slice(0, 10) + " · " +
+      (labels ? p.labels_mine + "/" + p.labels + " checked by you" : p.clips_mine + "/" + p.clips + " rated by you"))));
+  return el("div", { class: "picker" }, el("label", { for: "project" }, "Project"), sel);
+}
+
 // ── flow ────────────────────────────────────────────────────────────────────
 function render() {
   const main = document.getElementById("main");
   cards = []; suggestions = []; players = {};
   if (!task || task.done) {
-    main.replaceChildren(el("div", { class: "empty" }, mode === "labels"
-      ? "No editor labels to check right now. They appear after an editor sends back a finished XML."
-      : "All caught up — nothing left to review right now. Thank you!"));
+    const msg = project ? "You've finished this project — pick another above."
+      : mode === "labels" ? "No editor labels to check right now. They appear after an editor sends back a finished XML."
+      : "All caught up — nothing left to review right now. Thank you!";
+    main.replaceChildren(picker(), el("div", { class: "empty" }, msg));
     document.getElementById("actions").hidden = true;
     return;
   }
   if (mode === "labels") {
-    main.replaceChildren(shotHeader(), el("h2", {}, "Is each automatic label right?"), ...task.items.map(labelCard));
+    main.replaceChildren(picker(), shotHeader(), el("h2", {}, "Is each automatic label right?"), ...task.items.map(labelCard));
   } else {
-    main.replaceChildren(shotHeader(), el("h2", {}, "Rate each clip for this line"), ...task.items.map(rateCard), suggestBox());
+    main.replaceChildren(picker(), shotHeader(), el("h2", {}, "Rate each clip for this line"), ...task.items.map(rateCard), suggestBox());
   }
   document.getElementById("actions").hidden = false;
   setMsg("");
@@ -535,12 +563,14 @@ async function refreshStat() {
 }
 async function next() {
   try {
-    const path = (mode === "labels" ? "labels/next" : "next") + "?skip=" + encodeURIComponent(skipped[mode].join(","));
+    const path = (mode === "labels" ? "labels/next" : "next") + "?skip=" + encodeURIComponent(skipped[mode].join(","))
+      + (project ? "&project=" + encodeURIComponent(project) : "");
     task = await api(path);
     render();
   } catch (e) { document.getElementById("main").replaceChildren(el("div", { class: "empty" }, e.message)); }
 }
 function setMode(m) {
+  if (m !== mode) project = "";
   mode = m;
   document.querySelectorAll(".tab").forEach(t => t.setAttribute("aria-selected", String(t.dataset.mode === m)));
   if (m === "impact") renderImpact(); else next();
@@ -567,11 +597,11 @@ document.getElementById("save").addEventListener("click", async () => {
         ratings: cards.map(c => ({ item_id: c.item_id, usable: c.usable, fit: c.fit, reasons: [...c.reasons], note: c.note, segments: c.segments })),
         suggestions: suggestions.map(s => ({ url: s.url, note: s.note, segments: s.segments })) }) });
     }
-    await refreshStat(); await next();
+    await refreshStat(); await loadProjects(); await next();
   } catch (e) { setMsg(e.message, true); }
   finally { btn.disabled = false; }
 });
-refreshStat().then(next).catch(e => document.getElementById("main").replaceChildren(el("div", { class: "empty" }, e.message)));
+refreshStat().then(loadProjects).then(next).catch(e => document.getElementById("main").replaceChildren(el("div", { class: "empty" }, e.message)));
 </script>
 </body>
 </html>

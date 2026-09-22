@@ -130,6 +130,7 @@ def init_db() -> None:
         # Columns added after the first release; ALTER is a no-op error once present.
         for table, col in (("project_assets", "channel TEXT DEFAULT ''"),
                            ("project_assets", "in_rule TEXT DEFAULT ''"),
+                           ("projects", "snapshot TEXT"),
                            ("project_shots", "embedding BLOB")):
             try:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -194,7 +195,8 @@ def list_projects(limit: int = 10) -> list:
     init_db()
     with _conn() as c:
         rows = c.execute(
-            """SELECT p.*,
+            """SELECT p.id, p.title, p.project_name, p.operator_id, p.operator_name,
+                      p.chat_id, p.topic, p.status, p.created_at, p.updated_at,
                       (SELECT COUNT(*) FROM project_assets a
                         WHERE a.project_id=p.id AND a.kind='clip')  AS n_clips,
                       (SELECT COUNT(*) FROM project_assets a
@@ -203,6 +205,79 @@ def list_projects(limit: int = 10) -> list:
                         WHERE x.project_id=p.id)                     AS n_imports
                  FROM projects p ORDER BY p.id DESC LIMIT ?""", (limit,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def find_projects(query: str = "", limit: int = 8) -> list:
+    """Projects matching ``query`` (title / folder name contains it, or ``#id``),
+    newest first; the most recent ones when ``query`` is empty. Rows carry a
+    ``has_snapshot`` flag — whether the selection can be rebuilt from the DB."""
+    init_db()
+    q = (query or "").strip()
+    sql = """SELECT id, title, project_name, operator_name, status, created_at,
+                    snapshot IS NOT NULL AS has_snapshot FROM projects"""
+    args: list = []
+    if q.lstrip("#").isdigit():
+        sql += " WHERE id = ?"
+        args.append(int(q.lstrip("#")))
+    elif q:
+        sql += " WHERE title LIKE ? OR project_name LIKE ?"
+        args += [f"%{q}%", f"%{q}%"]
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql, args)]
+
+
+# Result fields worth keeping to rebuild a project later (/download of an old
+# project): the full selection plus what the XML and summary need.
+_SNAPSHOT_KEYS = ("shots", "overlays", "sfx_list", "topic", "qa", "n_shots",
+                  "n_selected", "n_clips")
+
+
+def save_snapshot(project_id: int, result: dict, quality=None) -> None:
+    """Store the project's selection (shots with their candidates, overlays…)
+    so it can be re-downloaded or reviewed long after the bot's in-memory state
+    is gone."""
+    init_db()
+    data = {k: result.get(k) for k in _SNAPSHOT_KEYS if result.get(k) is not None}
+    if quality is not None:
+        data["quality"] = str(quality)
+    with _conn() as c:
+        c.execute("UPDATE projects SET snapshot=?, updated_at=? WHERE id=?",
+                  (json.dumps(data, default=str), _now(), project_id))
+
+
+def load_snapshot(project_id: int) -> dict | None:
+    init_db()
+    with _conn() as c:
+        row = c.execute("SELECT snapshot FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not row or not row["snapshot"]:
+        return None
+    try:
+        return json.loads(row["snapshot"])
+    except ValueError:
+        return None
+
+
+def _write_shots(c, project_id: int, shots: list) -> None:
+    c.execute("DELETE FROM project_shots WHERE project_id=?", (project_id,))
+    for idx, shot in enumerate(shots or []):
+        c.execute(
+            """INSERT OR REPLACE INTO project_shots
+               (project_id, slot_id, shot_index, start_sec, end_sec, text, queries, is_extra)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (project_id, _slot(shot.get("slot_id", idx)), idx, float(shot.get("timestamp") or 0),
+             float(shot.get("end_timestamp") or shot.get("timestamp") or 0),
+             shot.get("text") or "", json.dumps(shot.get("search_queries") or []),
+             1 if shot.get("is_extra") else 0))
+
+
+def record_shots(project_id: int, shots: list) -> None:
+    """Store the shot list (narration lines + timing) on its own — used at the
+    review gate, before anything is downloaded, so reviewers can start."""
+    init_db()
+    with _conn() as c:
+        _write_shots(c, project_id, shots)
 
 
 # ── recording what was delivered ────────────────────────────────────────────
@@ -266,18 +341,10 @@ def record_delivery(project_id: int, shots: list, xml_path: str = None,
     n_clips = n_images = 0
     asset_names = set()
     with _conn() as c:
-        c.execute("DELETE FROM project_shots WHERE project_id=?", (project_id,))
+        _write_shots(c, project_id, shots)
         c.execute("DELETE FROM project_assets WHERE project_id=?", (project_id,))
         for idx, shot in enumerate(shots or []):
             slot = _slot(shot.get("slot_id", idx))
-            c.execute(
-                """INSERT OR REPLACE INTO project_shots
-                   (project_id, slot_id, shot_index, start_sec, end_sec, text, queries, is_extra)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (project_id, slot, idx, float(shot.get("timestamp") or 0),
-                 float(shot.get("end_timestamp") or shot.get("timestamp") or 0),
-                 shot.get("text") or "", json.dumps(shot.get("search_queries") or []),
-                 1 if shot.get("is_extra") else 0))
 
             for pos, res in enumerate(shot.get("selected_results") or []):
                 path = res.get("local_path") or ""

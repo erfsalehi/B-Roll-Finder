@@ -222,6 +222,45 @@ def record_candidates(project_id: int, shots: list, runner_ups: int = RUNNER_UPS
         return c.total_changes - before
 
 
+def backfill_queue() -> int:
+    """Queue projects that are in the DB but not in the review queue yet — e.g.
+    ones delivered before reviewing existed. Uses the saved selection snapshot
+    when there is one (picks + runner-ups + rejected), else the delivered clips.
+    Returns how many clips were queued."""
+    init_db()
+    with project_store._conn() as c:
+        todo = [r["id"] for r in c.execute(
+            """SELECT p.id FROM projects p
+                WHERE NOT EXISTS (SELECT 1 FROM rating_items i WHERE i.project_id = p.id)""")]
+    added = 0
+    for pid in todo:
+        snap = project_store.load_snapshot(pid)
+        if snap and snap.get("shots"):
+            with project_store._conn() as c:
+                has_shots = c.execute("SELECT 1 FROM project_shots WHERE project_id=?",
+                                      (pid,)).fetchone()
+            if not has_shots:
+                project_store.record_shots(pid, snap["shots"])
+            added += record_candidates(pid, snap["shots"])
+            continue
+        with project_store._conn() as c:
+            assets = [dict(r) for r in c.execute(
+                "SELECT * FROM project_assets WHERE project_id=? AND kind='clip'", (pid,))]
+        rows = [(pid, a["slot_id"], "pick", a["url"], a["page_url"] or a["url"], a["source"],
+                 a["title"], a["channel"], a["matched_query"], None, _now())
+                for a in assets if a["page_url"] or a["url"]]
+        if rows:
+            with project_store._conn() as c:
+                before = c.total_changes
+                c.executemany(
+                    """INSERT OR IGNORE INTO rating_items
+                       (project_id, slot_id, role, url, page_url, source, title, channel,
+                        matched_query, verified_in_sec, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+                added += c.total_changes - before
+    return added
+
+
 def upsert_rater(rater_id: int, name: str = "") -> None:
     init_db()
     with project_store._conn() as c:
@@ -244,10 +283,11 @@ def _item_public(r: dict, mine: dict = None) -> dict:
     }
 
 
-def next_task(rater_id: int, skip: list = None) -> dict | None:
+def next_task(rater_id: int, skip: list = None, project_id: int = None) -> dict | None:
     """The next shot for ``rater_id``: one they haven't fully rated, preferring
     shots with the fewest reviewers so far, newest projects first. ``skip`` is a
-    list of ``(project_id, slot_id)`` the reviewer passed on this session."""
+    list of ``(project_id, slot_id)`` the reviewer passed on this session;
+    ``project_id`` limits it to one project (walked in shot order)."""
     init_db()
     skip = {(int(p), str(s)) for p, s in (skip or [])}
     with project_store._conn() as c:
@@ -261,10 +301,12 @@ def next_task(rater_id: int, skip: list = None) -> dict | None:
                  LEFT JOIN ratings mine ON mine.item_id = i.id AND mine.rater_id = ?
                  LEFT JOIN project_shots s ON s.project_id = i.project_id
                                           AND s.slot_id = i.slot_id
+                WHERE (? IS NULL OR i.project_id = ?)
                 GROUP BY i.project_id, i.slot_id
                HAVING todo > 0
-                ORDER BY n_raters ASC, i.project_id DESC, shot_index ASC
-                LIMIT 200""", (rater_id,)).fetchall()
+                ORDER BY CASE WHEN ? IS NULL THEN n_raters ELSE 0 END ASC,
+                         i.project_id DESC, shot_index ASC
+                LIMIT 200""", (rater_id, project_id, project_id, project_id)).fetchall()
         pick = next((g for g in groups if (g["project_id"], g["slot_id"]) not in skip), None)
         if not pick:
             return None
@@ -450,9 +492,10 @@ def rater_stats() -> list:
 
 # ── checking editor-XML labels ──────────────────────────────────────────────
 
-def next_label_task(rater_id: int, skip: list = None) -> dict | None:
+def next_label_task(rater_id: int, skip: list = None, project_id: int = None) -> dict | None:
     """The next shot of a learned project whose automatic labels (from the
-    editor's XML) this reviewer hasn't checked yet, fewest reviews first."""
+    editor's XML) this reviewer hasn't checked yet, fewest reviews first
+    (or, with ``project_id``, that project's shots in order)."""
     init_db()
     skip = {(int(p), str(s)) for p, s in (skip or [])}
     with project_store._conn() as c:
@@ -467,11 +510,12 @@ def next_label_task(rater_id: int, skip: list = None) -> dict | None:
                  LEFT JOIN label_reviews mine ON mine.asset_id = a.id AND mine.rater_id = ?
                  LEFT JOIN project_shots s ON s.project_id = a.project_id
                                           AND s.slot_id = a.slot_id
-                WHERE a.verdict != ''
+                WHERE a.verdict != '' AND (? IS NULL OR a.project_id = ?)
                 GROUP BY a.project_id, a.slot_id
                HAVING todo > 0
-                ORDER BY n_reviews ASC, a.project_id DESC, shot_index ASC
-                LIMIT 200""", (rater_id,)).fetchall()
+                ORDER BY CASE WHEN ? IS NULL THEN n_reviews ELSE 0 END ASC,
+                         a.project_id DESC, shot_index ASC
+                LIMIT 200""", (rater_id, project_id, project_id, project_id)).fetchall()
         pick = next((g for g in groups if (g["project_id"], g["slot_id"]) not in skip), None)
         if not pick:
             return None
@@ -627,6 +671,28 @@ def contribution_summary(rater_id: int, recent: int = 25) -> dict:
         "editor_agreement": pct(mine.get("editor_agree", 0), mine.get("editor_shared", 0)),
         "log": [dict(e, label=IMPACT_KINDS.get(e["kind"], e["kind"])) for e in log],
     }
+
+
+def project_progress(rater_id: int, limit: int = 100) -> list:
+    """Projects that have something to review, newest first, with how far this
+    reviewer (and everyone) has got — for the page's project picker."""
+    init_db()
+    with project_store._conn() as c:
+        rows = c.execute(
+            """SELECT p.id, p.title, p.created_at, p.status,
+                      (SELECT COUNT(*) FROM rating_items i WHERE i.project_id = p.id) AS clips,
+                      (SELECT COUNT(*) FROM rating_items i JOIN ratings r ON r.item_id = i.id
+                        WHERE i.project_id = p.id AND r.rater_id = ?) AS clips_mine,
+                      (SELECT COUNT(DISTINCT i.id) FROM rating_items i JOIN ratings r
+                          ON r.item_id = i.id WHERE i.project_id = p.id) AS clips_any,
+                      (SELECT COUNT(*) FROM project_assets a WHERE a.project_id = p.id
+                          AND p.status = 'learned' AND a.verdict != '') AS labels,
+                      (SELECT COUNT(*) FROM project_assets a JOIN label_reviews lr
+                          ON lr.asset_id = a.id WHERE a.project_id = p.id
+                          AND lr.rater_id = ?) AS labels_mine
+                 FROM projects p ORDER BY p.id DESC LIMIT ?""",
+            (rater_id, rater_id, limit)).fetchall()
+    return [dict(r) for r in rows if r["clips"] or r["labels"]]
 
 
 def queue_size() -> dict:
