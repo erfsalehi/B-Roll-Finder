@@ -425,8 +425,9 @@ def _openrouter_keys() -> list:
 
 
 def _draft_openrouter(frames: list, lines: list, topic: str) -> dict:
-    """Backup vision drafter: the same prompt and frames through OpenRouter
-    (default z-ai/glm-5.3-flash, ~$0.0003 a clip). Retries OpenRouter's
+    """Primary vision drafter: the prompt and frames through OpenRouter
+    (default z-ai/glm-5.3-flash — live-tested: accurate, doesn't invent
+    subjects from the narration, ~$0.0003 a clip). Retries OpenRouter's
     transient 429 'couldn't verify credits in time'."""
     import requests
     from core.keywords import _loads_llm_json
@@ -466,9 +467,10 @@ def _draft_openrouter(frames: list, lines: list, topic: str) -> dict:
     raise last or RuntimeError("OpenRouter request failed")
 
 
-# Vision drafters in order of preference: Gemini, then OpenRouter.
-_VISION_DRAFTERS = (("gemini", lambda *a: _draft_vision(*a)),
-                    ("openrouter", lambda *a: _draft_openrouter(*a)))
+# Vision drafters in order of preference: OpenRouter GLM (cheap, tested),
+# then Gemini as the backup.
+_VISION_DRAFTERS = (("openrouter", lambda *a: _draft_openrouter(*a)),
+                    ("gemini", lambda *a: _draft_vision(*a)))
 
 
 def check_vision(frame_path: str) -> list:
@@ -542,8 +544,8 @@ def process_one(seg: dict) -> None:
                            (seg["origin_project"],)).fetchone() or {"topic": ""})["topic"]
     fields = {}
     if not seg["description"]:
-        # Gemini, then OpenRouter (both look at the frames), then a text-only
-        # guess from the title as the last resort.
+        # OpenRouter GLM, then Gemini (both look at the frames), then a
+        # text-only guess from the title as the last resort.
         attempts = [(name, "vision", fn, (frames, lines, topic)) for name, fn in _VISION_DRAFTERS]
         attempts.append(("text", "text", _draft_text, (seg, lines, topic)))
         for name, source, draft, args in attempts:

@@ -372,3 +372,15 @@ def test_check_vision_reports_each_provider(monkeypatch, tmp_path):
     res = {n: (ok, d) for n, ok, d in sl.check_vision("x.jpg")}
     assert res["gemini"][0] is False and "bad key" in res["gemini"][1]
     assert res["openrouter"][0] is True and "glm-5.3-flash" in res["openrouter"][1]
+
+
+def test_glm_is_tried_before_gemini(monkeypatch, tmp_path):
+    order = []
+    monkeypatch.setattr(sl, "_draft_openrouter", lambda *a: order.append("openrouter") or {
+        "description": "hand unscrews an oil drain plug under a car"})
+    monkeypatch.setattr(sl, "_draft_vision", lambda *a: order.append("gemini") or {})
+    assert [n for n, _f in sl._VISION_DRAFTERS] == ["openrouter", "gemini"]
+    for _name, fn in sl._VISION_DRAFTERS:
+        if sl._clean_draft(fn([], [], ""))["description"]:
+            break
+    assert order == ["openrouter"]

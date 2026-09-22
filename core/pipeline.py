@@ -114,6 +114,10 @@ def _is_short(c: dict) -> bool:
     """A candidate is a YouTube Short if flagged, URL-marked, or <=60s."""
     if c.get("is_short"):
         return True
+    if c.get("library_segment_id"):
+        # A library segment's duration is the trimmed piece, not its source
+        # video — short by design, never a Short.
+        return False
     url = (c.get("url") or c.get("page_url") or "").lower()
     if "/shorts/" in url:
         return True
