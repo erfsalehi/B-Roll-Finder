@@ -92,3 +92,13 @@ def test_repair_leaves_bins_alone(project):
     broken = xml.replace("<end>", "<end>9999", 1)              # force a repair pass
     repaired = output.repair_fcpxml(broken)
     assert repaired.count("<clip id=\"bin-") == xml.count("<clip id=\"bin-") == 3
+
+
+def test_extras_only_in_the_bin_not_in_srt_or_links(project):
+    proj, shots = project
+    from core.output import build_download_links_txt, generate_shots_srt
+    srt = generate_shots_srt(shots)
+    links = build_download_links_txt(shots, proj)
+    assert "Shot 1" in srt and "Shot 9" not in srt and "Extra" not in srt
+    assert "[Shot 1]" in links and "[Shot 9]" not in links and "yt/x" not in links
+    assert "1 shot(s)" in links

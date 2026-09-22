@@ -664,7 +664,8 @@ def build_download_links_txt(shots: list, project_name: str = "",
     actually used in every shot. Pure/deterministic — safe to unit-test."""
     import datetime
 
-    shots = shots or []
+    # Extras aren't narration shots — they live in the XML's "Extras" bin.
+    shots = [s for s in shots or [] if not s.get("is_extra")]
     active = [s for s in shots
               if s.get("priority") != "none" and not s.get("skipped")]
     empty = [s for s in active if not s.get("selected_results")]
