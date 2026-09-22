@@ -324,6 +324,119 @@ def test_download_registers_fresh_downloads_in_cache(monkeypatch, tmp_path):
     download_cache._reset_for_tests()
 
 
+def _resuming_direct(fail_urls=()):
+    """A fake direct downloader that, like the real one, resumes a leftover
+    ``.part``, and leaves one behind when it fails. Each clip's bytes are its URL."""
+    def _direct(url, out, ts, **k):
+        part = out + ".part"
+        prev = open(part, "rb").read() if os.path.exists(part) else b""
+        if url in fail_urls:
+            open(part, "wb").write(b"half-of-" + url.encode())
+            ts["status"], ts["error_msg"] = "error", "connection reset"
+            return
+        open(out, "wb").write(prev + url.encode())
+        if os.path.exists(part):
+            os.remove(part)
+        ts["status"] = "completed"
+    return _direct
+
+
+def _clip(url):
+    return {"url": url, "source": "pexels", "matched_query": "red car"}
+
+
+def _assert_each_clip_has_its_own_bytes(shot):
+    paths = [c["local_path"] for c in shot["selected_results"]]
+    assert len(set(paths)) == len(paths)
+    for c in shot["selected_results"]:
+        assert open(c["local_path"], "rb").read() == c["url"].encode()
+
+
+def test_repair_round_never_hands_a_new_clip_another_clips_file(monkeypatch, tmp_path):
+    """Dropping a failed clip shifts the later clips' indexes, so a fresh
+    filename can equal a file already holding a different clip."""
+    monkeypatch.chdir(tmp_path)
+    from core import download_cache
+    download_cache._reset_for_tests()
+    import core.direct_downloader
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video",
+                        _resuming_direct(fail_urls={"http://x/a.mp4"}))
+
+    shot = {"slot_id": 5, "priority": "medium", "selected_results": [
+        _clip("http://x/b.mp4"), _clip("http://x/a.mp4"), _clip("http://x/c.mp4")]}
+    pipeline.download_selected_clips([shot], "proj")
+    # What download_and_repair does: drop the failure, top up with a new pick.
+    shot["selected_results"] = [c for c in shot["selected_results"]
+                                if not c.get("_dl_failed")] + [_clip("http://x/d.mp4")]
+    res = pipeline.download_selected_clips([shot], "proj")
+
+    assert res["failed"] == 0
+    _assert_each_clip_has_its_own_bytes(shot)
+    download_cache._reset_for_tests()
+
+
+def test_repair_round_never_resumes_another_clips_partial(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    from core import download_cache
+    download_cache._reset_for_tests()
+    import core.direct_downloader
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video",
+                        _resuming_direct(fail_urls={"http://x/a.mp4"}))
+
+    shot = {"slot_id": 5, "priority": "medium", "selected_results": [
+        _clip("http://x/b.mp4"), _clip("http://x/a.mp4")]}
+    pipeline.download_selected_clips([shot], "proj")
+    shot["selected_results"] = [shot["selected_results"][0], _clip("http://x/d.mp4")]
+    pipeline.download_selected_clips([shot], "proj")
+
+    _assert_each_clip_has_its_own_bytes(shot)
+    download_cache._reset_for_tests()
+
+
+def test_download_replaces_a_leftover_file_from_another_project(monkeypatch, tmp_path):
+    """A file that merely has the clip's name (an earlier project with the same
+    folder) is not this clip."""
+    monkeypatch.chdir(tmp_path)
+    from core import download_cache
+    download_cache._reset_for_tests()
+    import core.direct_downloader
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video", _resuming_direct())
+
+    base = os.path.join("downloads", "proj", "director")
+    os.makedirs(base)
+    open(os.path.join(base, "5-1-red-car.mp4"), "wb").write(b"someone else's clip")
+    shot = {"slot_id": 5, "priority": "medium", "selected_results": [_clip("http://x/b.mp4")]}
+    res = pipeline.download_selected_clips([shot], "proj")
+
+    assert res["ok"] == 1
+    _assert_each_clip_has_its_own_bytes(shot)
+    download_cache._reset_for_tests()
+
+
+def test_library_clip_from_youtube_downloads_through_ytdlp(monkeypatch, tmp_path):
+    """A Clip Library hit whose file is gone is re-fetched from its source URL —
+    a YouTube watch page, which only yt-dlp can download."""
+    monkeypatch.chdir(tmp_path)
+    routed = []
+    import core.direct_downloader, core.youtube
+
+    def _direct(url, out, ts, **k):
+        routed.append("direct"); ts["status"] = "completed"
+        open(out, "wb").write(b"<html>")
+    def _yt(url, out, q, ts, **k):
+        routed.append("yt"); ts["status"] = "completed"
+        open(out, "wb").write(b"video")
+
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video", _direct)
+    monkeypatch.setattr(core.youtube, "download_video", _yt)
+    shots = [{"slot_id": 1, "priority": "medium", "selected_results": [
+        {"url": "https://www.youtube.com/watch?v=abc", "source": "library",
+         "original_source": "youtube", "local_path": "/gone/old.mp4",
+         "matched_query": "road"}]}]
+    pipeline.download_selected_clips(shots, "proj")
+    assert routed == ["yt"]
+
+
 def test_download_routes_by_source(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     routed = []

@@ -356,16 +356,29 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
     base_dir = clip_base_dir(project_name)
     os.makedirs(base_dir, exist_ok=True)
 
+    def _own_file(res) -> str:
+        """Name of the file this clip got in an earlier round for this project
+        (the repair loop, a repeated /download), or ''."""
+        lp = res.get("local_path")
+        if (res.get("_dl_ok") and _clip_has_file(res)
+                and os.path.dirname(os.path.abspath(lp)) == base_dir):
+            return os.path.basename(lp)
+        return ""
+
+    # Clips already on disk keep their file, and their names are reserved first:
+    # the repair loop drops failed clips, which shifts every later clip's index,
+    # so a fresh name could otherwise land on a file holding a different clip.
+    seen = {_own_file(res) for shot in shots if shot.get("priority") != "none"
+            for res in (shot.get("selected_results") or [])} - {""}
     jobs = []  # (shot, res, filename)
-    seen = set()
     for shot in shots:
         if shot.get("priority") == "none":
             continue
         for idx, res in enumerate(shot.get("selected_results") or []):
             if not res.get("url"):
                 continue
-            fn = clip_filename(shot.get("slot_id", "X"), idx + 1,
-                               res.get("matched_query", ""), seen)
+            fn = _own_file(res) or clip_filename(shot.get("slot_id", "X"), idx + 1,
+                                                 res.get("matched_query", ""), seen)
             jobs.append((shot, res, fn))
 
     # Group jobs by URL, preserving job order: the first job in a group is the
@@ -410,6 +423,29 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
         res["_dl_error"] = str(msg)
         res.pop("_dl_ok", None)
 
+    def _has_data(path) -> bool:
+        return os.path.exists(path) and os.path.getsize(path) > 0
+
+    def _holds_clip(res, url, path) -> bool:
+        """Whether ``path`` is known to hold this clip: it was downloaded there
+        for this project, or the cross-session registry says the URL lives there.
+        A file that merely has the right name may be another clip's leftover."""
+        if res.get("_dl_ok") and os.path.abspath(res.get("local_path") or "") == path:
+            return True
+        cached = download_cache.lookup_path(url)
+        return bool(cached) and os.path.abspath(cached) == path
+
+    def _discard(path) -> None:
+        """Remove a leftover at ``path`` (and its partial download) before the
+        name is reused — yt-dlp and the direct downloader both *resume* a .part,
+        which would splice another clip's bytes into this one."""
+        for p in (path, path + ".part", path + ".ytdl"):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except OSError:
+                pass
+
     def _run_group(url):
         if cancelled.is_set() or (should_cancel and should_cancel()):
             cancelled.set()
@@ -419,30 +455,27 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
         out_path = os.path.join(base_dir, fn)
 
         have_file = False
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            have_file = True
-            _mark_ok(res, out_path)
-            _tick("skipped")
-        elif res.get("segment_path") and link_or_copy(res["segment_path"], out_path):
-            # A library segment: already trimmed and stored on the server.
+        if _has_data(out_path) and _holds_clip(res, url, out_path):
             have_file = True
             _mark_ok(res, out_path)
             _tick("skipped")
         else:
-            # Cross-session cache: reuse a copy downloaded for an earlier project.
-            cached = download_cache.lookup_path(url)
-            if (cached and os.path.abspath(cached) != os.path.abspath(out_path)
-                    and link_or_copy(cached, out_path)):
-                have_file = True
-                _mark_ok(res, out_path)
-                _tick("skipped")
+            _discard(out_path)
+            # A library segment (already trimmed and stored on the server), else
+            # the cross-session cache: a copy downloaded for an earlier project.
+            for src in (res.get("segment_path"), download_cache.lookup_path(url)):
+                if src and link_or_copy(src, out_path):
+                    have_file = True
+                    _mark_ok(res, out_path)
+                    _tick("skipped")
+                    break
 
         if not have_file:
             task_state: dict = {}
             with lock:
                 live_states.append(task_state)
             try:
-                if (res.get("source") or "").lower() == "youtube":
+                if _is_youtube_clip(res):
                     download_video(url, out_path, quality, task_state, no_audio=True)
                 else:
                     download_direct_video(url, out_path, task_state)
@@ -493,10 +526,14 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
         # Mirrors: other shots that selected the same URL share the file.
         for _mshot, _mres, mfn in mirrors:
             mpath = os.path.join(base_dir, mfn)
-            if os.path.exists(mpath) and os.path.getsize(mpath) > 0:
+            if _has_data(mpath) and ((have_file and _same_file(mpath, out_path))
+                                     or _holds_clip(_mres, url, mpath)):
                 _mark_ok(_mres, mpath)
                 _tick("skipped")
-            elif have_file and link_or_copy(out_path, mpath):
+                continue
+            if mpath != out_path:
+                _discard(mpath)
+            if have_file and link_or_copy(out_path, mpath):
                 _mark_ok(_mres, mpath)
                 _tick("ok")
             else:
@@ -544,6 +581,28 @@ def _clip_has_file(c: dict) -> bool:
         return bool(lp) and os.path.exists(lp) and os.path.getsize(lp) > 0
     except OSError:
         return False
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _is_youtube_clip(c: dict) -> bool:
+    """Whether a clip downloads through yt-dlp. A Clip Library hit has source
+    'library' and keeps its origin in ``original_source``; when that is YouTube
+    its URL is a watch page, which the plain HTTP downloader would save as an
+    HTML file named .mp4."""
+    src = (c.get("source") or "").lower()
+    if src == "library":
+        src = (c.get("original_source") or "").lower()
+    if src == "youtube":
+        return True
+    from urllib.parse import urlparse
+    host = urlparse(c.get("url") or "").netloc.lower()
+    return any(host == d or host.endswith("." + d) for d in ("youtube.com", "youtu.be"))
 
 
 def _purge_clips_by_url(shots: list, urls) -> int:

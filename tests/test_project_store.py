@@ -152,6 +152,45 @@ def test_title_prompt_then_mode_keyboard(monkeypatch):
     tb._PENDING_START.clear()
 
 
+def test_reused_title_gets_its_own_folder(monkeypatch, tmp_path):
+    """A second project with a used title must not share its folder or zip."""
+    monkeypatch.chdir(tmp_path)
+    sent = []
+    monkeypatch.setattr(tb, "send_message",
+                        lambda chat, text, reply_markup=None: sent.append(text))
+    ps.create_project("Camry review", "Camry review")        # recorded earlier
+    (tmp_path / "downloads").mkdir()
+    (tmp_path / "downloads" / "camry-review-2.zip").write_bytes(b"zip")   # on disk only
+
+    tb._PENDING_START.clear()
+    tb.ask_title(9, "fid", "rec.ogg", {"id": 1})
+    assert tb.apply_title(9, "Camry review") is True
+    assert tb._PENDING_START[9]["name"] == "Camry review 3.ogg"
+    assert "Saved as 'Camry review 3'" in sent[-1]
+
+    tb._PENDING_START.clear()
+    tb.ask_title(9, "fid", "rec.ogg", {"id": 1})
+    tb.apply_title(9, "Brand new")
+    assert tb._PENDING_START[9]["name"] == "Brand new.ogg"
+    tb._PENDING_START.clear()
+
+
+def test_clear_disk_keeps_projects_paused_for_review(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    for name in ("old-one", "paused-elsewhere"):
+        (tmp_path / "downloads" / name / "overlays").mkdir(parents=True)
+        (tmp_path / "downloads" / name / "overlays" / "o.mov").write_bytes(b"x" * 10)
+    (tmp_path / "downloads" / "old-one.zip").write_bytes(b"z" * 5)
+    monkeypatch.setattr(tb, "_PENDING", {77: {"project": "Paused elsewhere"}})
+
+    n, freed = tb._clear_all_projects()
+
+    assert (n, freed) == (1, 15)
+    assert not (tmp_path / "downloads" / "old-one").exists()
+    assert not (tmp_path / "downloads" / "old-one.zip").exists()
+    assert (tmp_path / "downloads" / "paused-elsewhere" / "overlays" / "o.mov").exists()
+
+
 def test_xml_upload_asks_which_project(monkeypatch):
     sent = []
     monkeypatch.setattr(tb, "send_message",

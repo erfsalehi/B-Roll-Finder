@@ -34,6 +34,23 @@ def test_size_limit_error_removes_partial_file(monkeypatch, tmp_path):
     assert not (tmp_path / "clip.mp4.part").exists()
 
 
+def test_web_page_is_not_saved_as_a_video(monkeypatch, tmp_path):
+    """A YouTube watch URL (or an expired link's error page) answers with HTML;
+    it must fail, not be published as clip.mp4."""
+    class HtmlResponse(FakeResponse):
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+    monkeypatch.setattr("core.direct_downloader.requests.get", lambda *a, **k: HtmlResponse())
+    output_path = tmp_path / "clip.mp4"
+    state = {}
+
+    download_direct_video("https://www.youtube.com/watch?v=abc", str(output_path), state)
+
+    assert state["status"] == "error"
+    assert "not a video" in state["error_msg"].lower()
+    assert not output_path.exists()
+
+
 def test_success_publishes_final_file_with_no_part_leftover(monkeypatch, tmp_path):
     monkeypatch.setattr("core.direct_downloader.requests.get", lambda *a, **k: FakeResponse())
 

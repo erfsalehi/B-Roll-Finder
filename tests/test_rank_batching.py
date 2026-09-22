@@ -48,6 +48,19 @@ def test_apply_drops_malformed_and_appends_omitted():
     assert set(urls) == {"a", "b", "c"}  # omitted candidates still present
 
 
+def test_apply_irrelevant_verdict_stays_on_its_own_shot():
+    """Shots that ran the same query share candidate dicts (the query cache);
+    one shot's 'irrelevant' verdict must not leak onto the other."""
+    shared = {"url": "a"}
+    s1 = {"slot_id": 1, "video_results": [shared, {"url": "b"}]}
+    s2 = {"slot_id": 2, "video_results": [shared, {"url": "c"}]}
+    _apply_ranked_to_shot(s1, [{"index": 1, "reason": "b"}, {"index": 0, "irrelevant": True}])
+    _apply_ranked_to_shot(s2, [{"index": 0, "reason": "a fits"}, {"index": 1}])
+    assert s1["video_results"][1] == {"url": "a", "irrelevant": True}
+    assert "irrelevant" not in s2["video_results"][0]
+    assert "irrelevant" not in shared
+
+
 def test_apply_empty_ranked_is_safe():
     shot = _shot(1, ["a"])
     _apply_ranked_to_shot(shot, [])

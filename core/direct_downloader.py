@@ -58,6 +58,12 @@ def download_direct_video(url: str, output_path: str, task_state: dict, max_retr
 
                 response.raise_for_status()
 
+                # A web page (a YouTube watch URL, an expired link's error page)
+                # would otherwise be saved as a "video" and reported complete.
+                ctype = (response.headers.get('content-type') or '').lower()
+                if ctype.startswith('text/'):
+                    raise ValueError(f"Not a video file (server sent {ctype.split(';')[0]})")
+
                 if total_size == 0:
                     content_length = int(response.headers.get('content-length', 0))
                     total_size = (downloaded + content_length) if response.status_code == 206 else content_length

@@ -208,6 +208,14 @@ def list_projects(limit: int = 10) -> list:
     return [dict(r) for r in rows]
 
 
+def project_names() -> set:
+    """Every folder name a recorded project has used."""
+    init_db()
+    with _conn() as c:
+        return {r[0] for r in c.execute("SELECT DISTINCT project_name FROM projects")
+                if r[0]}
+
+
 def find_projects(query: str = "", limit: int = 8) -> list:
     """Projects matching ``query`` (title / folder name contains it, or ``#id``),
     newest first; the most recent ones when ``query`` is empty. Rows carry a

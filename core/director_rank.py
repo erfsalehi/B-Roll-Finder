@@ -94,10 +94,16 @@ def _apply_ranked_to_shot(shot: dict, ranked: list) -> None:
             continue
         seen.add(idx)
         clean_order.append(idx)
-        if r.get('irrelevant'):
-            candidates[idx]['irrelevant'] = True
-        else:
-            candidates[idx].pop('irrelevant', None)
+        # The verdict is per shot, but candidate dicts are shared between shots
+        # that ran the same query (director_search's query cache) — so change the
+        # flag on a private copy, or it leaks onto every other shot.
+        if bool(r.get('irrelevant')) != bool(candidates[idx].get('irrelevant')):
+            c = dict(candidates[idx])
+            if r.get('irrelevant'):
+                c['irrelevant'] = True
+            else:
+                c.pop('irrelevant', None)
+            candidates[idx] = c
 
     # Safety net: any candidate the LLM omitted gets appended at the end.
     for i in range(len(candidates)):

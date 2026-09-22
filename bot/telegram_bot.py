@@ -245,6 +245,34 @@ def safe_title(title: str) -> str:
     return " ".join(cleaned.split())[:50]
 
 
+def unique_project_folder(folder: str) -> str:
+    """``folder``, or ``folder 2``, ``folder 3``… — the first name no earlier
+    project used. A project lives in downloads/<name>/ and ships as <name>.zip,
+    so a reused name would mix in the old project's leftover clips, point the old
+    project's download link at the new zip, and make /download of the old
+    project deliver the new one."""
+    from core.output import _safe_for_fs
+    try:
+        from core import project_store
+        used = {_safe_for_fs(n, 50) for n in project_store.project_names()}
+    except Exception as e:
+        print(f"[bot] project store: couldn't list project names: {e}")
+        used = set()
+    root = os.path.abspath("downloads")
+
+    def _taken(name):
+        fs = _safe_for_fs(name, 50)
+        return (fs in used or os.path.exists(os.path.join(root, fs))
+                or os.path.exists(os.path.join(root, fs + ".zip")))
+
+    name, n = folder, 1
+    while _taken(name):
+        n += 1
+        suffix = f" {n}"
+        name = folder[:50 - len(suffix)].rstrip() + suffix
+    return name
+
+
 def operator_from(message_or_cb: dict) -> dict:
     """``{"id", "name"}`` of the Telegram user who sent a message / tapped a button."""
     u = (message_or_cb or {}).get("from") or {}
@@ -2324,19 +2352,15 @@ def handle_cleanup(chat_id, text: str) -> None:
         return
 
     if arg.lower() == "all":
-        usage = _project_disk_usage()
-        for name, _ in usage:
-            _shutil.rmtree(os.path.join(root, name), ignore_errors=True)
-            zp = os.path.join(root, f"{name}.zip")
-            if os.path.exists(zp):
-                try:
-                    os.remove(zp)
-                except OSError:
-                    pass
+        n, _freed = _clear_all_projects()
+        kept = sorted(_projects_in_use() & {name for name, _ in _project_disk_usage()})
         ov_n, ov_freed = clear_overlay_cache()
-        msg = f"🗑 Cleared {len(usage)} project(s)"
+        msg = f"🗑 Cleared {n} project(s)"
         if ov_n:
             msg += f" + overlay cache ({_human_size(ov_freed)})"
+        if kept:
+            msg += (f". Kept {', '.join(kept)} (awaiting review or running — "
+                    f"/cleanup <name> deletes one anyway)")
         send_message(chat_id, msg + ". " + _library_kept_note())
         return
 
@@ -2478,12 +2502,15 @@ def apply_title(chat_id, title: str, operator: dict = None) -> bool:
     if not folder:
         send_message(chat_id, "That title has no letters or numbers — try another.")
         return True
+    unique = unique_project_folder(folder)
+    renamed = (f" Saved as '{unique}', since an earlier project used that name."
+               if unique != folder else "")
     ext = os.path.splitext(pend["name"] or "")[1] or ".mp3"
-    pend.update(awaiting_title=False, title=title, name=folder + ext,
+    pend.update(awaiting_title=False, title=title, name=unique + ext,
                 operator=pend.get("operator") or operator or {})
     send_message(
         chat_id,
-        f"🎬 Ready: '{title}'.\n"
+        f"🎬 Ready: '{title}'.{renamed}\n"
         "Pick a mode — and whether to clear old projects first "
         "(frees disk; keeps Clip Library & cookies):",
         reply_markup=build_start_keyboard(overlay_only=pend.get("overlay_only", False),
@@ -2557,31 +2584,30 @@ _RATER_HELP = ("⭐ You're a reviewer. Send /rate to get your personal review li
                "better clips. Every review makes the picker better.")
 
 
+def _projects_in_use() -> set:
+    """Folder names a bulk clean-up must skip: projects paused at a review gate
+    (any chat's — /download still needs their overlays and images) and the one
+    running now."""
+    from core.output import _safe_for_fs
+    names = [p.get("project") for p in _PENDING.values()]
+    if _BUSY.get("active"):
+        names.append(_BUSY.get("project"))
+    return {_safe_for_fs(n, 50) for n in names if n} - {""}
+
+
 def _clear_all_projects() -> tuple:
-    """Delete every downloaded project folder and every top-level .zip under
-    downloads/. Keeps .cache (Clip Library DB, cookies). Returns
-    ``(project_count, bytes_freed)``."""
+    """Delete every downloaded project folder and its .zip under downloads/,
+    except the projects still in use (:func:`_projects_in_use`). Keeps .cache
+    (Clip Library DB, cookies). Returns ``(project_count, bytes_freed)``."""
     import shutil as _shutil
     root = os.path.abspath("downloads")
-    usage = _project_disk_usage()
-    freed = sum(b for _, b in usage)
+    keep = _projects_in_use()
+    # Each entry already counts the folder and its zip together.
+    usage = [(name, b) for name, b in _project_disk_usage() if name not in keep]
     for name, _b in usage:
         _shutil.rmtree(os.path.join(root, name), ignore_errors=True)
-    try:
-        for fn in os.listdir(root):
-            if fn.lower().endswith(".zip"):
-                fp = os.path.join(root, fn)
-                try:
-                    freed += os.path.getsize(fp)
-                except OSError:
-                    pass
-                try:
-                    os.remove(fp)
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    return len(usage), freed
+        _remove_quietly(os.path.join(root, f"{name}.zip"))
+    return len(usage), sum(b for _, b in usage)
 
 
 def _start_job(fn, chat_id, file_id: str, name: str, **kwargs) -> None:
