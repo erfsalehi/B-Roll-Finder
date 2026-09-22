@@ -384,3 +384,15 @@ def test_glm_is_tried_before_gemini(monkeypatch, tmp_path):
         if sl._clean_draft(fn([], [], ""))["description"]:
             break
     assert order == ["openrouter"]
+
+
+def test_page_serves_library_images(server, tmp_path):
+    sid, _ = sl.add_image("https://img/x.png", page="https://site/p")
+    f = tmp_path / "seg.png"
+    f.write_bytes(b"\x89PNG....")
+    with ps._conn() as c:
+        c.execute("UPDATE segments SET file_status='ready', file_path=? WHERE id=?", (str(f), sid))
+    auth = rating_page.rate_link(501, server).split("?", 1)[1]
+    with urllib.request.urlopen(f"{server}/rate/media/segment/{sid}.png?{auth}", timeout=5) as r:
+        assert r.headers["Content-Type"] == "image/png" and r.read() == b"\x89PNG...."
+    assert sl.add_image("https://img/x.png") == (sid, False)       # deduped by URL

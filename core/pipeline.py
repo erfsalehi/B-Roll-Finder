@@ -1694,6 +1694,13 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
             raise
         except Exception as e:
             errors.append(f"shot images: {e}")
+        # Stills the editors used before (and reviewers described) go in front.
+        try:
+            from core import segment_library
+            state.attempts["library_images"] = segment_library.add_library_images(
+                shots, project_name, video_topic=topic, errors=errors)
+        except Exception as e:
+            errors.append(f"library images: {e}")
 
     # 9 — QA review (optional)
     if run_qa:

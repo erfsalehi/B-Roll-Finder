@@ -156,6 +156,13 @@ def init_db() -> None:
                 UNIQUE (segment_id, project_id)
             );
         """)
+        # Stills share the table: kind 'image', no in/out, origin_page = the web
+        # page the image came from (for checking reuse rights).
+        for col in ("kind TEXT DEFAULT 'clip'", "origin_page TEXT DEFAULT ''"):
+            try:
+                c.execute(f"ALTER TABLE segments ADD COLUMN {col}")
+            except Exception:
+                pass
 
 
 def _row(r) -> dict:
@@ -223,6 +230,61 @@ def add_segment(page_url: str, src_in: float, src_out: float, *, url: str = "",
     return sid, created
 
 
+def add_image(image_url: str, *, page: str = "", title: str = "", src_file: str = "",
+              src_zip: str = "", src_member: str = "", trust: str = "used",
+              project_id=None, slot_id="", line_text: str = "") -> tuple:
+    """Add a still image to the library (or record another line it served).
+    Identity is the image URL. Returns ``(segment_id, created)``."""
+    init_db()
+    if not image_url:
+        raise ValueError("image has no URL")
+    now = _now()
+    with project_store._conn() as c:
+        row = c.execute("SELECT id, trust FROM segments WHERE kind='image' AND page_url=?",
+                        (image_url,)).fetchone()
+        if row:
+            sid, created = row["id"], False
+            if TRUST.index(trust) > TRUST.index(row["trust"]) and row["trust"] != "avoid":
+                c.execute("UPDATE segments SET trust=?, updated_at=? WHERE id=?", (trust, now, sid))
+        else:
+            cur = c.execute(
+                """INSERT INTO segments (kind, page_url, url, source, title, origin_page, src_in,
+                                         src_out, src_file, src_zip, src_member, trust,
+                                         origin_project, created_at, updated_at)
+                   VALUES ('image', ?, ?, 'google_image', ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)""",
+                (image_url, image_url, (title or "")[:300], page or "", src_file or "",
+                 src_zip or "", src_member or "", trust, project_id, now, now))
+            sid, created = cur.lastrowid, True
+        if line_text:
+            c.execute("""INSERT OR IGNORE INTO segment_lines
+                         (segment_id, project_id, slot_id, line_text, created_at)
+                         VALUES (?, ?, ?, ?, ?)""",
+                      (sid, project_id, str(slot_id or ""), line_text, now))
+    return sid, created
+
+
+def _find_delivered(project: dict, filename: str) -> tuple:
+    """``(local_path, zip_path, member)`` for any delivered file of a project —
+    searches the project folder, then its zip (clips live in director/, images
+    in images/shots/shot_NN/)."""
+    from core.output import _safe_for_fs
+    safe = _safe_for_fs(project.get("project_name") or project.get("title") or "", 50)
+    root = os.path.join(os.path.abspath("downloads"), safe)
+    for dirpath, _dirs, files in os.walk(root):
+        if filename in files:
+            return os.path.join(dirpath, filename), "", ""
+    zp = os.path.join(os.path.abspath("downloads"), f"{safe}.zip")
+    if os.path.isfile(zp):
+        try:
+            with zipfile.ZipFile(zp) as z:
+                member = next((n for n in z.namelist() if n.endswith("/" + filename)), "")
+            if member:
+                return "", zp, member
+        except zipfile.BadZipFile:
+            pass
+    return "", "", ""
+
+
 def _source_locations(project: dict, filename: str) -> tuple:
     """Where a delivered clip's file may still be: the project folder, or its zip."""
     from core.output import _safe_for_fs, clip_base_dir
@@ -235,18 +297,18 @@ def _source_locations(project: dict, filename: str) -> tuple:
 
 
 def ingest_from_import(project_id: int) -> int:
-    """Turn every cut the editor used in a learned project into a library
-    segment (trust 'used'). Cuts of clips that were themselves library segments
-    update that segment's record instead. Returns how many new segments."""
+    """Turn every cut and every still image the editor used in a learned project
+    into a library entry (trust 'used'). Items that were themselves library
+    entries update that entry's record instead. Returns how many are new."""
     init_db()
     project = project_store.get_project(project_id) or {}
     with project_store._conn() as c:
         rows = [dict(r) for r in c.execute(
             """SELECT u.in_sec, u.out_sec, u.used_slot_id, u.verdict, a.id AS asset_id,
-                      a.slot_id, a.page_url, a.url, a.source, a.channel, a.title, a.filename,
-                      a.segment_id
+                      a.kind, a.slot_id, a.page_url, a.url, a.source, a.channel, a.title,
+                      a.filename, a.segment_id
                  FROM asset_usage u JOIN project_assets a ON a.id = u.asset_id
-                WHERE u.project_id=? AND a.kind='clip'
+                WHERE u.project_id=? AND a.kind IN ('clip', 'image')
                   AND u.verdict IN ('used_here','used_elsewhere')""", (project_id,))]
         lines = {r["slot_id"]: r["text"] for r in c.execute(
             "SELECT slot_id, text FROM project_shots WHERE project_id=?", (project_id,))}
@@ -262,9 +324,22 @@ def ingest_from_import(project_id: int) -> int:
                       (_now(), sid))
     added = 0
     for r in rows:
-        if r["segment_id"] or r["in_sec"] is None or r["out_sec"] is None:
+        if r["segment_id"]:
             continue
         slot = r["used_slot_id"] or r["slot_id"]
+        if r["kind"] == "image":
+            local, zp, member = _find_delivered(project, r["filename"])
+            try:
+                _sid, created = add_image(
+                    r["url"], page=r["page_url"], title=r["title"], src_file=local,
+                    src_zip=zp, src_member=member, trust="used", project_id=project_id,
+                    slot_id=slot, line_text=lines.get(slot, ""))
+                added += created
+            except ValueError:
+                pass
+            continue
+        if r["in_sec"] is None or r["out_sec"] is None:
+            continue
         local, zp, member = _source_locations(project, r["filename"])
         try:
             _sid, created = add_segment(
@@ -365,9 +440,39 @@ def cut_segment(seg: dict) -> tuple:
     return dest, frames
 
 
+def prepare_image(seg: dict) -> tuple:
+    """Store a still: copy the delivered image (or fetch it again) into the
+    library, plus a JPEG preview the vision model and the page can use.
+    Returns ``(file_path, [preview path])``."""
+    d = lib_dir()
+    with tempfile.TemporaryDirectory() as work:
+        src = ""
+        if seg["src_file"] and os.path.isfile(seg["src_file"]):
+            src = seg["src_file"]
+        elif seg["src_zip"] and os.path.isfile(seg["src_zip"]):
+            with zipfile.ZipFile(seg["src_zip"]) as z:
+                if seg["src_member"] in z.namelist():
+                    src = os.path.join(work, "src" + os.path.splitext(seg["src_member"])[1])
+                    with z.open(seg["src_member"]) as fin, open(src, "wb") as fout:
+                        shutil.copyfileobj(fin, fout)
+        if not src:
+            from core.pipeline import _download_image
+            src = _download_image(seg["url"] or seg["page_url"], work, 1, stem="src")
+        if not src or not os.path.isfile(src):
+            raise RuntimeError("couldn't get the image (not on the server and the link failed)")
+        ext = os.path.splitext(src)[1].lower() or ".jpg"
+        dest = os.path.join(d, f"seg_{seg['id']}{ext}")
+        shutil.copyfile(src, dest)
+    preview = os.path.join(d, f"seg_{seg['id']}_1.jpg")
+    _ffmpeg(["-i", dest, "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", "3",
+             preview], timeout=60)
+    return dest, [preview]
+
+
 _DRAFT_PROMPT = (
-    "You catalogue B-roll footage for a video channel. You see frames from ONE short clip "
-    "and the narration lines it was used for. Describe the CLIP, not the narration.\n"
+    "You catalogue B-roll footage for a video channel. You see frames from ONE short clip — "
+    "or ONE still image (photo or graphic) — and the narration lines it was used for. "
+    "Describe what is SHOWN, not the narration.\n"
     "Return STRICT JSON with:\n"
     '  "description": 1-2 factual sentences of what is on screen (subject, action, framing, '
     "setting). No opinions.\n"
@@ -536,8 +641,9 @@ def _lines_of(c, segment_id: int) -> list:
 
 
 def process_one(seg: dict) -> None:
-    """Cut, draft a description (if nobody has written one) and embed."""
-    path, frames = cut_segment(seg)
+    """Cut (or, for a still, copy), draft a description if nobody has written
+    one, and embed."""
+    path, frames = (prepare_image if seg.get("kind") == "image" else cut_segment)(seg)
     with project_store._conn() as c:
         lines = _lines_of(c, seg["id"])
         topic = (c.execute("SELECT topic FROM projects WHERE id=?",
@@ -654,6 +760,8 @@ def next_review_task(rater_id: int, skip: list = None) -> dict | None:
                           (seg["origin_project"],)).fetchone()
     return {
         "mode": "library", "segment_id": seg["id"], "title": seg["title"],
+        "kind": seg.get("kind") or "clip", "origin_page": seg.get("origin_page") or "",
+        "media_ext": os.path.splitext(seg["file_path"] or "")[1].lstrip(".") or "mp4",
         "source": seg["source"], "channel": seg["channel"], "page_url": seg["page_url"],
         "src_in": seg["src_in"], "src_out": seg["src_out"], "topic": topic[0] if topic else "",
         "trust": seg["trust"], "lines": [l["line_text"] for l in lines][:5],
@@ -830,7 +938,7 @@ def find_matches(shot: dict, segs: list, embed=None, top_k: int = 3) -> list:
     need = max(_MIN_SECONDS, min(float(shot.get("duration_needed_sec") or 0) / 2, 4.0))
     out = []
     for s in segs:
-        if s["src_out"] - s["src_in"] < need:
+        if s.get("kind") != "image" and s["src_out"] - s["src_in"] < need:
             continue
         if s["identifiable"] == 1 and s["subject"] and not subject_matches(
                 s["subject"], subjects or [], text):
@@ -866,18 +974,24 @@ def _candidate(seg: dict, score: float) -> dict:
     }
 
 
-def inject_candidates(shots: list, video_topic: str = "", errors: list = None) -> int:
-    """Add the best library segments to each shot's candidates (front of the
-    list). Returns how many were added."""
-    if not enabled():
-        return 0
+def _usable(kind: str) -> list:
+    """Ready, not-avoided library entries of ``kind`` with a file on disk,
+    minus the ones used in the last few projects."""
     init_db()
     with project_store._conn() as c:
         segs = [_row(r) for r in c.execute(
             """SELECT * FROM segments WHERE file_status='ready' AND trust != 'avoid'
-                  AND embedding IS NOT NULL""")]
+                  AND embedding IS NOT NULL AND COALESCE(kind, 'clip') = ?""", (kind,))]
         recent = _recent_segment_ids(c)
-    segs = [s for s in segs if s["id"] not in recent and os.path.isfile(s["file_path"] or "")]
+    return [s for s in segs if s["id"] not in recent and os.path.isfile(s["file_path"] or "")]
+
+
+def inject_candidates(shots: list, video_topic: str = "", errors: list = None) -> int:
+    """Add the best library clips to each shot's candidates (front of the
+    list). Returns how many were added."""
+    if not enabled():
+        return 0
+    segs = _usable("clip")
     if not segs:
         return 0
     targets = [s for s in shots if not s.get("is_extra") and s.get("priority") != "none"]
@@ -907,6 +1021,62 @@ def inject_candidates(shots: list, video_topic: str = "", errors: list = None) -
     return added
 
 
+def add_library_images(shots: list, project_name: str, video_topic: str = "",
+                       per_shot: int = 2, errors: list = None) -> int:
+    """Put matching library stills in front of each shot's images: copied into
+    the project's ``images/shots/shot_NN/`` like the Google ones, named
+    ``NN-L1-library-….ext`` so the editor can tell them apart. Same subject
+    rule as clips. Returns how many were added."""
+    if not enabled() or per_shot <= 0:
+        return 0
+    imgs = _usable("image")
+    if not imgs:
+        return 0
+    from core.output import _safe_for_fs
+    from core.shot_images import _shot_dir_name, _slug
+    targets = [s for s in shots if not s.get("is_extra") and s.get("priority") != "none"]
+    try:
+        tag_lines(targets, video_topic)
+    except Exception as e:
+        if errors is not None:
+            errors.append(f"library line tags: {e}")
+    base = os.path.join(os.path.abspath("downloads"), _safe_for_fs(project_name, 50),
+                        "images", "shots")
+    added = 0
+    for s in targets:
+        try:
+            hits = find_matches(s, imgs, top_k=per_shot)
+        except Exception as e:
+            if errors is not None:
+                errors.append(f"library images (shot {s.get('slot_id')}): {e}")
+            continue
+        have = {i.get("url") for i in s.get("images") or []}
+        new = []
+        for k, (score, seg) in enumerate(hits, 1):
+            if seg["url"] in have:
+                continue
+            d = os.path.join(base, _shot_dir_name(s.get("slot_id")))
+            os.makedirs(d, exist_ok=True)
+            ext = os.path.splitext(seg["file_path"])[1] or ".jpg"
+            label = _slug(seg["subject"] or seg["generic_use"] or seg["description"], 30)
+            dest = os.path.join(d, f"{_shot_dir_name(s.get('slot_id'))[5:]}-L{k}-library-{label}{ext}")
+            try:
+                shutil.copyfile(seg["file_path"], dest)
+            except OSError as e:
+                if errors is not None:
+                    errors.append(f"library image copy: {e}")
+                continue
+            new.append({"url": seg["url"], "local_path": dest,
+                        "title": f"[Library] {(seg['description'] or seg['title'])[:110]}",
+                        "page": seg.get("origin_page") or "", "query": "library",
+                        "library_segment_id": seg["id"], "segment_trust": seg["trust"],
+                        "library_score": round(score, 3)})
+        if new:
+            s["images"] = new + list(s.get("images") or [])
+            added += len(new)
+    return added
+
+
 def promote_strong(shots: list) -> int:
     """After ranking: a verified segment with a strong match that the judge
     didn't reject goes to the front, so selection takes it first."""
@@ -927,7 +1097,7 @@ def mark_used(project_id: int, shots: list) -> int:
     init_db()
     used = {}
     for s in shots or []:
-        for c in s.get("selected_results") or []:
+        for c in list(s.get("selected_results") or []) + list(s.get("images") or []):
             if c.get("library_segment_id") and not c.get("_dl_failed"):
                 used[c["library_segment_id"]] = c
     if not used:
@@ -958,6 +1128,9 @@ def stats() -> dict:
     with project_store._conn() as c:
         by_trust = {r[0]: r[1] for r in c.execute(
             "SELECT trust, COUNT(*) FROM segments WHERE file_status='ready' GROUP BY trust")}
+        by_kind = {r[0]: r[1] for r in c.execute(
+            """SELECT COALESCE(kind, 'clip'), COUNT(*) FROM segments
+                WHERE file_status='ready' AND trust != 'avoid' GROUP BY 1""")}
         by_status = {r[0]: r[1] for r in c.execute(
             "SELECT file_status, COUNT(*) FROM segments GROUP BY file_status")}
         subjects = [(r[0], r[1]) for r in c.execute(
@@ -965,5 +1138,5 @@ def stats() -> dict:
                 GROUP BY lower(subject) ORDER BY COUNT(*) DESC LIMIT 8""")]
         seconds = c.execute("""SELECT COALESCE(SUM(src_out - src_in), 0) FROM segments
                                 WHERE file_status='ready' AND trust != 'avoid'""").fetchone()[0]
-    return {"by_trust": by_trust, "by_status": by_status, "subjects": subjects,
-            "seconds": seconds}
+    return {"by_trust": by_trust, "by_status": by_status, "by_kind": by_kind,
+            "subjects": subjects, "seconds": seconds}

@@ -131,3 +131,81 @@ def test_library_segments_survive_the_shorts_filter():
     assert pipeline.drop_shorts([shot]) == 1
     assert shot["video_results"] == [seg]
     assert pipeline.validate_timeline([{"slot_id": 1, "selected_results": [seg]}])["ok"]
+
+
+def test_image_loop_end_to_end(monkeypatch, tmp_path):
+    """Per-shot image the editor put in the edit → library still (stored,
+    described, reviewed) → offered first in a new project's images folder."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SEGMENT_LIBRARY_DIR", str(tmp_path / "lib"))
+    monkeypatch.setattr(sl, "_embed", fake_embed)
+    monkeypatch.setattr(sl, "tag_lines", lambda shots, topic="": None)
+    monkeypatch.setattr(sl, "kick", lambda: None)
+    seen = {}
+
+    def draft(frames, lines, topic):
+        seen["frames"] = frames
+        return {"description": "Diagram of a car engine oil filter cut in half, labelled parts",
+                "subject": "", "identifiable": False, "generic_use": "how an oil filter works",
+                "shot_type": "screen", "problems": ["text_logo"]}
+    monkeypatch.setattr(sl, "_draft_openrouter", draft)
+
+    proj = "Filter guide"
+    pid = ps.create_project(proj, proj)
+    img_dir = tmp_path / "downloads" / "filter-guide" / "images" / "shots" / "shot_01"
+    img_dir.mkdir(parents=True)
+    img = img_dir / "01-1-oil-filter.png"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=800x600:duration=1", "-frames:v", "1", str(img)], check=True)
+    shots = [{"slot_id": 1, "timestamp": 0, "end_timestamp": 5, "priority": "medium",
+              "text": "the oil filter traps dirt before it reaches the engine",
+              "selected_results": [],
+              "images": [{"url": "https://img.example/filter.png", "local_path": str(img),
+                          "title": "oil filter diagram", "page": "https://example.com/filters"}]}]
+    monkeypatch.setattr(ps, "_exported_placements", lambda path: ({}, set()))
+    ps.record_delivery(pid, shots)
+
+    # The editor dragged the still onto the timeline over the first line.
+    item = {"name": img.name, "local_path": f"C:/edit/{img.name}", "fps": 30.0,
+            "start_frame": 30, "end_frame": 120, "in_frame": 0, "out_frame": 90,
+            "in_seconds": 0.0, "out_seconds": 3.0}
+    s = ps.analyze_import(pid, [item])
+    assert s["images"] == {"used_here": 1}
+
+    assert sl.ingest_from_import(pid) == 1
+    assert sl.process_pending() == 1
+    seg = sl.get_segment(1)
+    assert seg["kind"] == "image" and seg["file_status"] == "ready", seg["file_error"]
+    assert seg["file_path"].endswith(".png") and seg["origin_page"] == "https://example.com/filters"
+    assert len(seen["frames"]) == 1 and seen["frames"][0].endswith(".jpg")
+    assert seg["problems"] == ["text_logo"]
+    task = sl.next_review_task(501)
+    assert task["kind"] == "image" and task["media_ext"] == "png"
+    sl.save_review(501, seg["id"], usable="yes", identifiable="0",
+                   description="Diagram of a car engine oil filter cut in half, labelled parts",
+                   generic_use="how an oil filter works")
+
+    # A new project: the library still goes first into the shot's images folder.
+    proj2 = "Engine care"
+    pid2 = ps.create_project(proj2, proj2)
+    ps.create_project("filler")
+    shot = {"slot_id": 3, "text": "a clogged oil filter lets dirt into the engine",
+            "line_subjects": [], "priority": "medium",
+            "images": [{"url": "https://google/x.jpg", "local_path": "/g/x.jpg"}]}
+    assert sl.add_library_images([shot], proj2) == 1
+    first = shot["images"][0]
+    assert first["library_segment_id"] == seg["id"]
+    assert os.path.basename(first["local_path"]).startswith("03-L1-library-")
+    assert os.path.isfile(first["local_path"])
+    assert shot["images"][1]["url"] == "https://google/x.jpg"
+
+    # Delivery links it back to the library entry and rests it next time.
+    ps.record_delivery(pid2, [shot])
+    with ps._conn() as c:
+        row = c.execute("SELECT source, segment_id FROM project_assets WHERE project_id=? "
+                        "AND kind='image' AND position=0", (pid2,)).fetchone()
+    assert tuple(row) == ("library", seg["id"])
+    assert sl.mark_used(pid2, [shot]) == 1
+    fresh = {"slot_id": 3, "text": "a clogged oil filter lets dirt into the engine",
+             "line_subjects": [], "images": []}
+    assert sl.add_library_images([fresh], "Another") == 0

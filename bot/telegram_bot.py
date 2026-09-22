@@ -1763,8 +1763,8 @@ def learn_from_xml(chat_id, path: str, name: str, project_id: int = None,
                 from core import segment_library
                 n = segment_library.ingest_from_import(project_id)
                 if n:
-                    lib = (f"\n📚 {n} cut(s) added to the segment library — they'll be "
-                           "trimmed, described and queued for reviewers (/rate → Library clips).")
+                    lib = (f"\n📚 {n} clip(s)/image(s) added to the library — they'll be "
+                           "stored, described and queued for reviewers (/rate → Library clips).")
             except Exception as e:
                 print(f"[bot] segment library ingest failed: {e}")
             send_message(chat_id, format_learn_summary(summary)
@@ -2528,8 +2528,9 @@ def format_library(st: dict) -> str:
     if not ready and not s:
         return ("📚 The segment library is empty. It fills from the cuts editors use: send "
                 "the Premiere XML of a finished edit and pick its project.")
-    lines = [f"📚 Segment library — {ready} clip(s) ready, "
-             f"{round((st.get('seconds') or 0) / 60, 1)} min of footage",
+    kinds = st.get("by_kind") or {}
+    lines = [f"📚 Segment library — {kinds.get('clip', 0)} clip(s) "
+             f"({round((st.get('seconds') or 0) / 60, 1)} min) and {kinds.get('image', 0)} image(s)",
              f"• verified by reviewers: {t.get('verified', 0)}",
              f"• used by editors, not yet reviewed: {t.get('used', 0)}",
              f"• suggested by reviewers: {t.get('suggested', 0)}",

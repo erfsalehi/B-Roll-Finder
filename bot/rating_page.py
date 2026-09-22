@@ -21,7 +21,7 @@ Routes:
     GET  /rate/api/library/next   next segment-library clip to describe (?skip=id,id)
     POST /rate/api/library/submit {segment_id, usable, fits_line, description, subject,
                                    identifiable, generic_use, shot_type, problems, note}
-    GET  /rate/media/segment/<id>.mp4   the stored segment (auth in the query)
+    GET  /rate/media/segment/<id>.<ext> the stored clip or image (auth in the query)
 """
 
 import json
@@ -146,13 +146,15 @@ def handle(handler) -> bool:
         return True
 
     from core import ratings, segment_library
-    m = re.fullmatch(r"/rate/media/segment/(\d+)\.mp4", path)
+    m = re.fullmatch(r"/rate/media/segment/(\d+)\.(\w+)", path)
     if m and handler.command in ("GET", "HEAD"):
         seg = segment_library.get_segment(int(m.group(1)))
         if not seg or not os.path.isfile(seg.get("file_path") or ""):
             _send(handler, 404, {"error": "not found"})
         else:
-            _send_file(handler, seg["file_path"], "video/mp4")
+            import mimetypes
+            ctype = mimetypes.guess_type(seg["file_path"])[0] or "application/octet-stream"
+            _send_file(handler, seg["file_path"], ctype)
         return True
     try:
         if path == "/rate/api/library/next" and handler.command == "GET":
@@ -641,7 +643,8 @@ const GUIDES = {
         el("li", {}, el("b", {}, "Can a viewer tell exactly what it is? "), "Yes only if a badge, logo, readable text or unmistakable design shows it. ",
           el("b", {}, "Yes"), " → used only for that subject. ", el("b", {}, "No"), " → used as general footage."),
         el("li", {}, el("b", {}, "General use: "), "what it could stand in for in any video — “oil draining from a car engine”, “mechanic working under a car”."),
-        el("li", {}, el("b", {}, "Usable? "), "Say No only if it's unusable ", el("i", {}, "anywhere"), " (watermark, face, shaky, blurry). Being wrong for one line is not a reason.")),
+        el("li", {}, el("b", {}, "Usable? "), "Say No only if it's unusable ", el("i", {}, "anywhere"), " (watermark, face, shaky, blurry). Being wrong for one line is not a reason."),
+        el("li", {}, el("b", {}, "Images: "), "same rules. Say what kind of picture it is — photo, diagram, screenshot, chart — and mark text or watermarks under Problems.")),
       el("div", { class: "ex good" }, "✅ Description: “Close-up of a hand unscrewing the oil drain plug under a silver sedan; dark oil pours into a black pan.” · Subject: “Toyota Camry” · Viewer can tell: No (no badge in shot) · General use: “draining engine oil from a car”."),
       el("div", { class: "ex good" }, "✅ Same action, but the Toyota badge fills the first second → Viewer can tell: Yes · Subject: “Toyota Camry”. It will only be used for Camry lines."),
       el("div", { class: "ex bad" }, "❌ “oil change clip” · “good footage for the engine part” · copying the narration.")]
@@ -674,18 +677,22 @@ function libraryCard(t) {
   const st = { segment_id: t.segment_id, usable: null, fits_line: null, description: d.description || "",
                subject: d.subject || "", identifiable: d.identifiable === 1 ? "1" : d.identifiable === 0 ? "0" : null,
                generic_use: d.generic_use || "", shot_type: d.shot_type || null, problems: new Set(d.problems || []), note: "" };
-  const box = el("div", { class: "player" }, el("video", { src: "/rate/media/segment/" + t.segment_id + ".mp4?" + AUTH,
-    controls: true, preload: "metadata", playsinline: true, loop: true }));
+  const media = "/rate/media/segment/" + t.segment_id + "." + (t.media_ext || "mp4") + "?" + AUTH;
+  const isImage = t.kind === "image";
+  const box = el("div", { class: "player" }, isImage
+    ? el("img", { src: media, alt: "Library image" })
+    : el("video", { src: media, controls: true, preload: "metadata", playsinline: true, loop: true }));
   const descHint = el("div", { class: "hint", "aria-live": "polite" });
   const checkDesc = () => { descHint.textContent = st.usable === "yes" ? textIssues(st.description) : ""; };
   const subj = el("input", { type: "text", value: st.subject, placeholder: "e.g. Toyota Camry (2018–2022) — only what you can see", on: { input: e => st.subject = e.target.value } });
   const gen = el("input", { type: "text", value: st.generic_use, placeholder: "e.g. draining engine oil from a car", on: { input: e => st.generic_use = e.target.value } });
   const draftNote = t.draft_source === "vision" || t.draft_source === "text"
     ? el("div", { class: "draft" }, "Pre-filled by AI" + (t.draft_source === "text" ? " from the title only (it couldn't see the clip)" : "") + " — check every field and correct it.") : null;
-  const card = el("section", { class: "clip", "aria-label": "Library clip" }, box,
+  const card = el("section", { class: "clip", "aria-label": isImage ? "Library image" : "Library clip" }, box,
     el("div", { class: "body" },
-      el("div", { class: "title" }, t.title || "Untitled", " ", el("small", {}, "· " + (t.source || "?").toUpperCase() + (t.channel ? " · " + t.channel : "") + " · " + fmt(t.src_in) + "–" + fmt(t.src_out) + " of the source"),
-        t.page_url ? el("a", { href: t.page_url, target: "_blank", rel: "noopener" }, "source ↗") : null),
+      el("div", { class: "title" }, t.title || (isImage ? "Image" : "Untitled"), " ",
+        el("small", {}, isImage ? "· image" : "· " + (t.source || "?").toUpperCase() + (t.channel ? " · " + t.channel : "") + " · " + fmt(t.src_in) + "–" + fmt(t.src_out) + " of the source"),
+        (t.origin_page || t.page_url) ? el("a", { href: t.origin_page || t.page_url, target: "_blank", rel: "noopener" }, "source ↗") : null),
       t.lines.length ? el("div", { class: "stat" }, "Used for: " + t.lines.map(l => "“" + l + "”").join(" · ")) : null,
       t.lines.length ? el("div", { class: "row" }, el("span", { class: "label" }, "Right for that line?"),
         toggleGroup([["yes", "Yes"], ["partly", "Partly"], ["no", "No"]], () => st.fits_line, v => st.fits_line = v, "pick")) : null,
@@ -740,13 +747,14 @@ function render() {
   const main = document.getElementById("main");
   cards = []; suggestions = []; players = {};
   setMsg("");
+  document.getElementById("skip").textContent = mode === "library" ? "Skip" : "Skip shot";
   if (mode === "library") {
     if (!task || task.done) {
-      main.replaceChildren(guide("library"), el("div", { class: "empty" }, "No library clips waiting. They appear after an editor sends back a finished XML."));
+      main.replaceChildren(guide("library"), el("div", { class: "empty" }, "No library clips or images waiting. They appear after an editor sends back a finished XML."));
       document.getElementById("actions").hidden = true;
       return;
     }
-    main.replaceChildren(guide("library"), el("h2", {}, "Describe this clip for the library"), libraryCard(task));
+    main.replaceChildren(guide("library"), el("h2", {}, task.kind === "image" ? "Describe this image for the library" : "Describe this clip for the library"), libraryCard(task));
     document.getElementById("actions").hidden = false;
     setMsg(""); window.scrollTo(0, 0);
     return;

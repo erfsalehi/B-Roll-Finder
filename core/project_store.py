@@ -376,10 +376,12 @@ def record_delivery(project_id: int, shots: list, xml_path: str = None,
                 c.execute(
                     """INSERT INTO project_assets
                        (project_id, slot_id, kind, position, filename, url, source,
-                        title, page_url)
-                       VALUES (?, ?, 'image', ?, ?, ?, 'google', ?, ?)""",
+                        title, page_url, segment_id)
+                       VALUES (?, ?, 'image', ?, ?, ?, ?, ?, ?, ?)""",
                     (project_id, slot, pos, fname, img.get("url") or "",
-                     img.get("title") or "", img.get("page") or ""))
+                     "library" if img.get("library_segment_id") else "google",
+                     img.get("title") or "", img.get("page") or "",
+                     img.get("library_segment_id")))
                 asset_names.add(fname.lower())
                 n_images += 1
 
