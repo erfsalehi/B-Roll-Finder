@@ -365,9 +365,11 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
 def _pick_in_frame(clip_url, filename, duration_frames, media_dur_frames, fps,
                    candidate) -> tuple:
     """``(rule, in_frame)`` for :func:`_preferred_in_frame`; rule is one of
-    trim / rated / verified / habit / default."""
+    segment / trim / rated / verified / habit / default."""
     if not clip_url and not filename and not candidate:
         return "default", 0
+    if (candidate or {}).get("library_segment_id"):
+        return "segment", 0          # the stored segment is already the good part
     try:
         from core import clip_library
         row = clip_library.find_clip_by_path_or_url(clip_url=clip_url, filename=filename)

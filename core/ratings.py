@@ -40,6 +40,7 @@ REASONS = [
     ("wrong_subject", "Wrong subject"),
     ("wrong_domain", "Right thing, wrong kind"),
     ("other_line", "Good clip, wrong line"),
+    ("generic_ok", "Wrong model/brand — OK as general footage"),
     ("talking_head", "Talking head / presenter"),
     ("text_logo", "Text, logo or watermark"),
     ("low_quality", "Low quality / blurry"),
@@ -62,7 +63,12 @@ IMPACT_KINDS = {
     "note_in_rules": "Your note went into the house rules",
     "label_corrected": "You corrected an editor-XML label",
     "label_confirmed": "You confirmed an editor-XML label",
+    "segment_reviewed": "You described a library clip",
+    "library_used": "A library clip you checked was placed in a video",
 }
+
+# Kinds that record a reviewer's own work rather than a change to picks.
+WORK_KINDS = {"label_corrected", "label_confirmed", "segment_reviewed"}
 
 RUNNER_UPS = 2          # non-picked but relevant candidates queued per shot
 _MAX_SEGMENTS = 10
@@ -424,7 +430,10 @@ def item_labels() -> list:
     for it in items:
         rs = by_item.get(it["id"], [])
         yes = sum(1 for r in rs if r["usable"] in ("yes", "trim"))
-        other_line = sum(1 for r in rs if "other_line" in json.loads(r["reasons"] or "[]"))
+        # "Good clip, wrong line" / "wrong model, OK as general footage" judge the
+        # line, not the clip — they mustn't count against the clip itself.
+        other_line = sum(1 for r in rs if {"other_line", "generic_ok"}
+                         & set(json.loads(r["reasons"] or "[]")))
         no = sum(1 for r in rs if r["usable"] == "no")
         segs = [json.loads(r["segments"] or "[]") for r in rs if r["usable"] in ("yes", "trim")]
         out.append(dict(it, yes=yes, no=no, other_line=other_line,
@@ -477,8 +486,9 @@ def rater_stats() -> list:
         labels = {r[0]: r[1] for r in c.execute(
             "SELECT rater_id, COUNT(*) FROM label_reviews GROUP BY rater_id")}
         changed = {r[0]: r[1] for r in c.execute(
-            """SELECT rater_id, COUNT(*) FROM impact_events
-                WHERE kind NOT LIKE 'label_%' GROUP BY rater_id""")}
+            f"""SELECT rater_id, COUNT(*) FROM impact_events
+                WHERE kind NOT IN ({','.join('?' * len(WORK_KINDS))}) GROUP BY rater_id""",
+            sorted(WORK_KINDS))}
         names = {r[0]: r[1] for r in c.execute("SELECT rater_id, name FROM raters")}
     for rid in set(labels) | set(changed):
         stats.setdefault(rid, {"rater_id": rid, "name": names.get(rid, ""), "rated": 0,

@@ -419,6 +419,11 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
             have_file = True
             _mark_ok(res, out_path)
             _tick("skipped")
+        elif res.get("segment_path") and link_or_copy(res["segment_path"], out_path):
+            # A library segment: already trimmed and stored on the server.
+            have_file = True
+            _mark_ok(res, out_path)
+            _tick("skipped")
         else:
             # Cross-session cache: reuse a copy downloaded for an earlier project.
             cached = download_cache.lookup_path(url)
@@ -894,6 +899,7 @@ def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
             inject_library_candidates(targets, top_k=int(os.getenv("AUTO_LIBRARY_NUM", "5") or 5))
     except Exception:
         pass
+    _inject_segments(targets, video_topic, errors)
 
     try:
         rank_shot_candidates(targets, api_key=key, video_topic=video_topic)
@@ -1092,6 +1098,7 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
                 inject_library_candidates(targets, top_k=int(os.getenv("AUTO_LIBRARY_NUM", "5") or 5))
         except Exception as e:
             errors.append(f"refine clip_library: {e}")
+    _inject_segments(targets, video_topic, errors)
 
     try:
         rank_shot_candidates(targets, api_key=key, video_topic=video_topic)
@@ -1279,6 +1286,17 @@ def write_fcpxml(shots: list, project_name: str, overlays: list = None,
     except Exception:
         pass
     return xml_path
+
+
+def _inject_segments(shots: list, video_topic: str = "", errors: list = None) -> int:
+    """Offer matching segment-library clips as candidates. Best-effort."""
+    try:
+        from core import segment_library
+        return segment_library.inject_candidates(shots, video_topic, errors)
+    except Exception as e:
+        if errors is not None:
+            errors.append(f"segment library: {e}")
+        return 0
 
 
 def finalize_project(shots: list, project_name: str, quality: str = "1080",
@@ -1528,6 +1546,10 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
                 inject_library_candidates(shots, top_k=int(os.getenv("AUTO_LIBRARY_NUM", "5") or 5))
         except Exception as e:
             errors.append(f"clip_library: {e}")
+
+    # Segment library: the channel's own verified, pre-trimmed footage.
+    _p(5, "Searching segment library")
+    _inject_segments(shots, topic, errors)
 
     # 6 — HD filter (YouTube Data API is used ONLY here — to drop SD clips; the
     # YouTube *search* itself is done with yt-dlp + keywords, no Data API quota).

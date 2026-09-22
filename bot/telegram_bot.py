@@ -717,7 +717,7 @@ def handle_rate(chat_id, operator: dict) -> None:
         return
     todo = q["items"] - q["rated"]
     labels_todo = q["labels"] - q["labels_checked"]
-    changed = sum(v for k, v in mine["impact"].items() if not k.startswith("label_"))
+    changed = sum(v for k, v in mine["impact"].items() if k not in ratings.WORK_KINDS)
     send_message(chat_id,
                  f"⭐ Your review link (personal — don't share it):\n"
                  f"{rating_page.rate_link(operator['id'], base)}\n\n"
@@ -963,6 +963,11 @@ def _deliver_completed(chat_id, proj, result) -> None:
             edit_feedback.credit_delivery(project_id, result.get("shots") or [])
         except Exception as e:
             print(f"[bot] ratings: couldn't queue candidates: {e}")
+        try:
+            from core import segment_library
+            segment_library.mark_used(project_id, result.get("shots") or [])
+        except Exception as e:
+            print(f"[bot] segment library: couldn't record use: {e}")
     send_message(chat_id, format_summary(proj, result))
     xml_path = result.get("xml_path")
     if xml_path and os.path.exists(xml_path):
@@ -1753,8 +1758,17 @@ def learn_from_xml(chat_id, path: str, name: str, project_id: int = None,
             from core import project_store
             summary = project_store.analyze_import(project_id, parse_fcpxml(path),
                                                    imported_by=imported_by, filename=name)
+            lib = ""
+            try:
+                from core import segment_library
+                n = segment_library.ingest_from_import(project_id)
+                if n:
+                    lib = (f"\n📚 {n} cut(s) added to the segment library — they'll be "
+                           "trimmed, described and queued for reviewers (/rate → Library clips).")
+            except Exception as e:
+                print(f"[bot] segment library ingest failed: {e}")
             send_message(chat_id, format_learn_summary(summary)
-                         + f"\n• Preferred trims recorded: {s['recorded']}")
+                         + f"\n• Preferred trims recorded: {s['recorded']}" + lib)
             return
     except Exception as e:
         send_message(chat_id, f"❌ Couldn't parse '{name}': {e}")
@@ -1936,6 +1950,7 @@ _BOT_COMMANDS = [
     ("projects", "Recent projects: who ran them, delivered, learned"),
     ("rate", "Get your link to review the bot's clip picks"),
     ("rules", "House rules learned from reviewers (/rules refresh)"),
+    ("library", "Segment library: verified clips by subject"),
     ("raters", "Reviewer activity and agreement"),
     ("extras", "Next voice file → extra clips only (brand/model/part B-roll)"),
     ("images", "Next voice file → related still images into the library (Google)"),
@@ -2377,6 +2392,7 @@ _HELP = (
     "suggest better clips (reviewers in TELEGRAM_RATERS can use this too)\n"
     "/rules — house rules learned from reviewers' notes (/rules refresh to rewrite)\n"
     "/raters — who's reviewing, and how often they agree with each other and the editor\n"
+    "/library — the segment library: verified clips from past edits, by subject\n"
     "📥 Send the Premiere XML of a finished edit and pick its project — I'll learn "
     "which clips and images were used on their shot, moved to another shot, or "
     "dropped, plus the cut points you used."
@@ -2500,6 +2516,31 @@ def is_projects_command(text: str) -> bool:
 
 def is_rate_command(text: str) -> bool:
     return _command(text) in ("/rate", "/review")
+
+
+def is_library_command(text: str) -> bool:
+    return _command(text) in ("/library", "/segments")
+
+
+def format_library(st: dict) -> str:
+    t, s = st.get("by_trust") or {}, st.get("by_status") or {}
+    ready = sum(t.values())
+    if not ready and not s:
+        return ("📚 The segment library is empty. It fills from the cuts editors use: send "
+                "the Premiere XML of a finished edit and pick its project.")
+    lines = [f"📚 Segment library — {ready} clip(s) ready, "
+             f"{round((st.get('seconds') or 0) / 60, 1)} min of footage",
+             f"• verified by reviewers: {t.get('verified', 0)}",
+             f"• used by editors, not yet reviewed: {t.get('used', 0)}",
+             f"• suggested by reviewers: {t.get('suggested', 0)}",
+             f"• marked not usable: {t.get('avoid', 0)}"]
+    if s.get("pending"):
+        lines.append(f"• waiting to be trimmed/described: {s['pending']}")
+    if s.get("failed"):
+        lines.append(f"• couldn't fetch the source: {s['failed']}")
+    if st.get("subjects"):
+        lines.append("Most covered: " + ", ".join(f"{n} ({c})" for n, c in st["subjects"]))
+    return "\n".join(lines)
 
 
 def is_rules_command(text: str) -> bool:
@@ -2643,6 +2684,14 @@ def main() -> None:
     except Exception as e:
         print(f"[bot] review backfill failed: {e}")
 
+    # Segment library worker: trims, describes and embeds new library segments
+    # in the background, pausing while a bot job is running.
+    try:
+        from core import segment_library
+        segment_library.start_worker(is_busy=lambda: bool(_BUSY.get("active")))
+    except Exception as e:
+        print(f"[bot] segment library worker failed to start: {e}")
+
     allowed = allowed_user_ids()
     if not allowed:
         print("WARNING: TELEGRAM_ALLOWED_USERS is empty — every message will be ignored "
@@ -2730,6 +2779,14 @@ def main() -> None:
                     threading.Thread(target=refresh_rules, args=(chat_id,), daemon=True).start()
                 else:
                     send_message(chat_id, format_rules(ratings.get_house_rules()))
+                continue
+
+            if is_library_command(text):
+                try:
+                    from core import segment_library
+                    send_message(chat_id, format_library(segment_library.stats()))
+                except Exception as e:
+                    send_message(chat_id, f"❌ Couldn't read the library: {e}")
                 continue
 
             if is_raters_command(text):

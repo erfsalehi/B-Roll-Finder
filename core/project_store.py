@@ -131,6 +131,7 @@ def init_db() -> None:
         for table, col in (("project_assets", "channel TEXT DEFAULT ''"),
                            ("project_assets", "in_rule TEXT DEFAULT ''"),
                            ("projects", "snapshot TEXT"),
+                           ("project_assets", "segment_id INTEGER"),
                            ("project_shots", "embedding BLOB")):
             try:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -356,13 +357,13 @@ def record_delivery(project_id: int, shots: list, xml_path: str = None,
                 c.execute(
                     """INSERT INTO project_assets
                        (project_id, slot_id, kind, position, filename, url, source, title,
-                        matched_query, page_url, channel, in_rule, exported_start_sec,
-                        exported_end_sec, exported_in_sec, exported_out_sec)
-                       VALUES (?, ?, 'clip', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        matched_query, page_url, channel, in_rule, segment_id,
+                        exported_start_sec, exported_end_sec, exported_in_sec, exported_out_sec)
+                       VALUES (?, ?, 'clip', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (project_id, slot, pos, fname, res.get("url") or "",
                      res.get("source") or "", res.get("title") or "",
                      res.get("matched_query") or "", asset_key(res), creator_of(res),
-                     res.get("in_rule") or "",
+                     res.get("in_rule") or "", res.get("library_segment_id"),
                      ts, te, it.get("in_seconds"), it.get("out_seconds")))
                 asset_names.add(fname.lower())
                 n_clips += 1

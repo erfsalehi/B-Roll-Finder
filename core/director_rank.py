@@ -710,4 +710,9 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
             edit_feedback.demote_rejected(rankable, history)
         except Exception as e:
             print(f"[rank] couldn't apply edit history: {e}")
+    try:
+        from core import segment_library
+        segment_library.promote_strong(rankable)
+    except Exception as e:
+        print(f"[rank] couldn't promote library clips: {e}")
     return shots

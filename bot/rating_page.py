@@ -18,10 +18,15 @@ Routes:
     GET  /rate/api/labels/next    next shot of editor-XML labels to check
     POST /rate/api/labels/submit  {reviews: [{asset_id, action, verdict, used_slot_id, note}]}
     GET  /rate/api/impact         the reviewer's contribution log
+    GET  /rate/api/library/next   next segment-library clip to describe (?skip=id,id)
+    POST /rate/api/library/submit {segment_id, usable, fits_line, description, subject,
+                                   identifiable, generic_use, shot_type, problems, note}
+    GET  /rate/media/segment/<id>.mp4   the stored segment (auth in the query)
 """
 
 import json
 import os
+import re
 import urllib.parse
 
 from bot import fileserver
@@ -76,6 +81,51 @@ def _send(handler, code: int, body, ctype: str = "application/json") -> None:
         handler.wfile.write(data)
 
 
+def _send_file(handler, path: str, ctype: str) -> None:
+    """Serve a file with Range support (video seeking needs it)."""
+    size = os.path.getsize(path)
+    start, end, partial = 0, size - 1, False
+    rng = handler.headers.get("Range") or ""
+    if rng.startswith("bytes="):
+        try:
+            a, _, b = rng[6:].split(",")[0].partition("-")
+            if a:
+                start, end = int(a), (int(b) if b else size - 1)
+            else:
+                start = max(0, size - int(b))
+            end = min(end, size - 1)
+            partial = start <= end
+        except ValueError:
+            start, end = 0, size - 1
+    if start > end:
+        handler.send_response(416)
+        handler.send_header("Content-Range", f"bytes */{size}")
+        handler.end_headers()
+        return
+    handler.send_response(206 if partial else 200)
+    handler.send_header("Content-Type", ctype)
+    handler.send_header("Accept-Ranges", "bytes")
+    handler.send_header("Content-Length", str(end - start + 1))
+    handler.send_header("Cache-Control", "private, max-age=3600")
+    if partial:
+        handler.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+    handler.end_headers()
+    if handler.command == "HEAD":
+        return
+    with open(path, "rb") as f:
+        f.seek(start)
+        left = end - start + 1
+        while left > 0:
+            chunk = f.read(min(1 << 16, left))
+            if not chunk:
+                break
+            try:
+                handler.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                break
+            left -= len(chunk)
+
+
 def handle(handler) -> bool:
     """Serve a /rate request on ``handler`` (a BaseHTTPRequestHandler). Returns
     False when the path isn't ours."""
@@ -95,13 +145,27 @@ def handle(handler) -> bool:
                                       "Ask the bot for a new one with /rate."})
         return True
 
-    from core import ratings
+    from core import ratings, segment_library
+    m = re.fullmatch(r"/rate/media/segment/(\d+)\.mp4", path)
+    if m and handler.command in ("GET", "HEAD"):
+        seg = segment_library.get_segment(int(m.group(1)))
+        if not seg or not os.path.isfile(seg.get("file_path") or ""):
+            _send(handler, 404, {"error": "not found"})
+        else:
+            _send_file(handler, seg["file_path"], "video/mp4")
+        return True
     try:
+        if path == "/rate/api/library/next" and handler.command == "GET":
+            skip = [int(x) for x in (qs.get("skip") or [""])[0].split(",") if x.isdigit()]
+            _send(handler, 200, segment_library.next_review_task(rid, skip=skip) or {"done": True})
+            return True
+
         if path == "/rate/api/meta" and handler.command == "GET":
             mine = next((s for s in ratings.rater_stats() if s["rater_id"] == rid), None)
             _send(handler, 200, {"reasons": [{"id": i, "label": l} for i, l in ratings.REASONS],
                                  "rated": mine["rated"] if mine else 0,
-                                 "queue": ratings.queue_size()})
+                                 "queue": ratings.queue_size(),
+                                 "library": segment_library.stats()})
             return True
 
         if path in ("/rate/api/next", "/rate/api/labels/next") and handler.command == "GET":
@@ -124,13 +188,23 @@ def handle(handler) -> bool:
             _send(handler, 200, ratings.contribution_summary(rid))
             return True
 
-        if path in ("/rate/api/submit", "/rate/api/labels/submit") and handler.command == "POST":
+        if path in ("/rate/api/submit", "/rate/api/labels/submit",
+                    "/rate/api/library/submit") and handler.command == "POST":
             n = int(handler.headers.get("Content-Length") or 0)
             if n <= 0 or n > _MAX_BODY:
                 _send(handler, 413, {"error": "request too large"})
                 return True
             body = json.loads(handler.rfile.read(n).decode("utf-8"))
             saved = 0
+            if "library" in path:
+                segment_library.save_review(
+                    rid, int(body["segment_id"]), usable=body.get("usable"),
+                    fits_line=body.get("fits_line") or "", description=body.get("description", ""),
+                    subject=body.get("subject", ""), identifiable=body.get("identifiable"),
+                    generic_use=body.get("generic_use", ""), shot_type=body.get("shot_type", ""),
+                    problems=body.get("problems"), note=body.get("note", ""))
+                _send(handler, 200, {"ok": True, "saved": 1})
+                return True
             if "labels" in path:
                 for r in body.get("reviews") or []:
                     ratings.save_label_review(rid, int(r["asset_id"]), r.get("action"),
@@ -197,6 +271,19 @@ header { position: sticky; top: 0; z-index: 5; background: var(--bg);
        color: var(--muted); padding: 10px 10px; white-space: nowrap; }
 .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
 main { max-width: 880px; margin: 0 auto; padding: 16px; }
+.guide { background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+         margin-bottom: 16px; }
+.guide summary { cursor: pointer; padding: 12px 14px; font-weight: 600; }
+.guide .g { padding: 0 14px 12px; }
+.guide ol, .guide ul { margin: 6px 0 10px; padding-left: 20px; }
+.guide li { margin: 4px 0; }
+.ex { font-size: 13px; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+.ex.good { background: color-mix(in srgb, var(--yes) 14%, transparent); }
+.ex.bad { background: color-mix(in srgb, var(--no) 14%, transparent); }
+.hint { font-size: 13px; color: var(--trim); }
+.draft { font-size: 12px; color: var(--muted); }
+.field { display: grid; gap: 4px; }
+.field > span { font-size: 13px; color: var(--muted); }
 .picker { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
 .picker label { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .picker select { flex: 1; min-width: 0; }
@@ -278,6 +365,7 @@ h2 { font-size: 15px; margin: 24px 0 8px; }
   <nav class="tabs" role="tablist">
     <button class="tab" role="tab" data-mode="rate" aria-selected="true">Rate clips</button>
     <button class="tab" role="tab" data-mode="labels" aria-selected="false">Check editor labels</button>
+    <button class="tab" role="tab" data-mode="library" aria-selected="false">Library clips</button>
     <button class="tab" role="tab" data-mode="impact" aria-selected="false">My impact</button>
   </nav>
 </header>
@@ -290,7 +378,7 @@ h2 { font-size: 15px; margin: 24px 0 8px; }
 <script>
 const Q = new URLSearchParams(location.search);
 const AUTH = "r=" + encodeURIComponent(Q.get("r") || "") + "&t=" + encodeURIComponent(Q.get("t") || "");
-const skipped = { rate: [], labels: [] };
+const skipped = { rate: [], labels: [], library: [] };
 let mode = "rate", REASONS = [], task = null, cards = [], suggestions = [], players = {}, ytReady = null;
 let project = "", PROJECTS = [];
 
@@ -422,8 +510,9 @@ function rateCard(item, idx) {
         ...REASONS.map(r => el("button", { type: "button", class: "chip", "aria-pressed": String(st.reasons.has(r.id)),
           on: { click: e => { st.reasons.has(r.id) ? st.reasons.delete(r.id) : st.reasons.add(r.id);
                                e.currentTarget.setAttribute("aria-pressed", String(st.reasons.has(r.id))); } } }, r.label))),
-      el("textarea", { placeholder: "Anything else? Why it works or doesn't…", "aria-label": "Note",
-                       on: { input: e => st.note = e.target.value } }, st.note),
+      (() => { const nh = noteHint(() => st.note);
+        return el("div", { class: "field" }, el("textarea", { placeholder: "What do you see, and why does it fit or not? e.g. “Toyota badge visible — Camry, but the line is about a Civic.”",
+          "aria-label": "Note", on: { input: e => { st.note = e.target.value; nh.upd(); } } }, st.note), nh.h); })(),
       segmentEditor(st, pl.time)));
   st.card = card;
   st.ok = () => !!st.usable;
@@ -518,6 +607,118 @@ async function renderImpact() {
   } catch (e) { main.replaceChildren(el("div", { class: "empty" }, e.message)); }
 }
 
+// ── review guides ───────────────────────────────────────────────────────────
+const GUIDES = {
+  rate: {
+    title: "How to rate well (read once)",
+    body: () => [
+      el("p", {}, "Judge each clip against this exact line — would it look right on screen while these words are spoken?"),
+      el("ol", {},
+        el("li", {}, el("b", {}, "Yes"), " = shows what the line is about. ", el("b", {}, "With a trim"), " = only part of it works — mark that part. ", el("b", {}, "No"), " = wrong for this line."),
+        el("li", {}, "In the note, say ", el("b", {}, "what you see"), " and ", el("b", {}, "why it fits or not"), ", in one sentence. Name the exact thing: brand, model, part."),
+        el("li", {}, "Right action but wrong car/brand? Tick ", el("b", {}, "“Wrong model/brand — OK as general footage”"), ". The clip isn't bad — it's just not for this line."),
+        el("li", {}, "Good parts: start when the subject is clearly on screen; stop before a cut, on-screen text or a face.")),
+      el("div", { class: "ex good" }, "✅ “Toyota badge visible at 0:03 — it's a Camry, the line is about a Civic. Fine as general oil-change footage.”"),
+      el("div", { class: "ex bad" }, "❌ “not relevant” · “good” · “nice clip” — the picker can't learn anything from these.")]
+  },
+  labels: {
+    title: "How to check editor labels",
+    body: () => [
+      el("p", {}, "The bot read the editor's finished timeline. Check each label:"),
+      el("ul", {},
+        el("li", {}, el("b", {}, "Right"), " when it's correct."),
+        el("li", {}, el("b", {}, "Fine, just not needed"), " — a good clip the editor skipped because they had enough. It won't count against the clip."),
+        el("li", {}, el("b", {}, "Not usable"), " — the clip is genuinely bad (wrong subject, logo, low quality)."),
+        el("li", {}, el("b", {}, "Right for another line"), " — pick the line where it actually belongs."))]
+  },
+  library: {
+    title: "How to describe a library clip (important — read this)",
+    body: () => [
+      el("p", {}, "This clip will be reused in future videos. Describe what is ", el("b", {}, "on screen"), " — not what the narration said. A good description is what lets the app put the right clip in the right spot later."),
+      el("ol", {},
+        el("li", {}, el("b", {}, "What's on screen: "), "subject + action + framing, in one or two plain sentences."),
+        el("li", {}, el("b", {}, "Exact subject: "), "the most specific thing you can ", el("i", {}, "see"), " — “Toyota Camry (2018–2022)”, “K&N oil filter”. If the narration names a model you can't see, don't write it."),
+        el("li", {}, el("b", {}, "Can a viewer tell exactly what it is? "), "Yes only if a badge, logo, readable text or unmistakable design shows it. ",
+          el("b", {}, "Yes"), " → used only for that subject. ", el("b", {}, "No"), " → used as general footage."),
+        el("li", {}, el("b", {}, "General use: "), "what it could stand in for in any video — “oil draining from a car engine”, “mechanic working under a car”."),
+        el("li", {}, el("b", {}, "Usable? "), "Say No only if it's unusable ", el("i", {}, "anywhere"), " (watermark, face, shaky, blurry). Being wrong for one line is not a reason.")),
+      el("div", { class: "ex good" }, "✅ Description: “Close-up of a hand unscrewing the oil drain plug under a silver sedan; dark oil pours into a black pan.” · Subject: “Toyota Camry” · Viewer can tell: No (no badge in shot) · General use: “draining engine oil from a car”."),
+      el("div", { class: "ex good" }, "✅ Same action, but the Toyota badge fills the first second → Viewer can tell: Yes · Subject: “Toyota Camry”. It will only be used for Camry lines."),
+      el("div", { class: "ex bad" }, "❌ “oil change clip” · “good footage for the engine part” · copying the narration.")]
+  },
+};
+function guide(key) {
+  const g = GUIDES[key]; if (!g) return null;
+  let open = true;
+  try { open = localStorage.getItem("guide-seen-" + key) !== "1"; } catch (e) {}
+  const d = el("details", { class: "guide", open: open }, el("summary", {}, g.title), el("div", { class: "g" }, ...g.body()));
+  d.addEventListener("toggle", () => { if (!d.open) try { localStorage.setItem("guide-seen-" + key, "1"); } catch (e) {} });
+  return d;
+}
+const VAGUE = new Set(["good","bad","ok","okay","nice","fine","great","relevant","irrelevant","clip","video","footage","shot","yes","no"]);
+function textIssues(t) {
+  const w = (t || "").toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  if (w.length < 6) return "Too short — say what's on screen in a full sentence.";
+  if (w.filter(x => !VAGUE.has(x)).length < 4) return "Too vague — name the subject and what's happening.";
+  return "";
+}
+function noteHint(getText) {
+  const h = el("div", { class: "hint", "aria-live": "polite" });
+  const upd = () => { const t = getText(); h.textContent = t && t.trim().length && textIssues(t) ? "Tip: " + textIssues(t) + " Example: “Toyota badge visible — Camry, not the Civic in this line.”" : ""; };
+  return { h, upd };
+}
+
+// ── Library clips ───────────────────────────────────────────────────────────
+function libraryCard(t) {
+  const d = t.draft || {};
+  const st = { segment_id: t.segment_id, usable: null, fits_line: null, description: d.description || "",
+               subject: d.subject || "", identifiable: d.identifiable === 1 ? "1" : d.identifiable === 0 ? "0" : null,
+               generic_use: d.generic_use || "", shot_type: d.shot_type || null, problems: new Set(d.problems || []), note: "" };
+  const box = el("div", { class: "player" }, el("video", { src: "/rate/media/segment/" + t.segment_id + ".mp4?" + AUTH,
+    controls: true, preload: "metadata", playsinline: true, loop: true }));
+  const descHint = el("div", { class: "hint", "aria-live": "polite" });
+  const checkDesc = () => { descHint.textContent = st.usable === "yes" ? textIssues(st.description) : ""; };
+  const subj = el("input", { type: "text", value: st.subject, placeholder: "e.g. Toyota Camry (2018–2022) — only what you can see", on: { input: e => st.subject = e.target.value } });
+  const gen = el("input", { type: "text", value: st.generic_use, placeholder: "e.g. draining engine oil from a car", on: { input: e => st.generic_use = e.target.value } });
+  const draftNote = t.draft_source === "vision" || t.draft_source === "text"
+    ? el("div", { class: "draft" }, "Pre-filled by AI" + (t.draft_source === "text" ? " from the title only (it couldn't see the clip)" : "") + " — check every field and correct it.") : null;
+  const card = el("section", { class: "clip", "aria-label": "Library clip" }, box,
+    el("div", { class: "body" },
+      el("div", { class: "title" }, t.title || "Untitled", " ", el("small", {}, "· " + (t.source || "?").toUpperCase() + (t.channel ? " · " + t.channel : "") + " · " + fmt(t.src_in) + "–" + fmt(t.src_out) + " of the source"),
+        t.page_url ? el("a", { href: t.page_url, target: "_blank", rel: "noopener" }, "source ↗") : null),
+      t.lines.length ? el("div", { class: "stat" }, "Used for: " + t.lines.map(l => "“" + l + "”").join(" · ")) : null,
+      t.lines.length ? el("div", { class: "row" }, el("span", { class: "label" }, "Right for that line?"),
+        toggleGroup([["yes", "Yes"], ["partly", "Partly"], ["no", "No"]], () => st.fits_line, v => st.fits_line = v, "pick")) : null,
+      el("div", { class: "row" }, el("span", { class: "label" }, "Usable?"),
+        toggleGroup([["yes", "Yes, keep it", "yes"], ["no", "No, unusable anywhere", "no"]], () => st.usable,
+          v => { st.usable = v; card.classList.remove("missing"); checkDesc(); }, "seg")),
+      draftNote,
+      el("label", { class: "field" }, el("span", {}, "What's on screen"),
+        el("textarea", { placeholder: "Subject + action + framing. e.g. Close-up of a hand unscrewing the oil drain plug under a silver sedan; oil pours into a pan.",
+                         on: { input: e => { st.description = e.target.value; checkDesc(); } } }, st.description), descHint),
+      el("label", { class: "field" }, el("span", {}, "Exact subject you can see"), subj),
+      el("div", { class: "row" }, el("span", { class: "label" }, "Can a viewer tell exactly what it is?"),
+        toggleGroup([["1", "Yes — only for this subject"], ["0", "No — general footage"]], () => st.identifiable, v => st.identifiable = v, "pick")),
+      el("label", { class: "field" }, el("span", {}, "Works as general footage for"), gen),
+      el("div", { class: "row" }, el("span", { class: "label" }, "Shot"),
+        toggleGroup((t.shot_types || []).map(x => [x.id, x.label]), () => st.shot_type, v => st.shot_type = v, "pick")),
+      el("div", { class: "row" }, el("span", { class: "label" }, "Problems"),
+        ...(t.problem_list || []).map(x => el("button", { type: "button", class: "chip", "aria-pressed": String(st.problems.has(x.id)),
+          on: { click: e => { st.problems.has(x.id) ? st.problems.delete(x.id) : st.problems.add(x.id); e.currentTarget.setAttribute("aria-pressed", String(st.problems.has(x.id))); } } }, x.label))),
+      el("textarea", { placeholder: "Anything else the next editor should know? (optional)", "aria-label": "Note", on: { input: e => st.note = e.target.value } })));
+  st.card = card;
+  st.ok = () => {
+    if (!st.usable) return false;
+    if (st.usable === "no") return true;
+    return !textIssues(st.description) && st.identifiable !== null
+      && (st.identifiable !== "1" || st.subject.trim()) && (st.identifiable !== "0" || st.generic_use.trim());
+  };
+  st.why = () => !st.usable ? "Say whether it's usable." : textIssues(st.description) || (st.identifiable === null ? "Say whether a viewer can tell exactly what it is."
+    : st.identifiable === "1" && !st.subject.trim() ? "Name the exact subject." : "Say what it works for as general footage.");
+  cards.push(st);
+  return card;
+}
+
 // ── project picker ──────────────────────────────────────────────────────────
 async function loadProjects() {
   try { PROJECTS = (await api("projects")).projects || []; } catch (e) { PROJECTS = []; }
@@ -538,18 +739,30 @@ function picker() {
 function render() {
   const main = document.getElementById("main");
   cards = []; suggestions = []; players = {};
+  setMsg("");
+  if (mode === "library") {
+    if (!task || task.done) {
+      main.replaceChildren(guide("library"), el("div", { class: "empty" }, "No library clips waiting. They appear after an editor sends back a finished XML."));
+      document.getElementById("actions").hidden = true;
+      return;
+    }
+    main.replaceChildren(guide("library"), el("h2", {}, "Describe this clip for the library"), libraryCard(task));
+    document.getElementById("actions").hidden = false;
+    setMsg(""); window.scrollTo(0, 0);
+    return;
+  }
   if (!task || task.done) {
     const msg = project ? "You've finished this project — pick another above."
       : mode === "labels" ? "No editor labels to check right now. They appear after an editor sends back a finished XML."
       : "All caught up — nothing left to review right now. Thank you!";
-    main.replaceChildren(picker(), el("div", { class: "empty" }, msg));
+    main.replaceChildren(guide(mode), picker(), el("div", { class: "empty" }, msg));
     document.getElementById("actions").hidden = true;
     return;
   }
   if (mode === "labels") {
-    main.replaceChildren(picker(), shotHeader(), el("h2", {}, "Is each automatic label right?"), ...task.items.map(labelCard));
+    main.replaceChildren(guide("labels"), picker(), shotHeader(), el("h2", {}, "Is each automatic label right?"), ...task.items.map(labelCard));
   } else {
-    main.replaceChildren(picker(), shotHeader(), el("h2", {}, "Rate each clip for this line"), ...task.items.map(rateCard), suggestBox());
+    main.replaceChildren(guide("rate"), picker(), shotHeader(), el("h2", {}, "Rate each clip for this line"), ...task.items.map(rateCard), suggestBox());
   }
   document.getElementById("actions").hidden = false;
   setMsg("");
@@ -559,11 +772,14 @@ function render() {
 async function refreshStat() {
   const meta = await api("meta"); REASONS = meta.reasons;
   const q = meta.queue;
-  document.getElementById("stat").textContent = q.rated + "/" + q.items + " clips reviewed · " + q.labels_checked + "/" + q.labels + " editor labels checked";
+  const lib = meta.library && meta.library.by_trust || {};
+  document.getElementById("stat").textContent = q.rated + "/" + q.items + " clips reviewed · " + q.labels_checked + "/" + q.labels + " editor labels checked · "
+    + (lib.verified || 0) + " library clips verified";
 }
 async function next() {
   try {
-    const path = (mode === "labels" ? "labels/next" : "next") + "?skip=" + encodeURIComponent(skipped[mode].join(","))
+    const path = mode === "library" ? "library/next?skip=" + encodeURIComponent(skipped.library.join(","))
+      : (mode === "labels" ? "labels/next" : "next") + "?skip=" + encodeURIComponent(skipped[mode].join(","))
       + (project ? "&project=" + encodeURIComponent(project) : "");
     task = await api(path);
     render();
@@ -577,18 +793,23 @@ function setMode(m) {
 }
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => setMode(t.dataset.mode)));
 document.getElementById("skip").addEventListener("click", () => {
-  if (task && !task.done) skipped[mode].push(task.project_id + ":" + task.slot_id); next();
+  if (task && !task.done) skipped[mode].push(mode === "library" ? String(task.segment_id) : task.project_id + ":" + task.slot_id); next();
 });
 document.getElementById("save").addEventListener("click", async () => {
   const missing = cards.filter(c => !c.ok());
   missing.forEach(c => c.card.classList.add("missing"));
   if (missing.length) {
-    setMsg(mode === "labels" ? "Mark every label Right or Wrong (and say what's right)." : "Mark every clip Yes / With a trim / No first.", true);
+    setMsg(mode === "library" ? missing[0].why() : mode === "labels" ? "Mark every label Right or Wrong (and say what's right)." : "Mark every clip Yes / With a trim / No first.", true);
     missing[0].card.scrollIntoView({ behavior: "smooth", block: "center" }); return;
   }
   const btn = document.getElementById("save"); btn.disabled = true; setMsg("Saving…");
   try {
-    if (mode === "labels") {
+    if (mode === "library") {
+      const c = cards[0];
+      await api("library/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        segment_id: c.segment_id, usable: c.usable, fits_line: c.fits_line, description: c.description, subject: c.subject,
+        identifiable: c.identifiable, generic_use: c.generic_use, shot_type: c.shot_type, problems: [...c.problems], note: c.note }) });
+    } else if (mode === "labels") {
       await api("labels/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         reviews: cards.map(c => ({ asset_id: c.asset_id, action: c.action, verdict: c.verdict, used_slot_id: c.used_slot_id, note: c.note })) }) });
     } else {
