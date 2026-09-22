@@ -416,6 +416,22 @@ def _serper_check():
     return True, f"ok — {len(imgs)} image(s), e.g. {imgs[0]['width']}×{imgs[0]['height']}"
 
 
+def _library_vision_check(tmp_dir):
+    """One real frame through each vision drafter the segment library uses
+    (Gemini first, OpenRouter as backup). Passes when at least one works."""
+    from core import segment_library
+    frame = os.path.join(tmp_dir, "vision_test.jpg")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc2=duration=1:size=640x360:rate=1", "-frames:v", "1", frame],
+                   check=True, timeout=30)
+    res = segment_library.check_vision(frame)
+    if all(ok is None for _n, ok, _d in res):
+        return None, "no GEMINI_API_KEY or OPENROUTER_API_KEY — library clips get text-only drafts"
+    parts = [f"{n}: {'ok' if ok else 'not set' if ok is None else 'FAILED'} ({d})"
+             for n, ok, d in res]
+    return any(ok for _n, ok, _d in res), " · ".join(parts)
+
+
 def run_self_test(do_downloads: bool = True, quality: str = "360",
                   progress=None) -> dict:
     """Run the preflight checks and return a structured report (see module
@@ -449,6 +465,8 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
         # key there silently costs them the stage they asked for.
         _run("Gemini (visual verify)", _gemini_check,
              critical=_visual_verify_requested())
+        _run("Library vision (Gemini → OpenRouter)", lambda: _library_vision_check(tmp_dir),
+             critical=False)
         _run("Transcription (Whisper)", _transcription_check, critical=True)
         _run("Google images (Serper)", _serper_check, critical=False)
         _run("Pexels search", lambda: _pexels_search_check(state),

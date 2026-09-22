@@ -412,6 +412,87 @@ def _draft_vision(frames: list, lines: list, topic: str) -> dict:
     raise last or RuntimeError("Gemini request failed")
 
 
+VISION_FALLBACK_MODEL = "z-ai/glm-5.3-flash"
+
+
+def vision_fallback_model() -> str:
+    return os.getenv("SEGMENT_VISION_MODEL", "").strip() or VISION_FALLBACK_MODEL
+
+
+def _openrouter_keys() -> list:
+    return [k for k in (os.getenv("OPENROUTER_API_KEY", "").strip(),
+                        os.getenv("OPENROUTER_API_KEY_2", "").strip()) if k]
+
+
+def _draft_openrouter(frames: list, lines: list, topic: str) -> dict:
+    """Backup vision drafter: the same prompt and frames through OpenRouter
+    (default z-ai/glm-5.3-flash, ~$0.0003 a clip). Retries OpenRouter's
+    transient 429 'couldn't verify credits in time'."""
+    import requests
+    from core.keywords import _loads_llm_json
+    keys = _openrouter_keys()
+    if not keys:
+        raise ValueError("no OpenRouter key")
+    content = [{"type": "text", "text": _DRAFT_PROMPT}]
+    for fp in frames:
+        with open(fp, "rb") as f:
+            content.append({"type": "image_url", "image_url": {
+                "url": "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()}})
+    content.append({"type": "text", "text": f"Video topic: {topic or 'unknown'}\nUsed for these lines:\n"
+                                            + "\n".join(f"- {l}" for l in lines[:3])})
+    body = {"model": vision_fallback_model(), "temperature": 0.2,
+            "messages": [{"role": "user", "content": content}],
+            "response_format": {"type": "json_object"}}
+    last = None
+    for key in keys:
+        for attempt in range(3):
+            try:
+                r = requests.post("https://openrouter.ai/api/v1/chat/completions", json=body,
+                                  headers={"Authorization": f"Bearer {key}"}, timeout=(10, 120))
+                if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                    time.sleep(min(30, float(r.headers.get("Retry-After") or 10)))
+                    continue
+                r.raise_for_status()
+                j = r.json()
+                try:
+                    from core.keywords import _record_api_usage
+                    _record_api_usage("openrouter", body["model"], j.get("usage"))
+                except Exception:
+                    pass
+                return _loads_llm_json(j["choices"][0]["message"]["content"])
+            except Exception as e:
+                last = e
+                break
+    raise last or RuntimeError("OpenRouter request failed")
+
+
+# Vision drafters in order of preference: Gemini, then OpenRouter.
+_VISION_DRAFTERS = (("gemini", lambda *a: _draft_vision(*a)),
+                    ("openrouter", lambda *a: _draft_openrouter(*a)))
+
+
+def check_vision(frame_path: str) -> list:
+    """Send one real frame through every configured vision drafter.
+    ``[(provider, ok|None, detail)]`` — None when that provider has no key."""
+    from core import visual_verify as vv
+    configured = {"gemini": bool(vv.api_keys()), "openrouter": bool(_openrouter_keys())}
+    out = []
+    for name, fn in _VISION_DRAFTERS:
+        if not configured[name]:
+            out.append((name, None, "no key"))
+            continue
+        t0 = time.time()
+        try:
+            d = _clean_draft(fn([frame_path], ["test line"], "test"))
+            ok = bool(d["description"])
+            model = vv.model() if name == "gemini" else vision_fallback_model()
+            out.append((name, ok, f"{model}, {time.time() - t0:.0f}s"
+                                  + ("" if ok else " — empty description")))
+        except Exception as e:
+            out.append((name, False, f"{type(e).__name__}: {str(e)[:150]}"))
+    return out
+
+
 def _draft_text(seg: dict, lines: list, topic: str) -> dict:
     """No vision key: a cautious draft from the title and lines alone."""
     from groq import Groq
@@ -461,13 +542,18 @@ def process_one(seg: dict) -> None:
                            (seg["origin_project"],)).fetchone() or {"topic": ""})["topic"]
     fields = {}
     if not seg["description"]:
-        for draft, source in ((_draft_vision, "vision"), (_draft_text, "text")):
+        # Gemini, then OpenRouter (both look at the frames), then a text-only
+        # guess from the title as the last resort.
+        attempts = [(name, "vision", fn, (frames, lines, topic)) for name, fn in _VISION_DRAFTERS]
+        attempts.append(("text", "text", _draft_text, (seg, lines, topic)))
+        for name, source, draft, args in attempts:
             try:
-                args = (frames, lines, topic) if source == "vision" else (seg, lines, topic)
                 fields = dict(_clean_draft(draft(*args)), draft_source=source)
-                break
+                if fields["description"]:
+                    break
             except Exception as e:
-                print(f"[segments] {source} draft failed for #{seg['id']}: {e}")
+                print(f"[segments] {name} draft failed for #{seg['id']}: {e}")
+            fields = {}
     merged = dict(seg, **fields)
     emb = None
     try:

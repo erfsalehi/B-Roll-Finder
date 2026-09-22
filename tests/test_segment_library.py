@@ -301,3 +301,74 @@ def test_rating_page_script_parses(tmp_path):
     js.write_text(html[html.index("<script>") + 8:html.index("</script>")], encoding="utf-8")
     res = subprocess.run(["node", "--check", str(js)], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
+
+
+# ── vision drafters: Gemini, then OpenRouter ────────────────────────────────
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="needs ffmpeg")
+def test_openrouter_takes_over_when_gemini_fails(monkeypatch, tmp_path):
+    pid = _learned_project(monkeypatch, tmp_path)
+    sl.ingest_from_import(pid)
+
+    def gemini_down(*a):
+        raise RuntimeError("HTTP 403")
+    seen = {}
+
+    def glm(frames, lines, topic):
+        seen["frames"], seen["lines"] = len(frames), lines
+        return {"description": "Hand unscrews an oil drain plug under a car and oil flows",
+                "subject": "", "identifiable": False, "generic_use": "draining engine oil"}
+    monkeypatch.setattr(sl, "_draft_vision", gemini_down)
+    monkeypatch.setattr(sl, "_draft_openrouter", glm)
+    monkeypatch.setattr(sl, "_draft_text", lambda *a: pytest.fail("text fallback used"))
+    sl.process_pending()
+    seg = sl.get_segment(1)
+    assert seg["draft_source"] == "vision" and seg["generic_use"] == "draining engine oil"
+    assert seen == {"frames": 3, "lines": ["drain the old oil from the Camry"]}
+
+
+def test_openrouter_request_shape_and_429_retry(monkeypatch, tmp_path):
+    frame = tmp_path / "f.jpg"
+    frame.write_bytes(b"\xff\xd8jpeg")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k1")
+    monkeypatch.delenv("OPENROUTER_API_KEY_2", raising=False)
+    monkeypatch.setattr(sl.time, "sleep", lambda s: None)
+    calls = []
+
+    class Resp:
+        def __init__(self, code, body=None):
+            self.status_code, self._body, self.headers = code, body, {"Retry-After": "1"}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(self.status_code)
+
+        def json(self):
+            return self._body
+
+    def post(url, json=None, headers=None, timeout=None):
+        calls.append(json)
+        if len(calls) == 1:
+            return Resp(429)
+        return Resp(200, {"choices": [{"message": {"content": '{"description": "d"}'}}]})
+    import requests
+    monkeypatch.setattr(requests, "post", post)
+    out = sl._draft_openrouter([str(frame)], ["line"], "topic")
+    assert out == {"description": "d"} and len(calls) == 2
+    body = calls[1]
+    assert body["model"] == "z-ai/glm-5.3-flash"
+    parts = body["messages"][0]["content"]
+    assert parts[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    monkeypatch.setenv("SEGMENT_VISION_MODEL", "z-ai/glm-5v-turbo")
+    assert sl.vision_fallback_model() == "z-ai/glm-5v-turbo"
+
+
+def test_check_vision_reports_each_provider(monkeypatch, tmp_path):
+    import core.visual_verify as vv
+    monkeypatch.setattr(vv, "api_keys", lambda: ["g"])
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setattr(sl, "_draft_vision", lambda *a: (_ for _ in ()).throw(ValueError("bad key")))
+    monkeypatch.setattr(sl, "_draft_openrouter", lambda *a: {"description": "a test pattern"})
+    res = {n: (ok, d) for n, ok, d in sl.check_vision("x.jpg")}
+    assert res["gemini"][0] is False and "bad key" in res["gemini"][1]
+    assert res["openrouter"][0] is True and "glm-5.3-flash" in res["openrouter"][1]
