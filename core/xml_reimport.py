@@ -119,8 +119,14 @@ def parse_fcpxml(xml_source: str | bytes | os.PathLike) -> list[dict]:
     seq = root.find(".//sequence")
     seq_timebase, seq_ntsc = _read_rate(seq)
 
+    # Only clips on a timeline count. Master clips sitting in bins (our
+    # "Reference images" / "Extras" bins, or the editor's own) aren't used just
+    # because they're in the project.
+    seqs = list(root.iter("sequence"))
+    clipitems = [ci for s in seqs for ci in s.iter("clipitem")] if seqs else list(root.iter("clipitem"))
+
     results: list[dict] = []
-    for ci in root.iter("clipitem"):
+    for ci in clipitems:
         file_el = ci.find("file")
         if file_el is None:
             continue

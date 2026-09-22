@@ -325,6 +325,134 @@ def _safe_for_fs(text: str, max_len: int = 30) -> str:
     cleaned = "-".join(cleaned.split()).lower()
     return cleaned[:max_len].strip("-") or ""
 
+def _media_bins_enabled() -> bool:
+    return os.getenv("FCPXML_MEDIA_BINS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _image_size(path: str, hint: dict = None) -> tuple:
+    try:
+        w, h = int((hint or {}).get("width") or 0), int((hint or {}).get("height") or 0)
+        if w and h:
+            return w, h
+    except (TypeError, ValueError):
+        pass
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return im.size
+    except Exception:
+        return 1920, 1080
+
+
+def _bin_clip_xml(cid: str, name: str, path: str, xml_dir: str, timebase: int,
+                  dur_frames: int, still: bool, width: int, height: int,
+                  description: str = "", note: str = "") -> list:
+    """One master clip for a bin — media in the Project panel, not on the
+    timeline. Deliberately has no <start>/<end> (those belong to timeline
+    clips, and :func:`repair_fcpxml` rewrites them in document order)."""
+    rate = [f'<rate><timebase>{timebase}</timebase><ntsc>TRUE</ntsc></rate>']
+    out = [f'          <clip id="{cid}">',
+           f'            <masterclipid>{cid}</masterclipid>',
+           '            <ismasterclip>TRUE</ismasterclip>',
+           f'            <name>{_xml_attr(name)}</name>',
+           f'            <duration>{dur_frames}</duration>',
+           f'            {rate[0]}',
+           '            <media><video><track>',
+           f'              <clipitem id="{cid}-ci">',
+           f'                <masterclipid>{cid}</masterclipid>',
+           f'                <name>{_xml_attr(name)}</name>',
+           f'                <duration>{dur_frames}</duration>',
+           f'                {rate[0]}',
+           f'                <file id="file-{cid}">',
+           f'                  <name>{_xml_attr(os.path.basename(path))}</name>',
+           f'                  <pathurl>{_xml_attr(_relative_pathurl(path, xml_dir))}</pathurl>',
+           f'                  {rate[0]}',
+           f'                  <duration>{dur_frames}</duration>',
+           '                  <media><video>',
+           f'                    <duration>{dur_frames}</duration>',
+           '                    <samplecharacteristics>',
+           f'                      {rate[0]}',
+           f'                      <width>{width}</width>',
+           f'                      <height>{height}</height>',
+           '                      <anamorphic>FALSE</anamorphic>',
+           '                      <pixelaspectratio>square</pixelaspectratio>',
+           '                      <fielddominance>none</fielddominance>',
+           '                    </samplecharacteristics>',
+           '                  </video></media>',
+           '                </file>',
+           '              </clipitem>',
+           '            </track></video></media>']
+    if description or note:
+        out.append('            <logginginfo>')
+        if description:
+            out.append(f'              <description>{_xml_attr(description[:500])}</description>')
+        if note:
+            out.append(f'              <lognote>{_xml_attr(note[:500])}</lognote>')
+        out.append('            </logginginfo>')
+    out.append('          </clip>')
+    return out
+
+
+def _media_bins_xml(shots: list, xml_dir: str, timebase: int, fps: float) -> list:
+    """``<bin>`` elements for the Premiere Project panel: "Reference images"
+    (one sub-bin per shot, library stills first) and "Extras" (the contextual
+    clips). Names carry the shot number, where it came from and what it shows,
+    so Premiere's search finds them; the narration line goes in Log Note.
+    Only files that are actually on disk are listed. Empty list when off."""
+    if not _media_bins_enabled():
+        return []
+    still_frames = sec_to_frames(10.0, fps)
+    image_bins, extra_clips = [], []
+    for s in shots:
+        slot = s.get("slot_id", "")
+        num = f"{int(slot):02d}" if str(slot).isdigit() else str(slot)
+        line = (s.get("text") or "").strip()
+        if s.get("is_extra"):
+            for k, c in enumerate(s.get("selected_results") or [], 1):
+                p = c.get("local_path")
+                if not p or not os.path.isfile(p) or c.get("_dl_failed"):
+                    continue
+                label = s.get("extra_label") or f"Extra - {c.get('matched_query') or ''}".strip(" -")
+                dur = sec_to_frames(_get_media_duration(p, fallback_duration=10.0), fps)
+                extra_clips.append(_bin_clip_xml(
+                    f"bin-extra-{num}-{k}", f"{label} · {c.get('title') or ''}".strip(" ·"), p,
+                    xml_dir, timebase, max(1, dur), False,
+                    int(c.get("width") or 1920), int(c.get("height") or 1080),
+                    description=c.get("title") or "", note=c.get("matched_query") or ""))
+            continue
+        clips = []
+        for k, img in enumerate(s.get("images") or [], 1):
+            p = img.get("local_path")
+            if not p or not os.path.isfile(p):
+                continue
+            src = "Library" if img.get("library_segment_id") else "Google"
+            what = (img.get("title") or img.get("query") or "").replace("[Library] ", "")
+            w, h = _image_size(p, img)
+            clips.append(_bin_clip_xml(
+                f"bin-img-{num}-{k}", f"{num} · {src} · {what}".strip(" ·")[:150], p, xml_dir,
+                timebase, still_frames, True, w, h,
+                description=what, note=line))
+        if clips:
+            short = line if len(line) <= 60 else line[:57].rstrip() + "…"
+            image_bins.append([f'        <bin>',
+                               f'          <name>{_xml_attr(f"Shot {num} — {short}")}</name>',
+                               '          <children>']
+                              + [ln for c in clips for ln in c]
+                              + ['          </children>', '        </bin>'])
+    out = []
+    if image_bins:
+        out += ['      <bin>', '        <name>Reference images</name>', '        <children>']
+        for b in image_bins:
+            out += ["  " + ln for ln in b]
+        out += ['        </children>', '      </bin>']
+    if extra_clips:
+        out += ['      <bin>', '        <name>Extras</name>', '        <children>']
+        for c in extra_clips:
+            out += c
+        out += ['        </children>', '      </bin>']
+    return out
+
+
 def _fits(in_frame: int, duration_frames: int, media_dur_frames: int) -> bool:
     """Whether starting at ``in_frame`` still leaves room for the timeline slot."""
     return in_frame > 0 and in_frame + duration_frames <= media_dur_frames
@@ -620,7 +748,9 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     """
     # Extra contextual clips are library-only: they're downloaded so they enrich
     # the searchable Clip Library, but they never belong on the narration timeline.
-    # Drop them here so no caller can leak them into the FCPXML.
+    # Drop them here so no caller can leak them into the FCPXML timeline (they
+    # do go into the "Extras" bin — see _media_bins_xml).
+    all_shots = list(shots)
     shots = [s for s in shots if not s.get("is_extra")]
     proj_folder = _safe_for_fs(project_name, 50)
     base_dir = clip_base_dir(project_name)
@@ -1126,6 +1256,11 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     xml.append('          </audio>')
     xml.append('        </media>')
     xml.append('      </sequence>')
+    # Searchable bins next to the sequence: per-shot reference images and the
+    # extra contextual clips — in the Project panel, never on the timeline.
+    # Only in a single-file export / the first part of a chunked one.
+    if time_offset == 0:
+        xml.extend(_media_bins_xml(all_shots, xml_out_dir, timebase, fps_exact))
     xml.append('    </children>')
     xml.append('  </project>')
     xml.append('</xmeml>')
