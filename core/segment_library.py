@@ -64,14 +64,31 @@ _PROBLEM_IDS = {p for p, _ in PROBLEMS}
 # ~0.54-0.61, unrelated footage < 0.2 — the ranker makes the final call.
 _MIN_SCORE = 0.45
 _STRONG_SCORE = 0.62      # verified + this strong → promoted to the top after ranking
-_RECENT_PROJECTS = 3      # don't reuse a segment used in the last N projects
 _MIN_SECONDS = 1.0
+
+# Repeat control, counted in delivered videos (the run in progress and failed
+# runs don't count). Each is env-tunable under the name in brackets.
+_REUSE_GAP = 3                 # [LIBRARY_REUSE_GAP] skip a segment used in the last N videos
+_REUSE_GAP_IDENTIFIABLE = 10   # [LIBRARY_REUSE_GAP_IDENTIFIABLE] same for a recognisable
+                               # subject (that exact car, that shop), which viewers spot sooner
+_USE_WINDOW = 20               # [LIBRARY_USE_WINDOW] uses within the last N videos…
+_USE_PENALTY = 0.03            # [LIBRARY_USE_PENALTY] …each lower the match score by this,
+                               # so a few favourites can't win every video
+_SHARE_WINDOW = 10             # /library reports the library share over the last N videos
+_DELIVERED = ("delivered", "learned")
 
 _WORKER = {"thread": None, "kick": threading.Event(), "lock": threading.Lock()}
 
 
 def enabled() -> bool:
     return os.getenv("SEGMENT_LIBRARY", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _env_num(name: str, default, cast=int):
+    try:
+        return cast(os.getenv(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return default
 
 
 def lib_dir() -> str:
@@ -946,15 +963,37 @@ def subject_matches(seg_subject: str, line_subjects: list, line_text: str = "") 
     return any(need <= pool for pool in pools)
 
 
-def _recent_segment_ids(c, n_projects: int = _RECENT_PROJECTS) -> set:
-    return {r[0] for r in c.execute(
-        """SELECT segment_id FROM segment_uses WHERE project_id IN
-               (SELECT id FROM projects ORDER BY id DESC LIMIT ?)""", (n_projects,))}
+def _identifiable(seg: dict) -> bool:
+    return seg["identifiable"] == 1 and bool(seg["subject"])
+
+
+def _delivered_ids(c, n: int) -> list:
+    """The last ``n`` delivered videos' project ids, newest first."""
+    q = ",".join("?" * len(_DELIVERED))
+    return [r[0] for r in c.execute(
+        f"SELECT id FROM projects WHERE status IN ({q}) ORDER BY id DESC LIMIT ?",
+        (*_DELIVERED, n))]
+
+
+def _use_history(c, n: int) -> dict:
+    """``{segment_id: [videos_ago, …]}`` over the last ``n`` delivered videos
+    (0 = the latest)."""
+    ago = {pid: i for i, pid in enumerate(_delivered_ids(c, n))}
+    if not ago:
+        return {}
+    out = {}
+    q = ",".join("?" * len(ago))
+    for sid, pid in c.execute(
+            f"SELECT segment_id, project_id FROM segment_uses WHERE project_id IN ({q})",
+            list(ago)):
+        out.setdefault(sid, []).append(ago[pid])
+    return out
 
 
 def find_matches(shot: dict, segs: list, embed=None, top_k: int = 3) -> list:
     """``[(score, segment)]`` for one shot, best first. Identifiable segments
-    must match the line's subject; generic ones compete on meaning alone."""
+    must match the line's subject; generic ones compete on meaning alone.
+    Each recent use (``recent_uses``, set by :func:`_usable`) costs score."""
     text = (shot.get("text") or "").strip()
     if not text or not segs:
         return []
@@ -963,19 +1002,20 @@ def find_matches(shot: dict, segs: list, embed=None, top_k: int = 3) -> list:
     q = embed(query)
     subjects = shot.get("line_subjects")
     need = max(_MIN_SECONDS, min(float(shot.get("duration_needed_sec") or 0) / 2, 4.0))
+    use_penalty = _env_num("LIBRARY_USE_PENALTY", _USE_PENALTY, float)
     out = []
     for s in segs:
         if s.get("kind") != "image" and s["src_out"] - s["src_in"] < need:
             continue
-        if s["identifiable"] == 1 and s["subject"] and not subject_matches(
-                s["subject"], subjects or [], text):
+        if _identifiable(s) and not subject_matches(s["subject"], subjects or [], text):
             continue
         v = np.frombuffer(s["embedding"], dtype=np.float32)
         if v.shape != q.shape:
             continue
         score = float(np.dot(q, v)) + _TRUST_BOOST.get(s["trust"], 0.0)
         score += 0.02 * min(s["times_kept"], 5) - 0.03 * min(s["times_dropped"], 5)
-        if s["identifiable"] == 1 and s["subject"]:
+        score -= use_penalty * s.get("recent_uses", 0)
+        if _identifiable(s):
             score += 0.04          # the exact subject beats a stand-in
         if score >= _MIN_SCORE:
             out.append((score, s))
@@ -1003,14 +1043,28 @@ def _candidate(seg: dict, score: float) -> dict:
 
 def _usable(kind: str) -> list:
     """Ready, not-avoided library entries of ``kind`` with a file on disk,
-    minus the ones used in the last few projects."""
+    minus the ones resting after a recent use (``LIBRARY_REUSE_GAP``, longer
+    for identifiable subjects). Each carries ``recent_uses`` for the score
+    penalty in :func:`find_matches`."""
     init_db()
+    gap = _env_num("LIBRARY_REUSE_GAP", _REUSE_GAP)
+    gap_identifiable = _env_num("LIBRARY_REUSE_GAP_IDENTIFIABLE", _REUSE_GAP_IDENTIFIABLE)
+    window = _env_num("LIBRARY_USE_WINDOW", _USE_WINDOW)
     with project_store._conn() as c:
         segs = [_row(r) for r in c.execute(
             """SELECT * FROM segments WHERE file_status='ready' AND trust != 'avoid'
                   AND embedding IS NOT NULL AND COALESCE(kind, 'clip') = ?""", (kind,))]
-        recent = _recent_segment_ids(c)
-    return [s for s in segs if s["id"] not in recent and os.path.isfile(s["file_path"] or "")]
+        history = _use_history(c, max(gap, gap_identifiable, window))
+    out = []
+    for s in segs:
+        if not os.path.isfile(s["file_path"] or ""):
+            continue
+        ago = history.get(s["id"], [])
+        if ago and min(ago) < (gap_identifiable if _identifiable(s) else gap):
+            continue
+        s["recent_uses"] = sum(1 for a in ago if a < window)
+        out.append(s)
+    return out
 
 
 def inject_candidates(shots: list, video_topic: str = "", errors: list = None) -> int:
@@ -1070,9 +1124,10 @@ def add_library_images(shots: list, project_name: str, video_topic: str = "",
     base = os.path.join(os.path.abspath("downloads"), _safe_for_fs(project_name, 50),
                         "images", "shots")
     added = 0
+    taken = set()                      # a still goes to one shot per video
     for s in targets:
         try:
-            hits = find_matches(s, imgs, top_k=per_shot)
+            hits = find_matches(s, [i for i in imgs if i["id"] not in taken], top_k=per_shot)
         except Exception as e:
             if errors is not None:
                 errors.append(f"library images (shot {s.get('slot_id')}): {e}")
@@ -1098,6 +1153,7 @@ def add_library_images(shots: list, project_name: str, video_topic: str = "",
                         "page": seg.get("origin_page") or "", "query": "library",
                         "library_segment_id": seg["id"], "segment_trust": seg["trust"],
                         "library_score": round(score, 3)})
+            taken.add(seg["id"])
         if new:
             s["images"] = new + list(s.get("images") or [])
             added += len(new)
@@ -1165,5 +1221,26 @@ def stats() -> dict:
                 GROUP BY lower(subject) ORDER BY COUNT(*) DESC LIMIT 8""")]
         seconds = c.execute("""SELECT COALESCE(SUM(src_out - src_in), 0) FROM segments
                                 WHERE file_status='ready' AND trust != 'avoid'""").fetchone()[0]
+        reuse = _reuse_stats(c)
     return {"by_trust": by_trust, "by_status": by_status, "by_kind": by_kind,
-            "subjects": subjects, "seconds": seconds}
+            "subjects": subjects, "seconds": seconds, "reuse": reuse}
+
+
+def _reuse_stats(c, n: int = _SHARE_WINDOW) -> dict:
+    """How much of the last ``n`` delivered videos came from the library, and
+    the clip repeated most often across them — the early warning that videos
+    are starting to look alike."""
+    pids = _delivered_ids(c, n)
+    if not pids:
+        return {"videos": 0, "clips": 0, "library_clips": 0, "top": None}
+    q = ",".join("?" * len(pids))
+    clips, lib = c.execute(
+        f"""SELECT COUNT(*), COUNT(segment_id) FROM project_assets
+             WHERE kind='clip' AND project_id IN ({q})""", pids).fetchone()
+    top = c.execute(
+        f"""SELECT s.description, s.subject, s.title, COUNT(*) FROM segment_uses u
+              JOIN segments s ON s.id = u.segment_id
+             WHERE COALESCE(s.kind, 'clip') = 'clip' AND u.project_id IN ({q})
+             GROUP BY u.segment_id ORDER BY 4 DESC, u.segment_id LIMIT 1""", pids).fetchone()
+    return {"videos": len(pids), "clips": clips, "library_clips": lib,
+            "top": ((top[0] or top[1] or top[2] or "a library clip")[:80], top[3]) if top else None}

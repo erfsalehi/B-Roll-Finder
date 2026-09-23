@@ -2586,6 +2586,14 @@ def format_library(st: dict) -> str:
         lines.append(f"• waiting to be trimmed/described: {s['pending']}")
     if s.get("failed"):
         lines.append(f"• couldn't fetch the source: {s['failed']}")
+    reuse = st.get("reuse") or {}
+    if reuse.get("videos"):
+        clips, lib = reuse.get("clips") or 0, reuse.get("library_clips") or 0
+        lines.append(f"Last {reuse['videos']} video(s): {lib} of {clips} clip(s) came from the "
+                     f"library ({round(100 * lib / clips) if clips else 0}%)")
+        top = reuse.get("top")
+        if top and top[1] > 1:
+            lines.append(f"Most repeated: \"{top[0]}\" — in {top[1]} of them")
     if st.get("subjects"):
         lines.append("Most covered: " + ", ".join(f"{n} ({c})" for n, c in st["subjects"]))
     return "\n".join(lines)

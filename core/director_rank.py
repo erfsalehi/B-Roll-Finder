@@ -447,6 +447,10 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
       shots (manual picks included) is skipped in favour of the next alternative,
       so the same visual never appears back-to-back. If no fresh alternative
       exists the duplicate is allowed (a slot is never left empty).
+    * **Library cap** — at most ``AUTO_SELECT_MAX_LIBRARY`` (1) segment-library
+      clip per shot, so the shot's other slots go to fresh search results (which
+      is also how new footage reaches editors and, through them, the library);
+      a library segment is used once per video.
 
     Defaults come from AUTO_SELECT_SECONDS_PER_CLIP (5), AUTO_SELECT_MIN_CLIPS
     (2), AUTO_SELECT_MAX_CLIPS (8), AUTO_SELECT_LOOKBACK (3), AUTO_SELECT_MIN_PEXELS
@@ -463,6 +467,7 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
     lookback = max(0, lookback)
     min_clips = max(1, min_clips)
     max_clips = max(min_clips, max_clips)
+    max_library = max(0, _env_int("AUTO_SELECT_MAX_LIBRARY", 1))
 
     # Source-quota selection: per-shot Pexels + YouTube targets from
     # shot_source_quota (1 Pexels + 1 YouTube for short shots; 2 Pexels +
@@ -475,6 +480,7 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
     # look-back spans whole shots (not individual clips) even when shots bind many.
     recent_shots = deque(maxlen=lookback)
     used_pexels: set = set()   # cross-shot Pexels de-dup (never re-download a clip)
+    used_segments: set = set() # library segments already in this video
 
     def _recent_ids() -> set:
         out = set()
@@ -486,13 +492,15 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         if shot.get("priority") == "none" or shot.get("skipped"):
             continue
         # Respect any pick the editor (or a previous run) made — but feed it into
-        # the variety window (and the Pexels de-dup set) so later picks don't repeat it.
+        # the variety window (and the de-dup sets) so later picks don't repeat it.
         existing = shot.get("selected_results")
         if existing:
             recent_shots.append({_asset_ident(c) for c in existing})
             for c in existing:
                 if _is_pexels(c):
                     used_pexels.add(_pexels_ident(c))
+                if c.get("library_segment_id"):
+                    used_segments.add(c["library_segment_id"])
             continue
         if start_slot_id is not None and shot.get("slot_id", 0) < start_slot_id:
             continue
@@ -512,12 +520,18 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         recent = _recent_ids()
         chosen, chosen_ids = [], set()
 
+        def _library_ok(c) -> bool:
+            """Not a second library clip for this shot, nor one already in the video."""
+            sid = c.get("library_segment_id")
+            return not sid or (sid not in used_segments and sum(
+                1 for x in chosen if x.get("library_segment_id")) < max_library)
+
         def _take(pred, n, dedup_pexels=False):
             for c in pool:
                 if len([x for x in chosen if pred(x)]) >= n:
                     break
                 ident = _asset_ident(c)
-                if ident in chosen_ids or ident in recent or not pred(c):
+                if ident in chosen_ids or ident in recent or not pred(c) or not _library_ok(c):
                     continue
                 if dedup_pexels and _pexels_ident(c) in used_pexels:
                     continue
@@ -536,8 +550,8 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         # force the best-ranked unused YouTube candidate in (ignoring the
         # cross-shot window — a guaranteed YouTube clip beats perfect variety).
         if want_youtube > 0 and not any(_is_youtube(c) for c in chosen):
-            yt = next((c for c in pool
-                       if _is_youtube(c) and _asset_ident(c) not in chosen_ids), None)
+            yt = next((c for c in pool if _is_youtube(c) and _library_ok(c)
+                       and _asset_ident(c) not in chosen_ids), None)
             if yt:
                 chosen.insert(0, yt)
                 chosen_ids.add(_asset_ident(yt))
@@ -550,19 +564,22 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
                 if len(chosen) >= floor:
                     break
                 ident = _asset_ident(c)
-                if ident in chosen_ids or ident in recent:
+                if ident in chosen_ids or ident in recent or not _library_ok(c):
                     continue
                 chosen.append(c)
                 chosen_ids.add(ident)
         if not chosen:  # graceful: never leave the slot empty
-            chosen = [pool[0]]
-            chosen_ids = {_asset_ident(pool[0])}
-            if _is_pexels(pool[0]):
-                used_pexels.add(_pexels_ident(pool[0]))
+            first = next((c for c in pool if _library_ok(c)), pool[0])
+            chosen = [first]
+            chosen_ids = {_asset_ident(first)}
+            if _is_pexels(first):
+                used_pexels.add(_pexels_ident(first))
 
         shot["selected_results"] = chosen
         shot["auto_selected"] = True
         recent_shots.append(chosen_ids)
+        used_segments.update(c["library_segment_id"] for c in chosen
+                             if c.get("library_segment_id"))
     return shots
 
 

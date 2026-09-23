@@ -352,6 +352,9 @@ The most useful settings (all in `.env.example` with comments):
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` / `ENABLE_DETAILED_QUERIES` | off | Query modes |
 | `AUTO_SELECT_SHORT_SEC` / `AUTO_SELECT_YT_SECONDS` / `AUTO_SELECT_MIN_PEXELS` | `4` / `5` / `2` | Selection quota |
 | `AUTO_SELECT_LOOKBACK` | `3` | Variety guard window |
+| `AUTO_SELECT_MAX_LIBRARY` | `1` | Segment-library clips per shot (the rest are fresh search results) |
+| `LIBRARY_REUSE_GAP` / `LIBRARY_REUSE_GAP_IDENTIFIABLE` | `3` / `10` | Delivered videos a library segment rests after use (longer for a recognisable subject) |
+| `LIBRARY_USE_WINDOW` / `LIBRARY_USE_PENALTY` | `20` / `0.03` | Each use in the last N videos lowers a segment's match score |
 | `DIRECTOR_BLOCK_SIZE` | `20` | Segments per shot-list call (raise it for long scripts) |
 | `RANK_BATCH_SIZE` / `RANK_MAX_WORKERS` | `6` / `3` | Ranking throughput |
 | `CLIP_LIBRARY_DB` | `.cache/clip_library.db` | Library location |

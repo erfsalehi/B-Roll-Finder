@@ -211,12 +211,91 @@ def test_segment_replaces_untrimmed_copy_and_recent_ones_rest(tmp_path):
     assert [c.get("library_segment_id") for c in shot["video_results"]] == [sid, None]
     assert shot["video_results"][1]["url"] == "https://yt/other"
 
-    pid = ps.create_project("Just used it")
+    pid = _delivered("Just used it")
     assert sl.mark_used(pid, [{"selected_results": [shot["video_results"][0]]}]) == 1
     fresh = {"slot_id": 1, "text": "oil drains from the engine", "line_subjects": [],
              "video_results": []}
-    assert sl.inject_candidates([fresh]) == 0          # used in a recent project
+    assert sl.inject_candidates([fresh]) == 0          # used in a recent video
     assert sl.get_segment(sid)["times_used"] == 1
+
+
+def _delivered(title="P"):
+    pid = ps.create_project(title)
+    ps.set_status(pid, "delivered")
+    return pid
+
+
+def test_used_segments_rest_longer_when_identifiable(tmp_path):
+    generic = _ready("https://yt/g", "", 0, "draining engine oil",
+                     "oil drains from the engine into a pan", tmp_path)
+    camry = _ready("https://yt/c", "Toyota Camry", 1, "draining engine oil",
+                   "Toyota Camry badge then oil drains from the engine", tmp_path)
+    sl.mark_used(_delivered(), [{"selected_results": [{"library_segment_id": generic},
+                                                      {"library_segment_id": camry}]}])
+    ps.create_project("running now")               # runs that didn't deliver don't count
+    ps.set_status(ps.create_project("broke"), "failed")
+
+    def usable():
+        return {s["id"] for s in sl._usable("clip")}
+    assert usable() == set()
+    for _ in range(3):
+        _delivered()
+    assert usable() == {generic}                   # generic rests 3 videos…
+    for _ in range(7):
+        _delivered()
+    assert usable() == {generic, camry}            # …a recognisable subject 10
+
+
+def test_each_recent_use_costs_score(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl, "_MIN_SCORE", -1.0)
+    worn = _ready("https://yt/a", "", 0, "draining engine oil",
+                  "oil drains from the engine into a pan", tmp_path)
+    unused = _ready("https://yt/b", "", 0, "draining engine oil",
+                    "oil drains from the engine into a pan", tmp_path)
+    for _ in range(2):
+        sl.mark_used(_delivered(), [{"selected_results": [{"library_segment_id": worn}]}])
+    for _ in range(3):
+        _delivered()
+    segs = sl._usable("clip")
+    assert {s["id"]: s["recent_uses"] for s in segs} == {worn: 2, unused: 0}
+    scores = {s["id"]: score for score, s in sl.find_matches(
+        {"text": "oil drains from the engine", "line_subjects": []}, segs)}
+    assert scores[unused] - scores[worn] == pytest.approx(0.06)
+
+
+def test_one_library_clip_per_shot_and_once_per_video():
+    from core.director_rank import auto_select_top_candidates
+
+    def lib(sid):
+        return {"url": f"https://yt/lib{sid}", "source": "youtube", "library_segment_id": sid}
+
+    def fresh(src, n):
+        return {"url": f"https://{src}/{n}", "page_url": f"https://{src}/{n}", "source": src}
+
+    shots = [{"slot_id": i, "duration_needed_sec": 8,           # 2 YouTube + 2 Pexels slots
+              "video_results": [lib(1), lib(2), fresh("youtube", i * 10 + 1),
+                                fresh("youtube", i * 10 + 2), fresh("pexels", i * 10 + 1),
+                                fresh("pexels", i * 10 + 2)]} for i in (1, 2)]
+    shots.append({"slot_id": 3, "duration_needed_sec": 8,
+                  "video_results": [lib(1), lib(2), fresh("pexels", 31), fresh("pexels", 32)]})
+    auto_select_top_candidates(shots, lookback=0)
+    picks = [[c.get("library_segment_id") or c["url"] for c in s["selected_results"]]
+             for s in shots]
+    assert picks[0] == [1, "https://youtube/11", "https://pexels/11", "https://pexels/12"]
+    assert picks[1] == [2, "https://youtube/21", "https://pexels/21", "https://pexels/22"]
+    assert picks[2] == ["https://pexels/31", "https://pexels/32"]   # both already used
+
+
+def test_library_still_goes_to_one_shot_per_video(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    sid = _ready("https://img/a.jpg", "", 0, "oil filter diagram",
+                 "diagram of an oil filter cut in half", tmp_path)
+    with ps._conn() as c:
+        c.execute("UPDATE segments SET kind='image' WHERE id=?", (sid,))
+    shots = [{"slot_id": i, "text": "diagram of an oil filter cut in half",
+              "line_subjects": [], "images": []} for i in (1, 2)]
+    assert sl.add_library_images(shots, "P") == 1
+    assert [len(s["images"]) for s in shots] == [1, 0]
 
 
 def test_short_segments_skipped_for_long_slots(tmp_path):
@@ -291,6 +370,23 @@ def test_library_stats_message(tmp_path):
     _ready("https://yt/a", "Toyota Camry", 1, "", "x", tmp_path)
     msg = tb.format_library(sl.stats())
     assert "verified by reviewers: 1" in msg and "Toyota Camry (1)" in msg
+    assert "Last " not in msg                        # no delivered videos yet
+
+
+def test_library_stats_report_share_and_repeats(monkeypatch, tmp_path):
+    monkeypatch.setattr(ps, "_exported_placements", lambda path: ({}, set()))
+    sid = _ready("https://yt/a", "", 0, "oil", "oil drains from the engine into a pan", tmp_path)
+    for n in range(2):
+        pid = ps.create_project(f"P{n}")
+        shots = [{"slot_id": 1, "selected_results": [
+            {"url": "https://yt/a", "page_url": "https://yt/a", "source": "youtube",
+             "local_path": f"/d/{n}-1-1.mp4", "library_segment_id": sid},
+            {"url": f"https://yt/f{n}", "source": "youtube", "local_path": f"/d/{n}-1-2.mp4"}]}]
+        ps.record_delivery(pid, shots)
+        sl.mark_used(pid, shots)
+    msg = tb.format_library(sl.stats())
+    assert "Last 2 video(s): 2 of 4 clip(s) came from the library (50%)" in msg
+    assert 'Most repeated: "oil drains from the engine into a pan" — in 2 of them' in msg
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
