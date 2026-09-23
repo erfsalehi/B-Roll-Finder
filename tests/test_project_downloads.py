@@ -26,6 +26,7 @@ def sent(monkeypatch):
     monkeypatch.setattr(tb, "send_message",
                         lambda chat, text, reply_markup=None: out.append((text, reply_markup)) or {})
     monkeypatch.setattr(tb, "edit_message", lambda *a, **k: None)
+    monkeypatch.setattr(tb.fileserver, "list_zips", lambda root=None: [])
     tb._PENDING.clear()
     tb._BUSY.update(active=False)
     yield out
@@ -86,7 +87,7 @@ def test_download_lookup_single_multiple_none(sent, monkeypatch):
     started = []
     monkeypatch.setattr(tb, "_start_project_download", lambda chat, pid: started.append(pid))
     tb.handle_download_lookup(1, "nothing")
-    assert "No saved project matches" in sent[-1][0]
+    assert "No saved project or zip matches" in sent[-1][0]
 
     a = ps.create_project("Camry oil change")
     ps.create_project("Camry brakes")
@@ -96,6 +97,57 @@ def test_download_lookup_single_multiple_none(sent, monkeypatch):
     kb = sent[-1][1]["inline_keyboard"]
     assert len(kb) == 3 and kb[0][0]["callback_data"].startswith("dl:")
     assert kb[-1][0]["callback_data"] == "dl:cancel"
+
+
+def _zip(rel, size=2048, mtime=1_700_000_000):
+    return {"name": rel.rsplit("/", 1)[-1], "path": f"/srv/downloads/{rel}", "rel": rel,
+            "size": size, "mtime": mtime}
+
+
+def test_download_lists_server_zips_and_dedups_projects(sent, monkeypatch):
+    ps.create_project("Camry oil change", "Camry oil change")   # zip on disk
+    ps.create_project("Camry brakes", "Camry brakes")           # no zip → rebuild row
+    monkeypatch.setattr(tb.fileserver, "list_zips", lambda root=None: [
+        _zip("camry-oil-change.zip"), _zip("overlay_camry.zip"), _zip("BYD Seal.zip")])
+    tb.handle_download_lookup(1, "camry")
+    rows = [r[0]["callback_data"] for r in sent[-1][1]["inline_keyboard"]]
+    assert [r.split(":")[0] for r in rows] == ["dlz", "dlz", "dl", "dl"]
+    assert rows[-1] == "dl:cancel"
+
+
+def test_download_single_zip_match_sends_it_even_when_busy(sent, monkeypatch):
+    z = _zip("overlay_seal.zip")
+    monkeypatch.setattr(tb.fileserver, "list_zips", lambda root=None: [z])
+    got = []
+    monkeypatch.setattr(tb, "_send_server_zip", lambda chat, f: got.append((chat, f)))
+    tb._BUSY.update(active=True, project="other job")
+    tb.handle_download_lookup(5, "seal")
+    assert got == [(5, z)]
+
+
+def test_download_zip_callback_resolves_key(sent, monkeypatch):
+    z = _zip("nested/Camry.zip")
+    monkeypatch.setattr(tb.fileserver, "list_zips", lambda root=None: [z])
+    monkeypatch.setattr(tb, "answer_callback", lambda *a, **k: None)
+    got = []
+    monkeypatch.setattr(tb, "_send_server_zip", lambda chat, f: got.append(f))
+    cb = {"id": "1", "data": f"dlz:{tb._zip_key(z['rel'])}",
+          "message": {"chat": {"id": 9}, "message_id": 3}, "from": {"id": 9}}
+    tb.handle_settings_callback(cb)
+    assert got == [z]
+    cb["data"] = "dlz:deadbeefdeadbeef"
+    tb.handle_settings_callback(cb)
+    assert got == [z]
+
+
+def test_send_server_zip_links_and_attaches(sent, monkeypatch, tmp_path):
+    zp = tmp_path / "Camry.zip"
+    zp.write_bytes(b"PK" * 10)
+    attached = []
+    monkeypatch.setattr(tb, "send_document", lambda chat, path, caption="": attached.append(path))
+    monkeypatch.setattr(tb, "_download_link_for", lambda path: "https://x/d/Camry.zip")
+    tb._send_existing_zip(1, "Camry", str(zp))
+    assert "https://x/d/Camry.zip" in sent[-1][0] and attached == [str(zp)]
 
 
 def test_download_project_prefers_files_on_disk(sent, monkeypatch):

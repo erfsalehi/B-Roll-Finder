@@ -19,6 +19,7 @@ allowlist denies everyone (fail-closed). Big video files stay on the laptop;
 only the small FCPXML is sent back over Telegram.
 """
 
+import hashlib
 import os
 import re
 import json
@@ -412,6 +413,18 @@ def handle_settings_callback(cb: dict) -> None:
             return
         edit_message(chat_id, message_id, "⬇️ Starting…")
         _start_project_download(chat_id, int(choice))
+        return
+
+    # A zip already on the server: "dlz:<zip key>".
+    if data.startswith("dlz:"):
+        answer_callback(cb_id, "OK")
+        f = _find_server_zip(data.split(":", 1)[1])
+        if not f:
+            edit_message(chat_id, message_id, "That zip is no longer on the server — "
+                                              "/download again to see what's there.")
+            return
+        edit_message(chat_id, message_id, f"📦 Sending {f['name']}…")
+        _send_server_zip(chat_id, f)
         return
 
     # Which project an uploaded XML belongs to: "learn:<project_id|trims|cancel>".
@@ -1357,8 +1370,32 @@ def _pending_chat_for(project_id):
     return None
 
 
-def build_download_keyboard(projects: list) -> dict:
+# Zip rows offered per /download menu (projects without a zip get their own 8).
+_DOWNLOAD_ZIPS = 10
+
+
+def _zip_key(rel: str) -> str:
+    """Short stable id for a zip's path — fits Telegram's 64-byte callback_data."""
+    return hashlib.sha1(rel.encode("utf-8")).hexdigest()[:16]
+
+
+def _find_server_zip(key: str):
+    """The zip on disk whose :func:`_zip_key` is ``key``, or None if it's gone."""
+    return next((f for f in fileserver.list_zips() if _zip_key(f["rel"]) == key), None)
+
+
+def _project_zip_rel(p: dict) -> str:
+    """Where a saved project's bundle lands, relative to downloads/."""
+    from core.output import _safe_for_fs
+    return f"{_safe_for_fs(p.get('project_name') or p['title'], 50)}.zip"
+
+
+def build_download_keyboard(projects: list, zips: list = ()) -> dict:
     rows = []
+    for f in zips:
+        label = (f"📦 {f['name'][:-4][:30]} · {_human_size(f['size'])} · "
+                 f"{time.strftime('%Y-%m-%d', time.localtime(f['mtime']))}")
+        rows.append([{"text": label, "callback_data": f"dlz:{_zip_key(f['rel'])}"}])
     for p in projects:
         state = {"review": "awaiting review", "delivered": "delivered", "learned": "edited",
                  "running": "running", "failed": "failed", "cancelled": "cancelled"}
@@ -1370,25 +1407,47 @@ def build_download_keyboard(projects: list) -> dict:
 
 
 def handle_download_lookup(chat_id, query: str) -> None:
-    """/download <name> (or bare /download with nothing pending here): find the
-    project and start it, or ask which one when several match."""
+    """/download <name> (or bare /download with nothing pending here): offer every
+    zip already on the server plus the saved projects that have none, start the
+    one match directly, or ask which one when several match."""
     from core import project_store
     try:
         found = project_store.find_projects(query, limit=8)
     except Exception as e:
         send_message(chat_id, f"❌ Couldn't search projects: {e}")
         return
+    needle = (query or "").strip().lower()
+    zips = [f for f in fileserver.list_zips() if needle in f["rel"].lower()]
+    # A project whose bundle is already on disk shows up as its zip row, so it's
+    # handed straight over instead of being re-bundled or rebuilt.
+    on_disk = {f["rel"] for f in zips}
+    found = [p for p in found if _project_zip_rel(p) not in on_disk]
+    shown = zips[:_DOWNLOAD_ZIPS]
     # A project that's genuinely still running is blocked by the busy check when
     # it's picked; one left "running" by a crash can still be rebuilt.
-    if not found:
-        send_message(chat_id, (f"No saved project matches '{query}'. " if query else
-                               "No saved projects yet. ") + "/projects lists them.")
+    if not found and not zips:
+        send_message(chat_id, (f"No saved project or zip matches '{query}'. " if query else
+                               "No saved projects or zips yet. ") + "/projects lists them.")
         return
-    if query and len(found) == 1:
-        _start_project_download(chat_id, found[0]["id"])
+    if query and len(found) + len(zips) == 1:
+        if zips:
+            _send_server_zip(chat_id, zips[0])
+        else:
+            _start_project_download(chat_id, found[0]["id"])
         return
-    send_message(chat_id, "⬇️ Which project do you want to download?",
-                 reply_markup=build_download_keyboard(found))
+    text = "⬇️ Which one do you want to download? (📦 = zip already on the server)"
+    if len(zips) > len(shown):
+        text += (f"\n…{len(zips) - len(shown)} older zip(s) not shown — "
+                 "narrow it down with /download <name>.")
+    send_message(chat_id, text, reply_markup=build_download_keyboard(found, shown))
+
+
+def _send_server_zip(chat_id, f: dict) -> None:
+    """Hand over a zip that's already on disk. Only a link + an upload, so it
+    doesn't wait for (or block) the running job; the upload runs off the poll
+    loop because a near-50 MB attach takes a while."""
+    threading.Thread(target=_send_existing_zip, args=(chat_id, f["name"][:-4], f["path"]),
+                     daemon=True).start()
 
 
 def _start_project_download(chat_id, project_id: int) -> None:
@@ -1940,7 +1999,7 @@ _BOT_COMMANDS = [
     ("test", "Preflight: test yt-dlp/Pexels/LLM before a real run"),
     ("proxies", "Show the working proxy pool (/proxies refresh to re-research)"),
     ("details", "Per-shot clip breakdown (pending project)"),
-    ("download", "Fetch the reviewed project, or /download <name> for any saved one"),
+    ("download", "Fetch the reviewed project, or /download <name> for any zip or saved project"),
     ("refine", "Re-pick QA-flagged shots (or /refine 4 9)"),
     ("redo", "Re-fetch shots with no clip (YouTube-first)"),
     ("cancel", "Stop the running job / discard pending"),
@@ -2358,8 +2417,9 @@ _HELP = (
     "real downloads before a long run (/test quick = no downloads)\n"
     "/proxies — show the validated proxy pool (/proxies refresh to re-research the list)\n"
     "/details — per-shot breakdown of the project awaiting review\n"
-    "/download — fetch clips for the reviewed project; /download <name> gets any saved "
-    "project (from the server, or re-downloaded from its saved selection)\n"
+    "/download — fetch clips for the reviewed project; /download <name> gets any zip "
+    "already on the server (sent right away, even mid-job) or any saved project "
+    "(re-downloaded from its saved selection)\n"
     "/refine [shots] — re-pick QA-flagged shots (or named ones, e.g. /refine 4 9)\n"
     "/redo — re-fetch shots with no clip (YouTube-first)\n"
     "/cancel — stop the running job (graceful; or discard a pending one)\n"
