@@ -1635,30 +1635,6 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     except Exception as e:
         errors.append(f"rank: {e}")
 
-    # 7b — Visual verify (optional): Gemini WATCHES the shortlisted YouTube
-    # candidates. Ranking above only saw their titles — and the yt-dlp search path
-    # gives no description — so this is the first stage with evidence about the
-    # actual pixels. It demotes clips that turn out to be talking heads or the
-    # wrong subject, and records where in each video the usable footage sits so
-    # the timeline can start on that moment. Placed here deliberately: candidates
-    # are already ordered (so the shortlist is small), and nothing is bound or
-    # downloaded yet, so rejecting a clip is free. Reuses step 7 rather than
-    # renumbering every later stage. A no-op unless ENABLE_VISUAL_VERIFY is on
-    # with a Gemini key.
-    verify_stats = None
-    try:
-        from core import visual_verify
-        if visual_verify.enabled():
-            _p(7, "Watching candidates (Gemini)")
-            verify_stats = visual_verify.verify_shot_candidates(
-                shots, video_topic=topic, errors=errors,
-                should_cancel=should_cancel,
-                progress_callback=lambda f: _p(
-                    7, f"Watching candidates (Gemini) · {int(max(0.0, min(1.0, f)) * 100)}%"),
-            )
-    except Exception as e:
-        errors.append(f"visual_verify: {e}")
-
     # 8 — Auto-select (the per-shot quota binds a YouTube clip for every shot).
     _p(8, "Auto-selecting clips")
     auto_select_top_candidates(shots)
@@ -1668,8 +1644,6 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # attempts telemetry for the self-healing loops).
     state = PipelineState(project_name=project_name, topic=topic, shots=shots,
                           errors=errors)
-    if verify_stats:
-        state.attempts["visual_verify"] = verify_stats
 
     # 8b — Rescue any shots still empty (failed fetch / bad block). auto_fill
     # (default on) runs the aggressive multi-pass fill so nearly every shot ends

@@ -47,52 +47,6 @@ def _llm_check():
     return True, f'ok — topic: "{topic[:60]}"'
 
 
-def _visual_verify_requested() -> bool:
-    """Whether the user asked for the Gemini stage (import-safe)."""
-    try:
-        from core import visual_verify
-        return visual_verify.requested()
-    except Exception:
-        return False
-
-
-def _gemini_check():
-    """Validate the visual-verify key with a TEXT-only call — no video.
-
-    Deliberately doesn't watch anything: a real viewing costs tokens, and every
-    way this can fail (bad key, key not enabled for the API, region block,
-    exhausted quota) shows up on a one-word prompt just the same. Returns ``None``
-    when the stage is off, so it reads as skipped rather than failed."""
-    from core import visual_verify as vv
-
-    if not vv.requested():
-        return None, "off (enable 'Gemini watches clips' in /settings)"
-    keys = vv.api_keys()
-    if not keys:
-        return None, "on, but GEMINI_API_KEY is not set — the stage will no-op"
-
-    import requests
-    resp = requests.post(
-        f"{vv.GEMINI_BASE}/{vv.model()}:generateContent",
-        headers={"x-goog-api-key": keys[0], "Content-Type": "application/json"},
-        json={"contents": [{"role": "user", "parts": [{"text": "Reply with: ok"}]}],
-              "generationConfig": {"maxOutputTokens": 512,
-                                   "thinkingConfig": {"thinkingBudget": 0}}},
-        timeout=(10, 45),
-    )
-    if resp.status_code != 200:
-        detail = ""
-        try:
-            detail = (resp.json().get("error") or {}).get("message", "")[:160]
-        except Exception:
-            pass
-        return False, f"HTTP {resp.status_code} — {detail or resp.reason}"
-    if not vv.extract_text(resp.json()).strip():
-        return False, "empty response from Gemini"
-    return True, (f"ok — {vv.model()}, {vv.media_resolution().split('_')[-1].lower()} res "
-                  f"@ {vv.sample_fps():g} fps, {len(keys)} key(s)")
-
-
 def _make_test_audio():
     """Generate a 1s mono tone wav with ffmpeg (throwaway). Returns a path or None."""
     if not shutil.which("ffmpeg"):
@@ -461,10 +415,6 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
     try:
         _run("ffmpeg", _ffmpeg_check, critical=True)
         _run("LLM (topic/rank)", _llm_check, critical=True)
-        # Critical only when the user actually turned visual verify on — a dead
-        # key there silently costs them the stage they asked for.
-        _run("Gemini (visual verify)", _gemini_check,
-             critical=_visual_verify_requested())
         _run("Library vision (OpenRouter → Gemini)", lambda: _library_vision_check(tmp_dir),
              critical=False)
         _run("Transcription (Whisper)", _transcription_check, critical=True)

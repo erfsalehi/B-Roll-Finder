@@ -364,8 +364,7 @@ def test_openrouter_request_shape_and_429_retry(monkeypatch, tmp_path):
 
 
 def test_check_vision_reports_each_provider(monkeypatch, tmp_path):
-    import core.visual_verify as vv
-    monkeypatch.setattr(vv, "api_keys", lambda: ["g"])
+    monkeypatch.setattr(sl, "gemini_keys", lambda: ["g"])
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     monkeypatch.setattr(sl, "_draft_vision", lambda *a: (_ for _ in ()).throw(ValueError("bad key")))
     monkeypatch.setattr(sl, "_draft_openrouter", lambda *a: {"description": "a test pattern"})

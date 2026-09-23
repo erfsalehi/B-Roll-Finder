@@ -2,7 +2,7 @@
 
 **From voiceover to Premiere-ready project, hands-free.**
 
-Send a voiceover to a Telegram bot. B-Roll Finder transcribes it, cuts it into shots, searches YouTube, Pexels and your own clip library for footage, ranks and picks clips for every shot, optionally has Gemini watch the YouTube picks to confirm they match, renders animated text overlays, downloads everything, and delivers a zipped project with a Premiere Pro XML ready to import.
+Send a voiceover to a Telegram bot. B-Roll Finder transcribes it, cuts it into shots, searches YouTube, Pexels and your own clip library for footage, ranks and picks clips for every shot, renders animated text overlays, downloads everything, and delivers a zipped project with a Premiere Pro XML ready to import.
 
 It runs as an **always-on Telegram bot** on a server (the main way to use it) or as a **Streamlit app** on your desktop when you want to pick clips by hand.
 
@@ -41,7 +41,6 @@ The headless pipeline (`core/pipeline.py`) runs these stages in order. It checks
  5   Fetch                 YouTube (yt-dlp) · Pexels · Clip Library, in parallel
  6   Filter                drop SD (YouTube Data API), Shorts, vertical, over-long clips
  7   Rank                  LLM-as-judge, batched, orders candidates per shot
- 7b  Visual verify         optional: Gemini watches the shortlisted YouTube clips
  8   Auto-select           per-shot quota of Pexels + YouTube clips
  8b  Fill empty shots      multi-pass re-fetch, YouTube-first
  8c  Topic fallback        generic on-topic clip for anything still empty
@@ -92,7 +91,7 @@ Paused projects are saved to `.cache/`, so a crash or `/forcestop` doesn't lose 
 | *(send audio)* | Full run: footage, overlays, images, XML |
 | `/settings` | Inline menu of per-chat options (see below) |
 | `/status` | Checks the bot is up: API reachability, ffmpeg, keys, cookies, whether a job is running |
-| `/test` | Preflight: live-tests the LLM, transcription, Pexels, yt-dlp search **and real downloads** (plus Gemini if on) in about 30 s. `/test quick` skips downloads |
+| `/test` | Preflight: live-tests the LLM, transcription, Pexels, yt-dlp search **and real downloads** in about 30 s. `/test quick` skips downloads |
 | `/details` | Per-shot breakdown of the project waiting for review |
 | `/download` | Download and build the reviewed project |
 | `/refine [shots]` | Re-pick QA-flagged shots, or only the shots you name |
@@ -124,8 +123,6 @@ Each chat has its own settings, saved to `.cache/bot_settings.json`. The `.env` 
 | Per-query counts | 3 / 4 / 5 | Candidates fetched per query (library: per shot) |
 | Min height | 720p | Drop candidates below this |
 | Download quality | 1080p | Download cap |
-| Gemini watches clips | off | [Visual verify](#visual-verify-gemini) (costs money) |
-| Verify strictness | normal (4+) | Minimum Gemini match score to keep a clip |
 | QA review | on | Stage 9 |
 | Auto-refine flagged | on | Stage 9b |
 | Auto-fill empty shots | on | Stage 8b multi-pass fill |
@@ -156,7 +153,7 @@ downloads/<project>/
 └── images/shots/shot_NN/    Google images per shot, plus sources.txt
 ```
 
-Clips are placed on **speech onsets** rather than an even grid, so cuts land where the speaker starts a new beat. When Gemini supplied an in-point, or you taught the bot a trim, the clip starts on that moment instead of at 0:00.
+Clips are placed on **speech onsets** rather than an even grid, so cuts land where the speaker starts a new beat. When you taught the bot a trim, or a reviewer marked the good part of a clip, the clip starts on that moment instead of at 0:00.
 
 Before the XML is written it is **evaluated and repaired**: shot timings, SRT and XML structure are all checked. Gaps are filled by extending the previous clip (`FCPXML_FILL_GAPS`), so the B-roll track never has a hole, and the XML only references files that are actually on disk.
 
@@ -181,18 +178,6 @@ Before the XML is written it is **evaluated and repaired**: shot timings, SRT an
 | 4 s and longer | 2 | about one per 5 s (`ceil(dur/5)`) |
 
 Every shot gets at least one YouTube clip. A look-back check keeps the same clip from appearing in consecutive shots.
-
-### Visual verify (Gemini)
-
-Ranking only sees a YouTube video's **title**, since yt-dlp search results have no description. A clickbait title can outrank a perfect video, and nothing says *where* in a 12-minute upload the matching footage is. With **Gemini watches clips** on, Gemini 2.5 Flash watches the clips each shot would use. It scores each one 0–10 for each shot and returns timestamps for the usable footage. Talking heads and wrong subjects are demoted, and the clips that pass get a verified in-point.
-
-It's opt-in because it costs money per video watched, so the defaults keep it cheap:
-
-- low media resolution (66 tokens per frame instead of 258)
-- one frame every 5 s, with thinking off
-- **one request per video**, however many shots shortlisted it
-
-A 15-minute video comes to about 40k tokens, **around $0.01**. Verdicts are cached in `.cache/visual_verify.json`. `VERIFY_MAX_VIDEOS` and `VERIFY_MAX_MINUTES` cap each run's spend, and the videos that serve the most shots are watched first. If Gemini fails for any reason, the run continues with the ranking as it was.
 
 ### QA review and auto-refine
 
@@ -238,7 +223,7 @@ These give the editor spare material. **None of it is placed on the timeline.**
 
 Every clip you download is stored in a local SQLite database (`.cache/clip_library.db`, or `CLIP_LIBRARY_DB`) with a 384-dim embedding of its shot description (`all-MiniLM-L6-v2` via **fastembed/ONNX**, so no torch or GPU is needed). Later projects search it before any external API. Results are ranked by similarity and weighted by how often a clip has been used. Over time it becomes the fastest and cheapest source for topics you cover often. `/cleanup` never touches it.
 
-**Learned trims.** Send the bot, or import in the app, a Premiere/FCP7 XML after you've edited it. The app records how you cut each clip (in and out points) in `clip_preferred_trims`. When the same footage comes up again, your trim is used. A learned trim takes priority over Gemini's in-point.
+**Learned trims.** Send the bot, or import in the app, a Premiere/FCP7 XML after you've edited it. The app records how you cut each clip (in and out points) in `clip_preferred_trims`. When the same footage comes up again, your trim is used.
 
 **Sharing between machines** (Streamlit sidebar → Library Health): **Export my library** writes a small JSON bundle (metadata, embeddings, trims). **Merge a teammate's export** combines it with yours, deduplicated by URL, and is safe to run twice. Only metadata is shared; the videos are downloaded again from their source URLs when reused.
 
@@ -319,7 +304,7 @@ Copy `.env.example` to `.env`. Every option is documented there.
 | `PEXELS_API_KEY` (+ `_2`, `_3`…) | recommended | Pexels stock footage, rotated through on rate limits |
 | `YOUTUBE_API_KEY` | optional | HD/SD check only (search uses yt-dlp) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` | for the bot | The bot and its allowlist |
-| `GEMINI_API_KEY` (+ `_2`) | optional | Visual verify |
+| `GEMINI_API_KEY` (+ `_2`) | optional | Backup vision model for describing library segments (OpenRouter GLM is tried first) |
 | `SERPER_API_KEY` | optional | Per-shot and related Google images |
 | `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | optional | Related images fallback |
 | `OPENROUTER_API_KEY` | optional | Free LLM fallback |
@@ -336,16 +321,16 @@ Every text-LLM call goes through one dispatcher (`core/keywords.py`) that falls 
 DeepSeek via OpenRouter (if DEEPSEEK_API_KEY)  →  Groq (key rotation)  →  OpenRouter free
 ```
 
-DeepSeek runs in two tiers with the same key:
+The paid tier runs in two tiers with the same key:
 
 | Tier | Model | Reasoning | Used for |
 |---|---|---|---|
 | **fast** | `~deepseek/deepseek-v4-flash-latest` | off | High-volume calls: shot slicing, ranking, keywords |
-| **smart** | `deepseek/deepseek-v4-pro` | on | Once-per-video passes: topic, themes, segmenter, QA, overlay extraction |
+| **smart** | `xiaomi/mimo-v2.6-pro`, backup `~deepseek/deepseek-flash-latest` | on, 3,000-token budget | Once-per-video passes: topic, themes, segmenter, QA, overlay extraction |
 
-You can override the models with `DEEPSEEK_MODEL_FAST` and `DEEPSEEK_MODEL_SMART`. `DEEPSEEK_NO_FALLBACK=true` retries DeepSeek with backoff instead of dropping to the free tiers. OpenRouter routing only sends calls to providers that support JSON mode and reasoning, and skips providers that return empty responses.
+You can override the models with `DEEPSEEK_MODEL_FAST`, `DEEPSEEK_MODEL_SMART` and `DEEPSEEK_MODEL_SMART_BACKUP`, and the thinking budget with `LLM_REASONING_BUDGET`. A reply cut off mid-thought is retried once with thinking off. `DEEPSEEK_NO_FALLBACK=true` retries DeepSeek with backoff instead of dropping to the free tiers. OpenRouter routing only sends calls to providers that support JSON mode and reasoning, and skips providers that return empty responses.
 
-**Cost report.** Every LLM and Whisper call is metered (`core/usage.py`), and each job ends with a token and dollar breakdown. The prices are estimates; set `API_PRICING_JSON` / `WHISPER_USD_PER_HOUR` to match your actual rates (for example, 0 on a free Groq tier).
+**Cost report.** Every LLM and Whisper call is metered (`core/usage.py`), and each job ends with a token and dollar breakdown. OpenRouter calls use the exact cost OpenRouter reports; the rest are estimates, so set `API_PRICING_JSON` / `WHISPER_USD_PER_HOUR` to match your actual rates (for example, 0 on a free Groq tier).
 
 ---
 
@@ -364,8 +349,6 @@ The most useful settings (all in `.env.example` with comments):
 | `ENABLE_EXTRA_CLIPS`, `EXTRA_PER_KEYWORD`, `EXTRA_MAX_KEYWORDS` | `true`, `2`, `12` | Extras |
 | `ENABLE_SHOT_IMAGES`, `SHOT_IMAGES_PER_SHOT` | `true`, `3` | Per-shot images |
 | `ENABLE_RELATED_IMAGES` | `true` | Related stills |
-| `ENABLE_VISUAL_VERIFY`, `VERIFY_MODEL`, `VERIFY_MIN_MATCH` | off, `gemini-2.5-flash`, `4` | Visual verify |
-| `VERIFY_MAX_VIDEOS` / `VERIFY_MAX_MINUTES` | `40` / `90` | Per-run Gemini budget |
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` / `ENABLE_DETAILED_QUERIES` | off | Query modes |
 | `AUTO_SELECT_SHORT_SEC` / `AUTO_SELECT_YT_SECONDS` / `AUTO_SELECT_MIN_PEXELS` | `4` / `5` / `2` | Selection quota |
 | `AUTO_SELECT_LOOKBACK` | `3` | Variety guard window |
@@ -397,7 +380,6 @@ B-Roll Finder/
 │   ├── director.py            topic, segmenter pre-pass, shot list
 │   ├── director_search.py     parallel candidate fetch + query cache
 │   ├── director_rank.py       LLM ranking, per-shot quota auto-select
-│   ├── visual_verify.py       Gemini watches clips (stage 7b)
 │   ├── youtube.py             yt-dlp search/download, cookies, client fallbacks
 │   ├── proxy_pool.py          validated YouTube proxy pool
 │   ├── stock_apis.py          Pexels (key rotation) / Pixabay / YouTube Data API

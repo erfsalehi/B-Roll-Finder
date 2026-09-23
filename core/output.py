@@ -468,9 +468,10 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
     1. A trim learned from a re-imported Premiere edit — a human editor's actual
        cut of this exact footage, so it always wins when we have one.
     1b. The good segment human reviewers marked on this clip (rating page).
-    2. ``verified_in_sec``, where :mod:`core.visual_verify` saw the matching
-       footage start. This is what stops a 12-minute YouTube upload from being
-       cut at its intro when the subject only shows up at 4:20.
+    2. ``verified_in_sec``: the start of the first good part a reviewer marked
+       on a clip they suggested (:func:`core.edit_feedback.suggested_candidates`),
+       so a 12-minute upload isn't cut at its intro when the subject shows up
+       at 4:20.
     3. The editor's habit for this source, learned from edited XMLs (e.g. they
        start YouTube clips ~6s in, past the intro) — see
        :func:`core.edit_feedback.learned_in_offset`.
@@ -947,8 +948,8 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
             xml.append(f'                <end>{end_frame}</end>')
             
             # Cut points on the source file. Default: start at frame 0, unless a
-            # trim learned from a re-imported Premiere edit — or a segment Gemini
-            # verified as the matching footage — says otherwise. Either way the
+            # trim learned from a re-imported Premiere edit, or a good part a
+            # reviewer marked, says otherwise (see _pick_in_frame). Either way the
             # timeline-slot length is unchanged, so placement/layout is identical.
             # Fully defensive: any miss or error falls back to in=0.
             in_frame_src = _preferred_in_frame(

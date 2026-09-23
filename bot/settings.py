@@ -29,11 +29,6 @@ OPTIONS = [
     {"key": "library_num", "label": "Library / shot","type": "choice", "env": "AUTO_LIBRARY_NUM",  "choices": [1, 2, 3, 5, 8, 10]},
     {"key": "min_height",  "label": "Min height",    "type": "choice", "env": "AUTO_MIN_HEIGHT",   "choices": [0, 480, 720, 1080], "fmt": lambda v: "off" if not v else f"{v}p"},
     {"key": "quality",     "label": "Download quality","type": "choice","choices": [480, 720, 1080], "fmt": lambda v: f"{v}p"},
-    {"key": "visual_verify", "label": "Gemini watches clips", "type": "bool", "env": "ENABLE_VISUAL_VERIFY"},
-    {"key": "verify_min_match", "label": "Verify strictness", "type": "choice", "env": "VERIFY_MIN_MATCH",
-     "choices": [3, 4, 5, 6, 7],
-     "fmt": lambda v: {3: "loose (3+)", 4: "normal (4+)", 5: "firm (5+)",
-                       6: "strict (6+)", 7: "very strict (7+)"}.get(v, str(v))},
     {"key": "qa",          "label": "QA review (5.5)","type": "bool",   "env": "ENABLE_QA_REVIEW"},
     {"key": "auto_refine", "label": "Auto-refine flagged", "type": "bool"},
     {"key": "auto_fill",   "label": "Auto-fill empty shots", "type": "bool"},
@@ -60,10 +55,6 @@ DEFAULTS = {
     "use_library": True, "library_num": 5,
     "min_height": 720,
     "quality": 1080,
-    # Off by default: it needs a GEMINI_API_KEY and costs real money per video
-    # watched, so it's opt-in per chat.
-    "visual_verify": False,
-    "verify_min_match": 4,
     "qa": True,
     "auto_refine": True,
     "auto_fill": True,

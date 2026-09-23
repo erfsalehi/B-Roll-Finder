@@ -20,10 +20,11 @@ def _record_api_usage(provider: str, model: str, u) -> None:
     try:
         from core import usage
         if isinstance(u, dict):
-            pt, ct = u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
+            # OpenRouter reports what the call actually cost (usage.cost).
+            pt, ct, cost = u.get("prompt_tokens", 0), u.get("completion_tokens", 0), u.get("cost")
         else:
-            pt, ct = getattr(u, "prompt_tokens", 0), getattr(u, "completion_tokens", 0)
-        usage.record_llm(provider, model, pt, ct)
+            pt, ct, cost = getattr(u, "prompt_tokens", 0), getattr(u, "completion_tokens", 0), None
+        usage.record_llm(provider, model, pt, ct, cost=cost)
     except Exception:
         pass
 
@@ -136,16 +137,22 @@ def _call_openrouter_json(system_prompt: str, user_content: str,
 # Two tiers, switched per call with the SAME key:
 #   • "fast"  → deepseek-v4-flash, reasoning OFF — for the high-volume loop calls
 #               (shot slicing, ranking, keywords). Fast, cheap, no CoT starvation.
-#   • "smart" → deepseek-v4-pro,  reasoning ON  — for the once-per-video global
-#               passes (topic, themes, structural pre-pass) that need synthesis.
-# The fast tier uses OpenRouter's "~author/family-latest" rolling alias (the
-# leading "~" is required syntax, not decoration) — it always resolves to the
-# newest DeepSeek V4 Flash snapshot, so we never have to bump a pinned version.
-# No such alias exists for pro on OpenRouter (checked their /models catalog),
-# so the smart tier stays pinned.
+#   • "smart" → Xiaomi MiMo V2.6 Pro, reasoning ON — for the once-per-video
+#               passes (topic, QA review, overlays, extras) that need synthesis.
+#               Chosen 2026-09-23 over deepseek-v4-pro: it scored higher on the
+#               Artificial Analysis index at half the token price, and it thinks
+#               briefly (V4 Pro ran out of tokens mid-thought on 13 of 21 calls).
+#               Only two providers serve it, so OpenRouter falls back to the
+#               newest DeepSeek Flash (with reasoning) when it's unavailable.
+# "~author/family-latest" slugs are OpenRouter's rolling aliases (the leading
+# "~" is required syntax, not decoration) — they always resolve to the newest
+# snapshot, so we never have to bump a pinned version.
 DEEPSEEK_BASE = "https://openrouter.ai/api/v1/chat/completions"
 DEEPSEEK_FAST_DEFAULT = "~deepseek/deepseek-v4-flash-latest"
-DEEPSEEK_SMART_DEFAULT = "deepseek/deepseek-v4-pro"
+DEEPSEEK_SMART_DEFAULT = "xiaomi/mimo-v2.6-pro"
+DEEPSEEK_SMART_BACKUP_DEFAULT = "~deepseek/deepseek-flash-latest"
+# Thinking tokens the smart tier may spend before it must answer.
+REASONING_BUDGET_DEFAULT = 3000
 
 
 def _deepseek_keys() -> list:
@@ -185,30 +192,52 @@ def _deepseek_tier(tier: str) -> tuple:
     return model, reasoning
 
 
+def _tier_backup(tier: str) -> str:
+    """The model OpenRouter falls back to when the tier's model can't be served
+    ('' = none). Only the smart tier has one by default; DEEPSEEK_MODEL_SMART_BACKUP
+    overrides it ('none' turns it off)."""
+    if tier != "smart":
+        return ""
+    raw = os.getenv("DEEPSEEK_MODEL_SMART_BACKUP")
+    if raw is None or not raw.strip():
+        return DEEPSEEK_SMART_BACKUP_DEFAULT
+    return "" if raw.strip().lower() in ("none", "off", "0", "false") else raw.strip()
+
+
+def _reasoning_budget() -> int:
+    try:
+        return max(256, int(os.getenv("LLM_REASONING_BUDGET", str(REASONING_BUDGET_DEFAULT))))
+    except ValueError:
+        return REASONING_BUDGET_DEFAULT
+
+
 def _deepseek_request(system_prompt: str, user_content: str,
                       temperature: float, max_tokens: int, json_mode: bool,
-                      model: str, reasoning: bool) -> str:
-    """One OpenAI-compatible call to DeepSeek-via-OpenRouter with per-key backoff.
+                      model: str, reasoning: bool, backup: str = "") -> str:
+    """One OpenAI-compatible call to the paid tier via OpenRouter, with per-key
+    backoff.
 
-    ``model`` / ``reasoning`` are resolved by the caller from the tier. Returns
-    the raw message content string. Non-retryable errors (400/401/402/403 — bad
-    request, auth, *out of balance*) raise immediately so the caller can fall
-    back to Groq/OpenRouter rather than burning the backoff schedule.
+    ``model`` / ``reasoning`` / ``backup`` are resolved by the caller from the
+    tier. Returns the raw message content string. Non-retryable errors
+    (400/401/402/403 — bad request, auth, *out of balance*) raise immediately so
+    the caller can fall back to Groq/OpenRouter rather than burning the backoff
+    schedule.
     """
     import time
     keys = _deepseek_keys()
     if not keys:
         raise ValueError("No DeepSeek API key configured.")
 
-    # When reasoning is ON, DeepSeek's max_tokens budget INCLUDES the chain-of-
-    # thought, so the caller's cap (2000–4000, tuned for the fast tier) can be
-    # entirely consumed by reasoning and leave an EMPTY answer. Enforce a floor
-    # so CoT + the JSON answer both fit. Tunable via DEEPSEEK_MAX_TOKENS.
+    # max_tokens INCLUDES the thinking, so an unbounded thinker can spend it all
+    # and leave an EMPTY answer. Thinking gets its own budget
+    # (LLM_REASONING_BUDGET) on top of the caller's answer room; the total never
+    # drops below DEEPSEEK_MAX_TOKENS.
     try:
         floor = int(os.getenv("DEEPSEEK_MAX_TOKENS", "8000"))
     except ValueError:
         floor = 8000
-    effective_max_tokens = max(int(max_tokens or 0), floor)
+    budget = _reasoning_budget() if reasoning else 0
+    effective_max_tokens = max(int(max_tokens or 0) + budget, floor)
 
     payload = {
         "model": model,
@@ -218,13 +247,20 @@ def _deepseek_request(system_prompt: str, user_content: str,
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
-        # Explicitly toggle CoT via OpenRouter's reasoning control: ON for the
-        # smart tier (synthesis), OFF for the fast tier (deterministic JSON, where
-        # CoT only burns tokens → empty content → latency).
-        "reasoning": {"enabled": bool(reasoning)},
+        # OpenRouter's reasoning control: a capped budget for the smart tier
+        # (synthesis), OFF for the fast tier (deterministic JSON, where thinking
+        # only burns tokens and time).
+        "reasoning": ({"enabled": True, "max_tokens": budget} if reasoning
+                      else {"enabled": False}),
+        # Ask OpenRouter to report what each call actually cost.
+        "usage": {"include": True},
     }
+    if backup and backup != model:
+        # OpenRouter tries these in order when a model can't be served.
+        payload["models"] = [model, backup]
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    cut_off_retried = False
 
     # OpenRouter provider routing. require_parameters restricts routing to upstream
     # providers that actually support our params (json mode + reasoning) — a common
@@ -267,7 +303,23 @@ def _deepseek_request(system_prompt: str, user_content: str,
                 resp.raise_for_status()
                 j = resp.json()
                 served = j.get("provider")  # OpenRouter names the upstream that answered
-                content = j["choices"][0]["message"]["content"]
+                # Billed whether or not the answer is usable, so record it now —
+                # under the model that actually answered (the backup, maybe).
+                _record_api_usage("openrouter", j.get("model") or model, j.get("usage"))
+                choice = j["choices"][0]
+                content = choice["message"]["content"]
+                # Cut off mid-thought: every provider runs the same model and
+                # would stop at the same place, so retry once with thinking off
+                # rather than on another provider.
+                if (reasoning and not cut_off_retried
+                        and choice.get("finish_reason") == "length"
+                        and not _usable_answer(content, json_mode)):
+                    cut_off_retried = True
+                    payload["reasoning"] = {"enabled": False}
+                    last_error = ValueError("Answer cut off at the token limit while thinking")
+                    print(f"{j.get('model') or model} ran out of tokens while thinking "
+                          f"(provider: {served}). Retrying once with thinking off…")
+                    continue
                 if content and content.strip():
                     # In JSON mode, a non-empty but unparseable body (truncated
                     # output, stray prose, code fences) is as useless as an empty
@@ -287,7 +339,6 @@ def _deepseek_request(system_prompt: str, user_content: str,
                                 time.sleep(delay)
                                 continue
                             break  # exhausted retries for this key → next key
-                    _record_api_usage("deepseek", model, j.get("usage"))
                     return content
                 # 200 with EMPTY content — OpenRouter treats this as success and
                 # won't auto-switch, so exclude this provider and retry on another.
@@ -329,6 +380,18 @@ def _deepseek_request(system_prompt: str, user_content: str,
     raise RuntimeError("DeepSeek request failed with no error captured.")
 
 
+def _usable_answer(content, json_mode: bool) -> bool:
+    if not content or not content.strip():
+        return False
+    if not json_mode:
+        return True
+    try:
+        _loads_llm_json(content)
+        return True
+    except json.JSONDecodeError:
+        return False
+
+
 def _loads_llm_json(text: str):
     """Parse JSON from an LLM response, tolerating the usual wrappers that make a
     bare ``json.loads`` throw: markdown ```code fences``` and leading/trailing
@@ -360,7 +423,8 @@ def _call_deepseek_json(system_prompt: str, user_content: str,
                         tier: str = "fast") -> dict:
     model, reasoning = _deepseek_tier(tier)
     return _loads_llm_json(_deepseek_request(system_prompt, user_content,
-                                             temperature, max_tokens, True, model, reasoning))
+                                             temperature, max_tokens, True, model, reasoning,
+                                             backup=_tier_backup(tier)))
 
 
 def _call_deepseek_str(system_prompt: str, user_content: str,
@@ -368,7 +432,8 @@ def _call_deepseek_str(system_prompt: str, user_content: str,
                        tier: str = "fast") -> str:
     model, reasoning = _deepseek_tier(tier)
     return _deepseek_request(system_prompt, user_content,
-                             temperature, max_tokens, False, model, reasoning).strip()
+                             temperature, max_tokens, False, model, reasoning,
+                             backup=_tier_backup(tier)).strip()
 
 
 def _call_llm_json(client: Groq, system_prompt: str, user_content: str,

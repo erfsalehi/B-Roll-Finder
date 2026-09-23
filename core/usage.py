@@ -10,7 +10,8 @@ out across worker threads (``director_rank``), so a thread-local store would mis
 them. The bot runs ONE job at a time (the ``_BUSY`` guard), so a single global
 keyed to "the current job" is safe; :func:`reset` clears it between jobs.
 
-Dollar figures are ESTIMATES from a configurable price table. OpenRouter ':free'
+OpenRouter calls carry their real cost (``usage.cost``), which is used as-is.
+Everything else is an ESTIMATE from a configurable price table. OpenRouter ':free'
 models always price to $0. The defaults use paid list prices for Groq/DeepSeek,
 so if you're on a FREE Groq tier the estimate will overcount — set those models
 to 0 (or your real rate) via ``API_PRICING_JSON`` / ``WHISPER_USD_PER_HOUR``.
@@ -32,9 +33,13 @@ _DEFAULT_PRICING = {
     "deepseek-reasoner": (0.55, 2.19),
     "deepseek-chat": (0.27, 1.10),
     "deepseek": (0.27, 1.10),
-    # Gemini (visual verify). Video is billed as input tokens at the text rate,
-    # so the same pair covers a watched clip — a 15-min video at low resolution
-    # and 0.2 fps lands around 40k input tokens.
+    # Used only when OpenRouter doesn't report a call's cost. Sep 2026 prices.
+    "deepseek-v4-pro": (0.89, 1.78),
+    "deepseek-v4-flash": (0.05, 0.16),
+    "deepseek-v4.1-flash": (0.15, 0.60),
+    "deepseek-flash": (0.12, 0.48),
+    "mimo-v2.6-pro": (0.435, 0.87),
+    # Gemini (the segment library's backup describer).
     "gemini-2.5-flash-lite": (0.10, 0.40),
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-pro": (1.25, 10.00),
@@ -50,14 +55,22 @@ def reset() -> None:
         _records.clear()
 
 
-def record_llm(provider: str, model: str, prompt_tokens=0, completion_tokens=0) -> None:
-    """Record one LLM call's token usage. Best-effort; never raises."""
+def record_llm(provider: str, model: str, prompt_tokens=0, completion_tokens=0,
+               cost=None) -> None:
+    """Record one LLM call's token usage, and its real USD ``cost`` when the API
+    reported one (OpenRouter does) — that beats the price-table estimate.
+    Best-effort; never raises."""
     try:
+        try:
+            cost = None if cost is None else float(cost)
+        except (TypeError, ValueError):
+            cost = None
         with _lock:
             _records.append({
                 "kind": "llm", "provider": provider, "model": model or "",
                 "prompt_tokens": int(prompt_tokens or 0),
                 "completion_tokens": int(completion_tokens or 0),
+                "cost": cost,
             })
     except Exception:
         pass
@@ -136,7 +149,12 @@ def summary() -> dict:
             p["prompt_tokens"] += r["prompt_tokens"]
             p["completion_tokens"] += r["completion_tokens"]
             rate = _match_price(r["model"], table)
-            if rate is not None:
+            if r.get("cost") is not None:
+                p["usd"] += r["cost"]
+                total_usd += r["cost"]
+                if r["cost"] > 0:
+                    priced = True
+            elif rate is not None:
                 c = (r["prompt_tokens"] / 1e6 * rate[0]
                      + r["completion_tokens"] / 1e6 * rate[1])
                 p["usd"] += c

@@ -621,28 +621,6 @@ def format_errors_block(errors: list, limit: int = 6) -> list:
     return lines
 
 
-def format_verify_line(result: dict):
-    """One line on what Gemini saw, or None when the stage didn't run.
-
-    Worth surfacing at review time because it's the only stage that judged the
-    actual footage: 'rejected' is how many candidate clips turned out not to
-    contain what the shot asked for, and 'timed' is how many got a verified
-    in-point instead of starting at frame 0."""
-    v = (result.get("attempts") or {}).get("visual_verify") or {}
-    if not v or v.get("skipped"):
-        return None
-    parts = [f"👁 Gemini watched {v.get('calls', 0)} video(s)"]
-    if v.get("cached"):
-        parts.append(f"{v['cached']} from cache")
-    if v.get("rejected"):
-        parts.append(f"{v['rejected']} clip(s) rejected")
-    if v.get("segments"):
-        parts.append(f"{v['segments']} timed to a segment")
-    if v.get("budget_skipped"):
-        parts.append(f"{v['budget_skipped']} skipped (budget)")
-    return "  ·  ".join(parts)
-
-
 def format_assets_line(result: dict):
     """Per-shot Google images + extra clips, or None when neither ran. Extras are
     reported as downloaded/found so a batch of failed extra downloads is visible
@@ -683,9 +661,6 @@ def format_review(proj: str, result: dict) -> str:
                and not s.get("is_extra")]
     if empties:
         lines.append(f"⚪ No clip for shot(s): {', '.join(str(e) for e in empties[:20])}")
-    verify_line = format_verify_line(result)
-    if verify_line:
-        lines.append(verify_line)
     assets_line = format_assets_line(result)
     if assets_line:
         lines.append(assets_line)
@@ -901,9 +876,6 @@ def format_summary(proj: str, result: dict) -> str:
             extra += f", {dl['dropped']} dropped"
         lines.append(f"Downloaded: {dl.get('ok', 0)} ok, {dl.get('failed', 0)} failed, "
                      f"{dl.get('skipped', 0)} cached{extra}")
-    verify_line = format_verify_line(result)
-    if verify_line:
-        lines.append(verify_line)
     assets_line = format_assets_line(result)
     if assets_line:
         lines.append(assets_line)
@@ -2071,18 +2043,6 @@ def check_health(timeout: int = 8) -> list:
             "serper": "Serper",
             "cse": "SERPER_API_KEY NOT SET — Custom Search only, so per-shot images are off",
         }.get(ib, "not configured — set SERPER_API_KEY")))
-    except Exception:
-        pass
-
-    # Visual verify — surface the mismatch that would otherwise fail silently:
-    # the toggle on with no key means the stage no-ops for the whole run.
-    try:
-        from core import visual_verify
-        if visual_verify.requested():
-            has_key = bool(visual_verify.api_keys())
-            checks.append(("Gemini (visual verify)", has_key,
-                           f"on — {visual_verify.model()}" if has_key
-                           else "ON but GEMINI_API_KEY is MISSING — stage will be skipped"))
     except Exception:
         pass
 

@@ -489,11 +489,39 @@ _DRAFT_PROMPT = (
 )
 
 
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+def gemini_keys() -> list:
+    """Gemini keys for the backup drafter, in rotation order."""
+    keys = []
+    for name in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GOOGLE_API_KEY"):
+        k = os.getenv(name, "").strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def gemini_model() -> str:
+    # VERIFY_MODEL is the old name, from the removed Gemini visual-verify stage.
+    return (os.getenv("GEMINI_MODEL", "").strip() or os.getenv("VERIFY_MODEL", "").strip()
+            or "gemini-2.5-flash")
+
+
+def _gemini_text(payload: dict) -> str:
+    """First non-empty text part of a generateContent response ('' when none)."""
+    for cand in payload.get("candidates") or []:
+        for part in (cand.get("content") or {}).get("parts") or []:
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                return text
+    return ""
+
+
 def _draft_vision(frames: list, lines: list, topic: str) -> dict:
-    from core import visual_verify as vv
     from core.keywords import _loads_llm_json
     import requests
-    keys = vv.api_keys()
+    keys = gemini_keys()
     if not keys:
         raise ValueError("no Gemini key")
     parts = [{"text": _DRAFT_PROMPT}]
@@ -508,10 +536,10 @@ def _draft_vision(frames: list, lines: list, topic: str) -> dict:
     last = None
     for key in keys:
         try:
-            r = requests.post(f"{vv.GEMINI_BASE}/{vv.model()}:generateContent", json=body,
+            r = requests.post(f"{GEMINI_BASE}/{gemini_model()}:generateContent", json=body,
                               headers={"x-goog-api-key": key}, timeout=(10, 90))
             r.raise_for_status()
-            return _loads_llm_json(vv.extract_text(r.json()))
+            return _loads_llm_json(_gemini_text(r.json()))
         except Exception as e:
             last = e
     raise last or RuntimeError("Gemini request failed")
@@ -581,8 +609,7 @@ _VISION_DRAFTERS = (("openrouter", lambda *a: _draft_openrouter(*a)),
 def check_vision(frame_path: str) -> list:
     """Send one real frame through every configured vision drafter.
     ``[(provider, ok|None, detail)]`` — None when that provider has no key."""
-    from core import visual_verify as vv
-    configured = {"gemini": bool(vv.api_keys()), "openrouter": bool(_openrouter_keys())}
+    configured = {"gemini": bool(gemini_keys()), "openrouter": bool(_openrouter_keys())}
     out = []
     for name, fn in _VISION_DRAFTERS:
         if not configured[name]:
@@ -592,7 +619,7 @@ def check_vision(frame_path: str) -> list:
         try:
             d = _clean_draft(fn([frame_path], ["test line"], "test"))
             ok = bool(d["description"])
-            model = vv.model() if name == "gemini" else vision_fallback_model()
+            model = gemini_model() if name == "gemini" else vision_fallback_model()
             out.append((name, ok, f"{model}, {time.time() - t0:.0f}s"
                                   + ("" if ok else " — empty description")))
         except Exception as e:

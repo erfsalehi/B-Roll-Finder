@@ -92,64 +92,6 @@ def test_self_test_skips_pexels_without_key(monkeypatch):
     assert report["ok"] is True                       # skip never fails the run
 
 
-# ── Gemini visual verify preflight ────────────────────────────────────────────
-
-def _stub_gemini(monkeypatch, status=200, text="ok", error_msg=""):
-    class _Resp:
-        status_code = status
-        reason = "Bad Request"
-
-        def json(self):
-            if status != 200:
-                return {"error": {"message": error_msg}}
-            return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
-
-    import requests
-    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp())
-
-
-def test_gemini_check_skipped_when_stage_is_off(monkeypatch):
-    _patch_all(monkeypatch)
-    monkeypatch.delenv("ENABLE_VISUAL_VERIFY", raising=False)
-    report = st.run_self_test(do_downloads=False)
-    res = _by_name(report)["Gemini (visual verify)"]
-    assert res["ok"] is None and "off" in res["detail"]
-    assert report["ok"] is True
-
-
-def test_gemini_check_flags_toggle_on_without_a_key(monkeypatch):
-    """The silent failure worth catching: the stage is on but will never run."""
-    _patch_all(monkeypatch)
-    monkeypatch.setenv("ENABLE_VISUAL_VERIFY", "1")
-    for var in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GOOGLE_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    res = _by_name(st.run_self_test(do_downloads=False))["Gemini (visual verify)"]
-    assert res["ok"] is None and "GEMINI_API_KEY is not set" in res["detail"]
-
-
-def test_gemini_check_passes_with_a_working_key(monkeypatch):
-    _patch_all(monkeypatch)
-    monkeypatch.setenv("ENABLE_VISUAL_VERIFY", "1")
-    monkeypatch.setenv("GEMINI_API_KEY", "k")
-    _stub_gemini(monkeypatch)
-    res = _by_name(st.run_self_test(do_downloads=False))["Gemini (visual verify)"]
-    assert res["ok"] is True
-    # The detail states the cost-relevant settings, so a misconfigured (expensive)
-    # run is visible before it starts.
-    assert "low res" in res["detail"] and "0.2 fps" in res["detail"]
-
-
-def test_gemini_check_fails_the_run_on_a_dead_key(monkeypatch):
-    _patch_all(monkeypatch)
-    monkeypatch.setenv("ENABLE_VISUAL_VERIFY", "1")
-    monkeypatch.setenv("GEMINI_API_KEY", "bad")
-    _stub_gemini(monkeypatch, status=400, error_msg="API key not valid")
-    report = st.run_self_test(do_downloads=False)
-    res = _by_name(report)["Gemini (visual verify)"]
-    assert res["ok"] is False and "API key not valid" in res["detail"]
-    assert report["ok"] is False       # critical, because the user asked for it
-
-
 def test_self_test_quick_skips_downloads(monkeypatch):
     _patch_all(monkeypatch)
     report = st.run_self_test(do_downloads=False)

@@ -11,6 +11,7 @@ def _clean_env(monkeypatch):
     for var in ("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY_2", "DEEPSEEK_MODEL",
                 "DEEPSEEK_MODEL_FAST", "DEEPSEEK_MODEL_SMART", "DEEPSEEK_REASONING",
                 "DEEPSEEK_MAX_TOKENS", "DEEPSEEK_NO_FALLBACK",
+                "DEEPSEEK_MODEL_SMART_BACKUP", "LLM_REASONING_BUDGET",
                 "OPENROUTER_REQUIRE_PARAMETERS", "OPENROUTER_PROVIDER_SORT",
                 "GROQ_API_KEY", "GROQ_API_KEY_2"):
         monkeypatch.delenv(var, raising=False)
@@ -63,14 +64,84 @@ def test_deepseek_fast_tier_is_flash_no_reasoning(monkeypatch):
     assert captured["payload"]["reasoning"] == {"enabled": False}
 
 
-def test_deepseek_smart_tier_is_pro_with_reasoning(monkeypatch):
+def test_smart_tier_is_mimo_with_budgeted_reasoning_and_backup(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
     captured = {}
     monkeypatch.setattr(kw.requests, "post",
                         lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user", tier="smart", max_tokens=2000)
+    p = captured["payload"]
+    assert p["model"] == "xiaomi/mimo-v2.6-pro"
+    assert p["models"] == ["xiaomi/mimo-v2.6-pro", "~deepseek/deepseek-flash-latest"]
+    assert p["reasoning"] == {"enabled": True, "max_tokens": 3000}
+    assert p["max_tokens"] == 8000     # never below the floor
+
+
+def test_thinking_budget_comes_on_top_of_the_answer_room(monkeypatch):
+    """Overlay extraction asks for 6000 answer tokens: thinking must not eat them."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user", tier="smart", max_tokens=6000)
+    assert captured["payload"]["max_tokens"] == 9000
+
+
+def test_fast_tier_has_no_backup_and_backup_can_be_turned_off(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    captured = {}
+    monkeypatch.setattr(kw.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: captured.update(payload=json) or _FakeResp("{}"))
+    kw._call_deepseek_json("sys", "user", tier="fast")
+    assert "models" not in captured["payload"]
+    monkeypatch.setenv("DEEPSEEK_MODEL_SMART_BACKUP", "none")
     kw._call_deepseek_json("sys", "user", tier="smart")
-    assert captured["payload"]["model"] == "deepseek/deepseek-v4-pro"
-    assert captured["payload"]["reasoning"] == {"enabled": True}
+    assert "models" not in captured["payload"]
+
+
+class _Resp:
+    def __init__(self, content, finish="stop", model="xiaomi/mimo-v2.6-pro", provider="Xiaomi",
+                 usage=None):
+        self._j = {"choices": [{"message": {"content": content}, "finish_reason": finish}],
+                   "model": model, "provider": provider, "usage": usage or {}}
+    def raise_for_status(self):
+        pass
+    def json(self):
+        return self._j
+
+
+def test_cut_off_while_thinking_retries_once_with_thinking_off(monkeypatch):
+    """Every provider runs the same model, so a cut-off answer is retried with
+    thinking off, not on another provider (and without the backoff wait)."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    calls = []
+
+    def _post(url, headers=None, json=None, timeout=None):
+        calls.append({"reasoning": dict(json["reasoning"]),
+                      "ignore": (json.get("provider") or {}).get("ignore")})
+        return _Resp("" if len(calls) == 1 else '{"ok": 1}',
+                     finish="length" if len(calls) == 1 else "stop")
+
+    monkeypatch.setattr(kw.requests, "post", _post)
+    monkeypatch.setattr("time.sleep", lambda s: (_ for _ in ()).throw(AssertionError("no wait")))
+    assert kw._call_deepseek_json("sys", "user", tier="smart") == {"ok": 1}
+    assert calls[0]["reasoning"]["enabled"] is True
+    assert calls[1]["reasoning"] == {"enabled": False}
+    assert not calls[1]["ignore"]            # same providers still allowed
+
+
+def test_usage_records_real_cost_and_the_model_that_answered(monkeypatch):
+    from core import usage
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    usage.reset()
+    monkeypatch.setattr(kw.requests, "post", lambda *a, **k: _Resp(
+        '{"ok": 1}', model="deepseek/deepseek-v4.1-flash",
+        usage={"prompt_tokens": 1000, "completion_tokens": 500, "cost": 0.0123}))
+    kw._call_deepseek_json("sys", "user", tier="smart")
+    s = usage.summary()
+    assert s["total_usd"] == 0.0123 and s["priced"]
+    assert usage._records[-1]["model"] == "deepseek/deepseek-v4.1-flash"
+    usage.reset()
 
 
 def test_deepseek_tier_model_overrides(monkeypatch):
