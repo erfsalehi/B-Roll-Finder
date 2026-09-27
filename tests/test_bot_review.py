@@ -173,3 +173,22 @@ def test_qa_block_marks_carried_issues():
     assert "(refined 2 shot[s])" in lines[0]
     assert any("#6 (low, unchanged)" in l for l in lines)
     assert any("#8 (medium) still" in l for l in lines)
+
+
+def test_review_shows_only_the_latest_actions_errors():
+    old = ["refine regen slot 37: 'shot_type'"] * 4 + ["image download failed: https://x/a.jpg"]
+    result = {"n_shots": 2, "n_selected": 2, "n_clips": 4, "shots": [],
+              "qa": {"overall": "ok", "issues": []}, "errors": old + ["pexels: timeout"]}
+    out = tb.format_review("p", result, errors_from=len(old), action="this /refine")
+    assert "1 issue(s) during this /refine" in out and "pexels: timeout" in out
+    assert "regen slot" not in out                       # earlier ones not repeated
+    assert "5 earlier issue(s)" in out
+
+    result["errors"] = list(old)                          # a clean refine
+    out = tb.format_review("p", result, errors_from=len(old), action="this /refine")
+    assert "No issues during this /refine" in out
+
+
+def test_first_review_still_shows_all_errors():
+    out = tb.format_review("p", {"shots": [], "qa": {}, "errors": ["a 1", "a 2"]})
+    assert "2 issue(s) during processing" in out and "earlier" not in out

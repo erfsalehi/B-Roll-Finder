@@ -715,12 +715,15 @@ def regenerate_shot_queries(
     custom_instructions: str = "",
     context_window: int = 2,
     progress_callback=None,
+    errors: list = None,
 ) -> list:
     """Re-generate search_queries for specific shots using full narrative context.
 
     Intended for shots that returned zero candidates on the first pass.
     Surrounding shots are included so the LLM can interpret ambiguous lines
-    correctly and produce queries that diverge from the failed attempts.
+    correctly and produce queries that diverge from the failed attempts. A
+    failed LLM call keeps the shot's old queries and is recorded in ``errors``
+    (when given) so the caller can surface it.
     """
     if not api_key:
         raise ValueError("Groq API key is missing.")
@@ -789,6 +792,8 @@ def regenerate_shot_queries(
                     target["shot_type"] = ns["shot_type"]
         except Exception as e:
             print(f"Error regenerating slot {target.get('slot_id')}: {e}")
+            if errors is not None:
+                errors.append(f"regen slot {target.get('slot_id')}: kept old queries ({e})")
 
         if progress_callback:
             progress_callback((idx + 1) / total)

@@ -624,17 +624,24 @@ def _err_signature(msg: str) -> str:
     return s.strip()[:180]
 
 
-def format_errors_block(errors: list, limit: int = 6) -> list:
+def format_errors_block(errors: list, limit: int = 6, action: str = "processing",
+                        earlier: int = 0) -> list:
     """Group errors by type so a systemic failure shows as one line with a
-    count, not thousands of near-identical messages."""
-    if not errors:
-        return []
-    counts = Counter(_err_signature(e) for e in errors)
-    lines = [f"❗ {len(errors)} issue(s) during processing ({len(counts)} type[s]):"]
-    for sig, n in counts.most_common(limit):
-        lines.append(f"  • {sig}" + (f"  (×{n})" if n > 1 else ""))
-    if len(counts) > limit:
-        lines.append(f"  …and {len(counts) - limit} more type(s)")
+    count, not thousands of near-identical messages. ``errors`` are the ones
+    from ``action`` only; ``earlier`` counts those from previous steps, which
+    are summarised in one line rather than repeated after every /refine."""
+    lines = []
+    if errors:
+        counts = Counter(_err_signature(e) for e in errors)
+        lines.append(f"❗ {len(errors)} issue(s) during {action} ({len(counts)} type[s]):")
+        for sig, n in counts.most_common(limit):
+            lines.append(f"  • {sig}" + (f"  (×{n})" if n > 1 else ""))
+        if len(counts) > limit:
+            lines.append(f"  …and {len(counts) - limit} more type(s)")
+    elif earlier:
+        lines.append(f"✅ No issues during {action}.")
+    if earlier:
+        lines.append(f"  ({earlier} earlier issue(s) from previous steps not repeated)")
     return lines
 
 
@@ -664,9 +671,11 @@ def format_assets_line(result: dict):
     return "  ·  ".join(parts) or None
 
 
-def format_review(proj: str, result: dict) -> str:
+def format_review(proj: str, result: dict, errors_from: int = 0,
+                  action: str = "processing") -> str:
     """Pre-download review: counts, per-shot clip spread, QA flags, errors, and
-    the action prompt."""
+    the action prompt. ``errors_from`` is where the latest action's errors start
+    in ``result["errors"]`` (a /refine or /redo shows only its own)."""
     shots = result.get("shots") or []
     lines = [
         f"📋 {proj} — ready to review",
@@ -682,7 +691,9 @@ def format_review(proj: str, result: dict) -> str:
     if assets_line:
         lines.append(assets_line)
     lines += format_qa_block(result.get("qa") or {})
-    lines += format_errors_block(result.get("errors") or [])
+    errs = result.get("errors") or []
+    lines += format_errors_block(errs[errors_from:], action=action,
+                                 earlier=min(errors_from, len(errs)))
     lines.append("")
     lines.append("Reply:  /download  ·  /refine  ·  /details  ·  /cancel")
     return "\n".join(lines)
@@ -1580,6 +1591,7 @@ def _run_refine(chat_id, only_slots=None) -> None:
     status = send_message(chat_id, f"🛠 Refining {target_desc} for '{proj}'…")
     msg_id = status.get("message_id")
     key = os.getenv("GROQ_API_KEY")
+    errors_from = len(pend["errors"])   # the review below shows only this refine's
     try:
         with bot_settings.apply_env(settings):
             # A manual /refine redoes every flagged shot, low severity included —
@@ -1603,7 +1615,8 @@ def _run_refine(chat_id, only_slots=None) -> None:
     pend["qa"] = new_qa
     _persist_pending()   # selection changed — re-snapshot so a restart keeps it
     edit_message(chat_id, msg_id, f"🛠 {proj} — refined {n} shot(s).")
-    send_message(chat_id, format_review(proj, result))
+    send_message(chat_id, format_review(proj, result, errors_from=errors_from,
+                                        action="this /refine"))
 
 
 def _run_redo(chat_id) -> None:
@@ -1634,6 +1647,7 @@ def _run_redo(chat_id) -> None:
     redo_settings = dict(settings, use_youtube=True,
                          youtube_num=max(8, int(settings.get("youtube_num", 4))))
     key = os.getenv("GROQ_API_KEY")
+    errors_from = len(pend["errors"])   # the review below shows only this redo's
     try:
         with bot_settings.apply_env(redo_settings):
             n = fill_empty_shots(shots, groq_key=key, video_topic=pend["topic"],
@@ -1655,7 +1669,8 @@ def _run_redo(chat_id) -> None:
     still = sum(1 for s in shots
                 if s.get("priority") != "none" and not s.get("selected_results"))
     edit_message(chat_id, msg_id, f"♻️ {proj} — filled {n} shot(s); {still} still empty.")
-    send_message(chat_id, format_review(proj, result))
+    send_message(chat_id, format_review(proj, result, errors_from=errors_from,
+                                        action="this /redo"))
 
 
 # ── log export + command registration ────────────────────────────────────────

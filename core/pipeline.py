@@ -1136,6 +1136,7 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     # clip (the one the reviewer saw and flagged) is remembered on the shot so the
     # re-fetch/re-rank can't hand the same clip straight back.
     previous: dict = {}
+    notes_by_slot: dict = {}
     for s in targets:
         sid = s.get("slot_id")
         sel = s.get("selected_results") or []
@@ -1145,19 +1146,37 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
             rejected.update(str(x) for x in (sel[0].get("url"), sel[0].get("page_url"),
                                              _asset_ident(sel[0])) if x)
             s["qa_rejected"] = sorted(rejected)
-        notes = "; ".join(
+        notes_by_slot[sid] = "; ".join(
             f"{i.get('problem', '')} → {i.get('suggestion', '')}".strip(" →")
             for i in by_slot[sid]
         ) or "Find a more relevant, higher-quality clip than the current pick."
+
+    # One query-regeneration LLM call per shot (each carries its own QA notes),
+    # run in parallel — serially they were ~5s apiece, the slowest part of a
+    # /refine. Each call mutates only its own target; neighbours are only read.
+    def _regen(s):
+        sid = s.get("slot_id")
         try:
             regenerate_shot_queries(
                 shots, {sid}, api_key=key, video_topic=video_topic,
-                custom_instructions=f"QA feedback to fix for this shot: {notes}",
+                custom_instructions=f"QA feedback to fix for this shot: {notes_by_slot[sid]}",
+                errors=errors,
             )
         except Exception as e:
             errors.append(f"refine regen slot {sid}: {e}")
+
+    import concurrent.futures
+    try:
+        workers = int(os.getenv("REFINE_WORKERS", "4") or 4)
+    except ValueError:
+        workers = 4
+    workers = max(1, min(len(targets), workers))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(_regen, targets))
+
+    for s in targets:
         # The ranker judges the new pool against this too, not just the queries.
-        s["refine_note"] = notes
+        s["refine_note"] = notes_by_slot[s.get("slot_id")]
         # YouTube searches run on youtube_keywords, which were seeded from the
         # ORIGINAL queries and are only ever filled when missing — drop them so
         # they re-seed from the new queries instead of re-running the old search.

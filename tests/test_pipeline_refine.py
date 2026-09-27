@@ -261,3 +261,41 @@ def test_refine_and_review_skips_review_when_nothing_changed(monkeypatch):
     shots = [{"slot_id": 5, "priority": "high", "selected_results": [{"url": "vent"}]}]
     qa = {"issues": [{"slot_id": 5, "severity": "medium", "problem": "p"}]}
     assert pl.refine_and_review(shots, qa, groq_key="k", errors=[]) == (0, qa)
+
+
+def test_refine_regenerates_queries_in_parallel(monkeypatch):
+    """Each flagged shot's query regeneration is its own LLM call; they must run
+    concurrently. A 3-party barrier only passes if all 3 calls overlap."""
+    import threading
+    _stub_deps(monkeypatch)
+    monkeypatch.delenv("REFINE_WORKERS", raising=False)
+    barrier = threading.Barrier(3, timeout=5)
+    notes = {}
+
+    def _regen(shots, slot_ids, custom_instructions="", **k):
+        barrier.wait()                                  # BrokenBarrierError if serial
+        notes[next(iter(slot_ids))] = custom_instructions
+    monkeypatch.setattr(core.director, "regenerate_shot_queries", _regen)
+
+    shots = [{"slot_id": i, "priority": "high", "selected_results": [{"url": f"u{i}"}]}
+             for i in (1, 2, 3)]
+    qa = {"issues": [{"slot_id": i, "severity": "high", "problem": f"bad {i}", "suggestion": "s"}
+                     for i in (1, 2, 3)]}
+    errors = []
+    refine_flagged_shots(shots, qa, groq_key="k", errors=errors)
+    assert errors == []
+    assert all(f"bad {i}" in notes[i] for i in (1, 2, 3))   # each call got its own notes
+
+
+def test_regen_failure_is_reported(monkeypatch):
+    from core import director
+    monkeypatch.setattr(director, "_call_llm_json",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("timeout")))
+    monkeypatch.setattr(director, "Groq", lambda api_key: None)
+    monkeypatch.setattr(director, "load_director_prompt", lambda: "p")
+    monkeypatch.setattr(director, "_render_director_system_prompt", lambda t, v, c: "sys")
+    shots = [{"slot_id": 4, "text": "t", "search_queries": ["old query"]}]
+    errors = []
+    director.regenerate_shot_queries(shots, {4}, api_key="k", errors=errors)
+    assert shots[0]["search_queries"] == ["old query"]
+    assert errors and "kept old queries" in errors[0] and "timeout" in errors[0]

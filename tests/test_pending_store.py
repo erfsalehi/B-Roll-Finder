@@ -48,3 +48,13 @@ def test_load_relinks_result_shots(tmp_path):
     assert entry["result"]["shots"] is entry["shots"]
     entry["shots"][0]["selected_results"] = [{"url": "new"}]
     assert entry["result"]["shots"][0]["selected_results"] == [{"url": "new"}]
+
+
+def test_load_relinks_result_errors(tmp_path):
+    p = str(tmp_path / "pending.json")
+    errs = ["boom"]
+    pending_store.save_pending({1: {"shots": [], "errors": errs,
+                                    "result": {"shots": [], "errors": errs}}}, p)
+    entry = pending_store.load_pending(p)[1]
+    entry["errors"].append("new refine error")
+    assert entry["result"]["errors"] == ["boom", "new refine error"]
