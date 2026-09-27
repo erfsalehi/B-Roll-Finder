@@ -83,7 +83,13 @@ _VALID_SFX = {"swoosh", "ding", "thud", "none"}
 # radius` tokens; `color`/`accent` set the palette and can still be overridden by
 # OVERLAY_TEXT_COLOR / OVERLAY_ACCENT_COLOR for a one-off tweak.
 OVERLAY_STYLES = {
-    "bold_yellow": {   # the original punchy look — default
+    "kinetic": {       # default: huge flat-yellow caps, soft shadow, no box, and a
+                       # per-letter entrance (pop / fly-in / converge / mask-slide)
+        "color": "#F8CD02", "accent": "#F8CD02",
+        "weight": 900, "upper": True, "box": "none", "stroke": False,
+        "glow": False, "radius": 0, "kinetic": True,
+    },
+    "bold_yellow": {   # the original punchy look
         "color": "#FFD60A", "accent": "#FFD400",
         "weight": 900, "upper": True, "box": "scrim", "stroke": True,
         "glow": False, "radius": 24,
@@ -104,8 +110,8 @@ OVERLAY_STYLES = {
         "glow": False, "radius": 6,
     },
 }
-DEFAULT_OVERLAY_STYLE = "bold_yellow"
-_STYLE_TOKEN_KEYS = ("weight", "upper", "box", "stroke", "glow", "radius")
+DEFAULT_OVERLAY_STYLE = "kinetic"
+_STYLE_TOKEN_KEYS = ("weight", "upper", "box", "stroke", "glow", "radius", "kinetic")
 
 
 def overlay_style_names() -> list:
@@ -115,7 +121,7 @@ def overlay_style_names() -> list:
 
 def _resolve_style() -> dict:
     """Resolve the active overlay style preset from ``OVERLAY_STYLE`` (default
-    ``bold_yellow``). Unknown names fall back to the default. ``OVERLAY_TEXT_COLOR``
+    ``kinetic``). Unknown names fall back to the default. ``OVERLAY_TEXT_COLOR``
     / ``OVERLAY_ACCENT_COLOR`` still override the preset's palette when set, so a
     one-off color change doesn't need a whole new preset. Returns a dict carrying
     the resolved ``color``/``accent`` plus the Overlay.tsx style tokens and the
@@ -452,8 +458,9 @@ def _props_for(h: dict, fps: int, style: dict) -> dict:
 # by the component source, so a style change wouldn't otherwise invalidate
 # previously-rendered clips — they'd be reused with the OLD look. (6 = style
 # presets: the props now carry a `style` token bundle. 7 = wider left/right safe
-# margin so lower-third overlays no longer hug the left frame edge.)
-_STYLE_VERSION = "7"
+# margin so lower-third overlays no longer hug the left frame edge. 8 = kinetic
+# per-letter style, now the default.)
+_STYLE_VERSION = "8"
 
 
 def _cache_key(props: dict) -> str:
@@ -662,7 +669,7 @@ def build_overlays(out_dir: str, segments: list = None, script_text: str = "",
     if not highlights:
         diag["rendered"] = 0
         return []
-    # The active style preset (OVERLAY_STYLE, default bold_yellow) sets the look
+    # The active style preset (OVERLAY_STYLE, default kinetic) sets the look
     # for every overlay; OVERLAY_TEXT_COLOR / OVERLAY_ACCENT_COLOR still override
     # its palette for a one-off tweak.
     rendered = render_overlay_clips(highlights, out_dir, fps=fps,

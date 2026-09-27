@@ -201,7 +201,7 @@ A single failed search or a dead YouTube link shouldn't leave a black hole in th
 
 A reasoning LLM picks the headings, stats, money figures and emphasis words worth showing on screen. It works on transcript chunks of about 150 s in parallel, so long videos don't get cut short. Each overlay is rendered with **Remotion** (`remotion/`) as a **transparent ProRes 4444 `.mov`** with its sound effect baked in. Animations are chosen by overlay type (title card, stat pop, money count, lower third, emphasis pop). Overlay timing follows the word-level timestamps, and each overlay shows its title word for word.
 
-- Four style presets: **Bold Yellow**, **Clean White**, **Neon Glow**, **Boxed News** (`/settings` or `OVERLAY_STYLE`).
+- Five style presets: **Kinetic Yellow** (default: big flat-yellow caps, soft shadow, no box, per-letter entrance that varies per overlay: pop, fly-in, converge, mask slide), **Bold Yellow**, **Clean White**, **Neon Glow**, **Boxed News** (`/settings` or `OVERLAY_STYLE`).
 - `/overlay` renders only the overlays for a voiceover. `/overlaytext 3.5 47% LESS WEAR` renders a single overlay.
 - Rendering needs Node plus `npm ci` in `remotion/`. The Docker image includes both. If overlays fail, the main job still completes.
 
@@ -345,7 +345,7 @@ The most useful settings (all in `.env.example` with comments):
 | `AUTO_MIN_HEIGHT` | `720` | Minimum candidate height |
 | `ENABLE_QA_REVIEW` / `AUTO_REFINE` / `AUTO_FILL` | `true` / `false` / `true` | QA stages (the bot turns refine on per chat) |
 | `FILL_EMPTY_WITH_TOPIC` / `FCPXML_FILL_GAPS` | `true` | Empty-shot fallbacks |
-| `ENABLE_TEXT_OVERLAYS`, `OVERLAY_STYLE`, `OVERLAY_CHUNK_SEC` | `true`, `bold_yellow`, `150` | Overlays |
+| `ENABLE_TEXT_OVERLAYS`, `OVERLAY_STYLE`, `OVERLAY_CHUNK_SEC` | `true`, `kinetic`, `150` | Overlays |
 | `ENABLE_EXTRA_CLIPS`, `EXTRA_PER_KEYWORD`, `EXTRA_MAX_KEYWORDS` | `true`, `2`, `12` | Extras |
 | `ENABLE_SHOT_IMAGES`, `SHOT_IMAGES_PER_SHOT` | `true`, `3` | Per-shot images |
 | `ENABLE_RELATED_IMAGES` | `true` | Related stills |

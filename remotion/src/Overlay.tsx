@@ -9,8 +9,14 @@ import {
   useVideoConfig,
 } from 'remotion';
 import {loadFont} from '@remotion/google-fonts/Montserrat';
+import {KineticEntrance, KineticText, pickEntrance} from './KineticText';
 
-const {fontFamily: MONTSERRAT} = loadFont();
+// Only the weights the style presets use (600/800/900) — loading every weight ×
+// subset made ~90 font requests per render.
+const {fontFamily: MONTSERRAT} = loadFont('normal', {
+  weights: ['600', '800', '900'],
+  subsets: ['latin'],
+});
 
 // Replace the first numeric token in `text` with `target * progress`, preserving
 // currency symbols, %, commas, decimals, and surrounding words. Drives the
@@ -61,6 +67,9 @@ export type StyleTokens = {
   glow: boolean;                        // accent-colored glow around the text
   radius: number;                       // corner radius of the box
   name: string;                         // preset id (for debugging)
+  // Per-letter "kinetic" look (KineticText.tsx) for EVERY anim — replaces the
+  // card/pill/lower-third layouts with big centred caps + a letter entrance.
+  kinetic?: boolean;
 };
 
 export type OverlayProps = {
@@ -73,6 +82,8 @@ export type OverlayProps = {
   color: string;   // primary text color
   accent: string;  // accent (bars, numbers)
   style?: StyleTokens;
+  // Force one kinetic entrance (studio/previews); normally picked from the text.
+  entrance?: KineticEntrance;
 };
 
 // The original "bold yellow" look — also the fallback when a clip was rendered
@@ -163,6 +174,26 @@ export const Overlay: React.FC<OverlayProps> = (props) => {
     sfx && sfx !== 'none' ? (
       <Audio src={staticFile(`sfx/${sfx}.mp3`)} volume={0.8} />
     ) : null;
+
+  // ── kinetic style: one look for every anim ───────────────────────────────
+  if (st.kinetic) {
+    return (
+      <AbsoluteFill>
+        {Sfx}
+        <KineticText
+          text={text}
+          frame={frame}
+          fps={fps}
+          durationInFrames={durationInFrames}
+          color={color}
+          fontFamily={FONT}
+          weight={st.weight}
+          upper={st.upper}
+          entrance={props.entrance ?? pickEntrance(text, props.type)}
+        />
+      </AbsoluteFill>
+    );
+  }
 
   // ── title_card: centered title with an accent bar that wipes in ──────────
   if (anim === 'title_card') {

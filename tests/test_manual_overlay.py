@@ -85,7 +85,8 @@ def test_resolve_style_default_and_pick(monkeypatch):
     monkeypatch.delenv("OVERLAY_STYLE", raising=False)
     monkeypatch.delenv("OVERLAY_TEXT_COLOR", raising=False)
     monkeypatch.delenv("OVERLAY_ACCENT_COLOR", raising=False)
-    assert ovr._resolve_style()["name"] == "bold_yellow"
+    s = ovr._resolve_style()
+    assert s["name"] == "kinetic" and s["kinetic"] is True and s["box"] == "none"
 
     monkeypatch.setenv("OVERLAY_STYLE", "neon")
     s = ovr._resolve_style()
@@ -93,7 +94,7 @@ def test_resolve_style_default_and_pick(monkeypatch):
 
     # Unknown name falls back to the default preset.
     monkeypatch.setenv("OVERLAY_STYLE", "does_not_exist")
-    assert ovr._resolve_style()["name"] == "bold_yellow"
+    assert ovr._resolve_style()["name"] == "kinetic"
 
 
 def test_resolve_style_color_override(monkeypatch):
