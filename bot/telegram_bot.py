@@ -1578,8 +1578,11 @@ def _run_refine(chat_id, only_slots=None) -> None:
     key = os.getenv("GROQ_API_KEY")
     try:
         with bot_settings.apply_env(settings):
+            # A manual /refine redoes every flagged shot, low severity included —
+            # only the automatic post-QA pass limits itself to high/medium.
             n = refine_flagged_shots(shots, qa, groq_key=key, video_topic=pend["topic"],
-                                     errors=pend["errors"], only_slots=only_slots)
+                                     errors=pend["errors"], only_slots=only_slots,
+                                     severities=("high", "medium", "low"))
             new_qa = review_timeline(shots, api_key=key, video_topic=pend["topic"]) if n else qa
             write_fcpxml(shots, proj)
     except Exception as e:

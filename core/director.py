@@ -736,35 +736,42 @@ def regenerate_shot_queries(
     targets = [s for s in shots if s.get("slot_id") in slot_ids and s.get("priority") != "none"]
     total = max(len(targets), 1)
 
+    # Context comes from narration shots only: extras (appended after the last
+    # narration shot) carry no text/shot_type, and indexing them used to raise
+    # KeyError and abort the regen for the last shots of every video.
+    narration = [s for s in shots if not s.get("is_extra")]
+
     for idx, target in enumerate(targets):
-        pos = shots.index(target)
-        before = shots[max(0, pos - context_window): pos]
-        after  = shots[pos + 1: pos + 1 + context_window]
+        pos = narration.index(target) if target in narration else shots.index(target)
+        seq = narration if target in narration else shots
+        before = seq[max(0, pos - context_window): pos]
+        after  = seq[pos + 1: pos + 1 + context_window]
 
         ctx_lines = []
         for s in before:
             q0 = s["search_queries"][0] if s.get("search_queries") else "—"
             ctx_lines.append(
                 "  [{shot_type}] \"{text}\" → {intent} (prev query: {q})".format(
-                    shot_type=s["shot_type"],
-                    text=s["text"][:100].strip(),
-                    intent=s["shot_intent"],
+                    shot_type=s.get("shot_type", "?"),
+                    text=(s.get("text") or "")[:100].strip(),
+                    intent=s.get("shot_intent", ""),
                     q=q0,
                 )
             )
-        ctx_lines.append(f'  >>> TARGET: "{target["text"]}" <<<')
+        ctx_lines.append(f'  >>> TARGET: "{target.get("text") or ""}" <<<')
         for s in after:
-            ctx_lines.append(f'  (next) [{s["shot_type"]}] "{s["text"][:80].strip()}"')
+            ctx_lines.append(f'  (next) [{s.get("shot_type", "?")}] "{(s.get("text") or "")[:80].strip()}"')
 
         old_q = " | ".join(target.get("search_queries", []))
-        dur = target.get("duration_needed_sec", max(len(target["text"].split()) / 2.5, 1.0))
-        wps_est = round(len(target["text"].split()) / max(dur, 0.1), 2)
+        text = target.get("text") or ""
+        dur = target.get("duration_needed_sec", max(len(text.split()) / 2.5, 1.0))
+        wps_est = round(len(text.split()) / max(dur, 0.1), 2)
 
         user_msg = (
             "NARRATIVE CONTEXT (surrounding shots):\n"
             + "\n".join(ctx_lines)
-            + f"\n\nWPS: {wps_est:.2f}\nSCRIPT CHUNK:\n{target['text']}"
-            + (f"\n\nPREVIOUSLY TRIED QUERIES (produced zero results — generate different ones): {old_q}" if old_q else "")
+            + f"\n\nWPS: {wps_est:.2f}\nSCRIPT CHUNK:\n{text}"
+            + (f"\n\nPREVIOUSLY TRIED QUERIES (did not produce a usable clip — generate different ones): {old_q}" if old_q else "")
             + "\n\nReturn a JSON with a single-item 'shots' array. "
             "Produce NEW search_queries that differ from any previously tried queries."
         )

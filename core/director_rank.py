@@ -225,6 +225,10 @@ def build_timeline_summary(shots: list) -> str:
     for s in shots:
         if s.get("priority") == "none" or s.get("skipped"):
             continue
+        # Extras sit off-timeline (library bin only); showing them made the
+        # reviewer spend its notes on an "untimed tail" it can't flag anyway.
+        if s.get("is_extra"):
+            continue
         if not s.get("selected_results"):
             continue
         dur = s.get("duration_needed_sec")

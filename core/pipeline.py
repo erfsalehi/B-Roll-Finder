@@ -1093,7 +1093,8 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     from core.director import regenerate_shot_queries
     from core.director_youtube import seed_youtube_keywords
     from core.director_search import fetch_with_retries, filter_youtube_sd_candidates
-    from core.director_rank import rank_shot_candidates, auto_select_top_candidates
+    from core.director_rank import (rank_shot_candidates, auto_select_top_candidates,
+                                    _asset_ident)
 
     key = groq_key or os.getenv("GROQ_API_KEY")
     by_slot: dict = {}
@@ -1122,9 +1123,17 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
         progress(f"Refining {len(targets)} flagged shot(s)…")
 
     # Regenerate queries per flagged shot, guided by that shot's QA feedback, then
-    # clear its old candidates/selection so it gets a fresh fetch + pick.
+    # clear its old candidates/selection so it gets a fresh fetch + pick. The lead
+    # clip (the one the reviewer saw and flagged) is remembered on the shot so the
+    # re-fetch/re-rank can't hand the same clip straight back.
     for s in targets:
         sid = s.get("slot_id")
+        sel = s.get("selected_results") or []
+        if sel:
+            rejected = set(s.get("qa_rejected") or [])
+            rejected.update(str(x) for x in (sel[0].get("url"), sel[0].get("page_url"),
+                                             _asset_ident(sel[0])) if x)
+            s["qa_rejected"] = sorted(rejected)
         notes = "; ".join(
             f"{i.get('problem', '')} → {i.get('suggestion', '')}".strip(" →")
             for i in by_slot[sid]
@@ -1162,6 +1171,7 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
         except Exception as e:
             errors.append(f"refine clip_library: {e}")
     _inject_segments(targets, video_topic, errors)
+    _drop_qa_rejected(targets)
 
     try:
         rank_shot_candidates(targets, api_key=key, video_topic=video_topic)
@@ -1172,6 +1182,26 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     # shot, so no separate YouTube-first reordering is needed here.
     auto_select_top_candidates(shots)   # fills the now-empty refreshed shots
     return sum(1 for s in targets if s.get("selected_results"))
+
+
+def _drop_qa_rejected(shots: list) -> int:
+    """Remove from each shot's candidate pool any clip a refine already rejected
+    for that shot (``qa_rejected``). Filters the list only — the candidate dicts
+    may be shared across shots, so they're never mutated. Returns how many
+    candidates were dropped."""
+    from core.director_rank import _asset_ident
+    dropped = 0
+    for s in shots:
+        bad = set(s.get("qa_rejected") or [])
+        if not bad:
+            continue
+        pool = s.get("video_results") or []
+        keep = [c for c in pool
+                if not ({str(c.get("url") or ""), str(c.get("page_url") or ""),
+                         str(_asset_ident(c))} & bad)]
+        dropped += len(pool) - len(keep)
+        s["video_results"] = keep
+    return dropped
 
 
 def _swap_failing_extras(shots: list, report: dict, min_height: int = None) -> int:
