@@ -36,3 +36,15 @@ def test_save_tolerates_nonserializable(tmp_path):
     pending_store.save_pending({1: {"obj": object()}}, path)
     out = pending_store.load_pending(path)
     assert 1 in out
+
+
+def test_load_relinks_result_shots(tmp_path):
+    """After a restart, refine updates entry['shots']; the review message reads
+    entry['result']['shots']. They must be the same list again after loading."""
+    p = str(tmp_path / "pending.json")
+    shots = [{"slot_id": 5, "selected_results": []}]
+    pending_store.save_pending({1: {"shots": shots, "result": {"shots": shots}}}, p)
+    entry = pending_store.load_pending(p)[1]
+    assert entry["result"]["shots"] is entry["shots"]
+    entry["shots"][0]["selected_results"] = [{"url": "new"}]
+    assert entry["result"]["shots"][0]["selected_results"] == [{"url": "new"}]

@@ -48,6 +48,11 @@ def load_pending(path: str = DEFAULT_PATH) -> dict:
         return {}
     out = {}
     for k, v in (data or {}).items():
+        # In memory, entry["shots"] and entry["result"]["shots"] are ONE list;
+        # JSON splits them into two copies. Re-link them, or /refine and /redo
+        # update one while the review message reads the other (stale) one.
+        if isinstance(v, dict) and isinstance(v.get("result"), dict) and "shots" in v:
+            v["result"]["shots"] = v["shots"]
         try:
             out[int(k)] = v
         except (TypeError, ValueError):

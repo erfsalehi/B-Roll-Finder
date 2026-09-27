@@ -131,10 +131,15 @@ def _format_shot_block(shot: dict) -> str:
     """Render one shot (narration + intent + indexed candidates) for a batch."""
     candidate_lines = [_format_candidate(i, c) for i, c in enumerate(shot['video_results'])]
     history = f"{shot['edit_history']}\n" if shot.get('edit_history') else ""
+    # Set only while refine re-picks a shot the reviewer rejected: without it the
+    # ranker applies the same taste that chose the rejected clip in the first place.
+    note = (f"REVIEWER FEEDBACK (the previous pick was rejected — rank candidates that "
+            f"fix this first): {shot['refine_note']}\n") if shot.get('refine_note') else ""
     return (
         f"=== SHOT shot_id={shot.get('slot_id')} ===\n"
         f"NARRATION: \"{shot.get('text', '')}\"\n"
         f"SHOT INTENT: {shot.get('shot_intent', '')}\n"
+        f"{note}"
         f"{history}"
         f"CANDIDATES:\n" + "\n".join(candidate_lines)
     )
@@ -234,10 +239,14 @@ def build_timeline_summary(shots: list) -> str:
         dur = s.get("duration_needed_sec")
         dur_str = f"{float(dur):.1f}s" if dur is not None else "?s"
         intent = (s.get("shot_intent") or s.get("text") or "").strip()[:120]
+        # The reviewer only sees the lead clip; say how many clips share the
+        # shot, or a 13s shot cut into 4 clips reads as one clip overstaying.
+        n = len(s.get("selected_results") or [])
+        more = f" (+{n - 1} more clip{'s' if n > 2 else ''} cut in)" if n > 1 else ""
         lines.append(
             f"Shot {s.get('slot_id')} "
             f"[{s.get('timestamp_start_str', '?')}–{s.get('timestamp_end_str', '?')}, {dur_str}] "
-            f"intent: {intent} | visual: {_selected_clip_label(s)}"
+            f"intent: {intent} | visual: {_selected_clip_label(s)}{more}"
         )
     return "\n".join(lines)
 

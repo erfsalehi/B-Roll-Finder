@@ -1080,7 +1080,8 @@ def fill_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
 
 def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topic: str = "",
                          errors: list = None, progress=None,
-                         severities=("high", "medium"), only_slots=None) -> int:
+                         severities=("high", "medium"), only_slots=None,
+                         qa_driven: bool = True) -> int:
     """QA-driven re-pick: for each shot the Step 5.5 review flagged, regenerate
     better search queries from the reviewer's suggestion, re-fetch, re-rank, and
     re-select — so the timeline self-corrects the problems the QA pass found.
@@ -1088,7 +1089,15 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     By default touches shots whose issue ``severity`` is in ``severities``. Pass
     ``only_slots`` (an iterable of slot_ids) to refine exactly those shots instead
     — even ones the QA pass didn't flag (used by the bot's ``/refine 4 9``).
-    Returns how many targeted shots ended up with a (re)selection.
+
+    ``qa_driven`` (the default) bans the shot's current lead clip — the one the
+    reviewer saw — from coming back, and keeps the previous pick when every new
+    candidate was ranked irrelevant. Boundary enforcement passes False: its
+    failing clip may not be the lead (the candidate filters already keep
+    boundary-violating clips out), and a valid-but-weak clip beats a failing one.
+
+    A shot whose re-fetch comes back empty keeps its previous selection instead
+    of going blank. Returns how many targeted shots got a new selection.
     """
     from core.director import regenerate_shot_queries
     from core.director_youtube import seed_youtube_keywords
@@ -1126,10 +1135,12 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     # clear its old candidates/selection so it gets a fresh fetch + pick. The lead
     # clip (the one the reviewer saw and flagged) is remembered on the shot so the
     # re-fetch/re-rank can't hand the same clip straight back.
+    previous: dict = {}
     for s in targets:
         sid = s.get("slot_id")
         sel = s.get("selected_results") or []
-        if sel:
+        previous[sid] = (list(sel), s.get("auto_selected"))
+        if sel and qa_driven:
             rejected = set(s.get("qa_rejected") or [])
             rejected.update(str(x) for x in (sel[0].get("url"), sel[0].get("page_url"),
                                              _asset_ident(sel[0])) if x)
@@ -1145,6 +1156,12 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
             )
         except Exception as e:
             errors.append(f"refine regen slot {sid}: {e}")
+        # The ranker judges the new pool against this too, not just the queries.
+        s["refine_note"] = notes
+        # YouTube searches run on youtube_keywords, which were seeded from the
+        # ORIGINAL queries and are only ever filled when missing — drop them so
+        # they re-seed from the new queries instead of re-running the old search.
+        s.pop("youtube_keywords", None)
         s["video_results"] = []
         s.pop("selected_results", None)
         s.pop("auto_selected", None)
@@ -1155,14 +1172,6 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
         pass
     fetch_with_retries(targets, errors=errors)
 
-    if os.getenv("YOUTUBE_API_KEY"):
-        try:
-            filter_youtube_sd_candidates(targets, api_key=os.getenv("YOUTUBE_API_KEY"))
-        except Exception as e:
-            errors.append(f"refine hd_filter: {e}")
-
-    drop_shorts(targets)   # Shorts never allowed
-
     if _flag_default("AUTO_USE_LIBRARY", True):
         try:
             from core.clip_library import get_library_stats, inject_library_candidates
@@ -1171,17 +1180,48 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
         except Exception as e:
             errors.append(f"refine clip_library: {e}")
     _inject_segments(targets, video_topic, errors)
+
+    if os.getenv("YOUTUBE_API_KEY"):
+        try:
+            filter_youtube_sd_candidates(targets, api_key=os.getenv("YOUTUBE_API_KEY"))
+        except Exception as e:
+            errors.append(f"refine hd_filter: {e}")
+
+    # Same candidate filters as the main pipeline — without them a refined pick
+    # could be a long or vertical clip that boundary enforcement then silently
+    # re-picks at /download, after the user already reviewed it.
+    drop_shorts(targets)
+    drop_long_videos(targets)
+    drop_vertical(targets)
     _drop_qa_rejected(targets)
+    _drop_used_elsewhere(targets, shots)
 
     try:
-        rank_shot_candidates(targets, api_key=key, video_topic=video_topic)
+        rank_shot_candidates(targets, api_key=key, video_topic=video_topic, errors=errors)
     except Exception as e:
         errors.append(f"refine rank: {e}")
 
     # The per-shot quota in auto_select binds a YouTube clip for each refreshed
     # shot, so no separate YouTube-first reordering is needed here.
     auto_select_top_candidates(shots)   # fills the now-empty refreshed shots
-    return sum(1 for s in targets if s.get("selected_results"))
+
+    refined = 0
+    for s in targets:
+        s.pop("refine_note", None)
+        sel = s.get("selected_results") or []
+        if sel and (not qa_driven or any(not c.get("irrelevant") for c in sel)):
+            refined += 1
+            continue
+        # Nothing usable came back — an empty slot (or, for a QA re-pick, a clip
+        # the ranker itself called irrelevant) is worse than the previous pick.
+        old_sel, old_auto = previous.get(s.get("slot_id"), ([], None))
+        if old_sel:
+            s["selected_results"] = old_sel
+            if old_auto:
+                s["auto_selected"] = old_auto
+            errors.append(f"refine: no usable replacement for shot {s.get('slot_id')} "
+                          "— kept its previous clip")
+    return refined
 
 
 def _drop_qa_rejected(shots: list) -> int:
@@ -1201,6 +1241,29 @@ def _drop_qa_rejected(shots: list) -> int:
                          str(_asset_ident(c))} & bad)]
         dropped += len(pool) - len(keep)
         s["video_results"] = keep
+    return dropped
+
+
+def _drop_used_elsewhere(targets: list, shots: list) -> int:
+    """Keep a refined shot from re-using a clip another shot already carries.
+
+    auto_select's variety guard only looks BACK at earlier shots; when refine
+    refills a shot in the middle of a finished timeline, the shots after it are
+    already bound, so without this a refined pick can duplicate its neighbour
+    (the "third consecutive tint close-up" pattern). Filters the list only
+    (candidate dicts may be shared). A pool is left untouched if the filter would
+    empty it — a repeat beats a blank slot. Returns how many were dropped."""
+    from core.director_rank import _asset_ident
+    target_ids = {id(s) for s in targets}
+    used = {str(_asset_ident(c)) for s in shots if id(s) not in target_ids
+            for c in (s.get("selected_results") or [])}
+    dropped = 0
+    for s in targets:
+        pool = s.get("video_results") or []
+        keep = [c for c in pool if str(_asset_ident(c)) not in used]
+        if keep and len(keep) != len(pool):
+            dropped += len(pool) - len(keep)
+            s["video_results"] = keep
     return dropped
 
 
@@ -1261,7 +1324,7 @@ def enforce_timeline(shots: list, groq_key: str = None, video_topic: str = "",
         try:
             refine_flagged_shots(shots, _failures_to_qa(report["failures"]),
                                  groq_key=groq_key, video_topic=video_topic,
-                                 errors=errors, only_slots=failing)
+                                 errors=errors, only_slots=failing, qa_driven=False)
         except Exception as e:
             errors.append(f"enforce round {rounds}: {e}")
             break

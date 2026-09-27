@@ -5,6 +5,7 @@ import core.director_youtube
 import core.director_search
 import core.director_rank
 from core.pipeline import refine_flagged_shots
+from core.director_youtube import seed_youtube_keywords as _real_seed
 
 
 def _stub_deps(monkeypatch):
@@ -121,3 +122,101 @@ def test_timeline_summary_excludes_extras():
     ]
     out = build_timeline_summary(shots)
     assert "Main clip" in out and "Extra clip" not in out
+
+
+def _fetching(monkeypatch, pools):
+    """Stub the fetch so each target shot gets ``pools[slot_id]`` as candidates."""
+    def _fetch(shots, **k):
+        for s in shots:
+            s["video_results"] = [dict(c) for c in pools.get(s["slot_id"], [])]
+    monkeypatch.setattr(core.director_search, "fetch_with_retries", _fetch)
+
+    def _select(shots, **k):
+        for s in shots:
+            if not s.get("selected_results") and s.get("video_results"):
+                s["selected_results"] = [s["video_results"][0]]
+    monkeypatch.setattr(core.director_rank, "auto_select_top_candidates", _select)
+
+
+def test_refine_reseeds_youtube_keywords_from_new_queries(monkeypatch):
+    """YouTube searches run on youtube_keywords — they must follow the new
+    queries, not keep re-running the original search."""
+    _stub_deps(monkeypatch)
+    monkeypatch.setattr(core.director_youtube, "seed_youtube_keywords", _real_seed)
+    seen = {}
+
+    def _regen(shots, slot_ids, **k):
+        for s in shots:
+            if s["slot_id"] in slot_ids:
+                s["search_queries"] = ["mechanic handing customer large invoice"]
+    monkeypatch.setattr(core.director, "regenerate_shot_queries", _regen)
+
+    def _fetch(shots, **k):
+        seen["yt"] = [s.get("youtube_keywords") for s in shots]
+    monkeypatch.setattr(core.director_search, "fetch_with_retries", _fetch)
+
+    shots = [{"slot_id": 8, "priority": "high", "search_queries": ["mechanic customer"],
+              "youtube_keywords": ["mechanic customer"], "selected_results": [{"url": "handshake"}]}]
+    qa = {"issues": [{"slot_id": 8, "severity": "high", "problem": "p", "suggestion": "s"}]}
+    refine_flagged_shots(shots, qa, groq_key="k", errors=[])
+    assert seen["yt"] == [["mechanic handing customer large invoice"]]
+
+
+def test_refine_keeps_previous_pick_when_nothing_found(monkeypatch):
+    _stub_deps(monkeypatch)
+    _fetching(monkeypatch, {})                     # re-fetch returns nothing
+    old = [{"url": "vent", "source": "youtube"}, {"url": "px", "source": "pexels"}]
+    shots = [{"slot_id": 5, "priority": "high", "selected_results": list(old)}]
+    qa = {"issues": [{"slot_id": 5, "severity": "medium", "problem": "p", "suggestion": "s"}]}
+    errors = []
+    assert refine_flagged_shots(shots, qa, groq_key="k", errors=errors) == 0
+    assert shots[0]["selected_results"] == old     # not left empty
+    assert any("kept its previous clip" in e for e in errors)
+
+
+def test_refine_keeps_previous_pick_over_irrelevant_one(monkeypatch):
+    _stub_deps(monkeypatch)
+    _fetching(monkeypatch, {5: [{"url": "junk", "source": "youtube", "irrelevant": True}]})
+    old = [{"url": "vent", "source": "youtube"}]
+    qa = {"issues": [{"slot_id": 5, "severity": "medium", "problem": "p", "suggestion": "s"}]}
+
+    shots = [{"slot_id": 5, "priority": "high", "selected_results": list(old)}]
+    assert refine_flagged_shots(shots, qa, groq_key="k", errors=[]) == 0
+    assert shots[0]["selected_results"] == old
+
+    # Boundary enforcement: a valid-but-weak clip beats the failing one, and the
+    # lead is NOT banned (the failing clip may be a different one).
+    shots = [{"slot_id": 5, "priority": "high", "selected_results": list(old)}]
+    assert refine_flagged_shots(shots, qa, groq_key="k", errors=[], only_slots={5},
+                                qa_driven=False) == 1
+    assert shots[0]["selected_results"][0]["url"] == "junk"
+    assert "qa_rejected" not in shots[0]
+
+
+def test_refine_avoids_clips_other_shots_use(monkeypatch):
+    _stub_deps(monkeypatch)
+    _fetching(monkeypatch, {27: [{"url": "tint-closeup", "source": "youtube"},
+                                 {"url": "hot-cabin", "source": "youtube"}]})
+    shots = [
+        {"slot_id": 27, "priority": "high", "selected_results": [{"url": "old"}]},
+        {"slot_id": 28, "priority": "high", "selected_results": [{"url": "tint-closeup"}]},
+    ]
+    qa = {"issues": [{"slot_id": 27, "severity": "medium", "problem": "p", "suggestion": "s"}]}
+    assert refine_flagged_shots(shots, qa, groq_key="k", errors=[]) == 1
+    assert shots[0]["selected_results"][0]["url"] == "hot-cabin"
+
+
+def test_ranker_sees_reviewer_feedback():
+    from core.director_rank import _format_shot_block
+    shot = {"slot_id": 8, "text": "t", "shot_intent": "i", "refine_note": "handshake reads as trust",
+            "video_results": [{"title": "a", "source": "youtube"}]}
+    assert "REVIEWER FEEDBACK" in _format_shot_block(shot)
+    shot.pop("refine_note")
+    assert "REVIEWER FEEDBACK" not in _format_shot_block(shot)
+
+
+def test_timeline_summary_shows_clip_count():
+    from core.director_rank import build_timeline_summary
+    shots = [{"slot_id": 20, "text": "a", "duration_needed_sec": 13.5,
+              "selected_results": [{"title": "Traffic stop"}, {"title": "b"}, {"title": "c"}]}]
+    assert "+2 more clips" in build_timeline_summary(shots)

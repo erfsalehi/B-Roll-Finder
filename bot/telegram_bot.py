@@ -595,7 +595,7 @@ def format_qa_block(qa: dict, limit: int = 8) -> list:
     issues = (qa or {}).get("issues") or []
     head = f"QA: {verdict}"
     if qa.get("refined"):
-        head += f"  (auto-refined {qa['refined']} shot[s])"
+        head += f"  (refined {qa['refined']} shot[s])"
     lines.append(head)
     for it in issues[:limit]:
         sev = it.get("severity", "med")
@@ -1571,8 +1571,9 @@ def _run_refine(chat_id, only_slots=None) -> None:
                               "e.g. /refine 4 9 — or /download to proceed.")
         return
 
+    flagged = {i.get("slot_id") for i in qa.get("issues") or [] if i.get("slot_id") is not None}
     target_desc = (f"shot(s) {', '.join(map(str, sorted(only_slots)))}" if only_slots
-                   else f"{len(qa['issues'])} flagged shot(s)")
+                   else f"{len(flagged)} flagged shot(s)")
     status = send_message(chat_id, f"🛠 Refining {target_desc} for '{proj}'…")
     msg_id = status.get("message_id")
     key = os.getenv("GROQ_API_KEY")
