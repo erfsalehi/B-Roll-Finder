@@ -773,6 +773,11 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
                 'thumbnail': _yt_thumbnail(url, entry),
                 'width':     entry.get('width'),
                 'height':    entry.get('height') or 0,
+                # The flat search result carries the channel and the snippet
+                # YouTube shows under the title — the only hint (besides the
+                # often-clickbait title) of what the footage actually shows.
+                'channel':     entry.get('channel') or entry.get('uploader') or '',
+                'description': entry.get('description') or '',
             })
 
         if not initial_candidates:
@@ -831,6 +836,8 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
                     reverse=True,
                 ),
                 'thumbnail': (thumbs[-1].get('url') if thumbs else full_info.get('thumbnail')) or _yt_thumbnail(item['url'], full_info),
+                'channel':     item.get('channel') or full_info.get('channel') or '',
+                'description': item.get('description') or (full_info.get('description') or '')[:300],
             })
             if is_s:
                 if len(shorts_final) < num_shorts:

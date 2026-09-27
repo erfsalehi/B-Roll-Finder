@@ -216,7 +216,15 @@ def _selected_clip_label(shot: dict) -> str:
     src = (c.get("source") or c.get("original_source") or "?")
     q = c.get("matched_query") or ""
     extra = f', via "{q}"' if q else ""
-    return f'"{title}" [{src}{extra}]'
+    # A YouTube title is often clickbait; the channel + description snippet (or a
+    # library segment's own description) says more about what's on screen.
+    # Stock descriptions are just an author credit — skip those.
+    desc = ""
+    if _is_youtube(c) or c.get("library_segment_id"):
+        d = " ".join((c.get("description") or "").split())
+        if d:
+            desc = f" — {d[:160]}{'…' if len(d) > 160 else ''}"
+    return f'"{title}" [{src}{extra}]{desc}'
 
 
 def build_timeline_summary(shots: list, changed: set = None) -> str:

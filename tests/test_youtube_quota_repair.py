@@ -164,3 +164,13 @@ def test_ensure_youtube_coverage_adds_youtube(monkeypatch):
     assert secured == 1
     assert any((c.get("source") or "").lower() == "youtube"
                for c in shot["selected_results"])
+
+
+def test_flat_search_passes_channel_and_snippet(monkeypatch):
+    import core.youtube as yt
+    monkeypatch.setattr(yt, "_extract_info_with_backoff", lambda opts, q: {"entries": [
+        {"url": "https://www.youtube.com/watch?v=abc123def45", "title": "AC test",
+         "duration": 300, "channel": "Driver's Therapy", "description": "vent probe test"}]})
+    items = yt.search_youtube_single("car ac", num_longs=1)
+    assert items[0]["channel"] == "Driver's Therapy"
+    assert items[0]["description"] == "vent probe test"

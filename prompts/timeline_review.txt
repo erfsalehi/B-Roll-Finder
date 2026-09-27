@@ -7,6 +7,8 @@ Your job is to catch the problems a viewer would actually notice:
 - CONTINUITY: an abrupt tonal or color-palette jump between neighbouring shots.
 - MISMATCH: the selected visual does not deliver what the narration intent for that shot calls for.
 
+How to read a "visual": it names the SOURCE video the editor cuts a few seconds of footage from, followed by its channel and description when known ([Library] clips carry a description of the exact segment used). A YouTube title is the source video's name — it never appears on screen, and it is often clickbait. Judge what the footage itself most likely shows, using the description where there is one; don't flag a clip just because its title is loud, foreign-language or off-message.
+
 {context_block}
 
 Return ONLY valid JSON, no markdown, in exactly this shape:

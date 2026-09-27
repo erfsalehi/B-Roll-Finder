@@ -108,6 +108,17 @@ def _normalize_youtube_url(url: str) -> str:
     return url
 
 
+def _youtube_description(channel: str, snippet: str, limit: int = 200) -> str:
+    """'by Channel — snippet' — the same shape the Data API search produces, so
+    the ranker (and the QA review) get the same disambiguating signal from
+    either YouTube search path."""
+    snippet = " ".join((snippet or "").split())
+    if len(snippet) > limit:
+        snippet = snippet[:limit].rstrip() + "…"
+    head = f"by {channel}" if channel else ""
+    return " — ".join(p for p in (head, snippet) if p)
+
+
 def _classic_youtube_candidate(item: dict, query: str) -> dict:
     url = _normalize_youtube_url(item.get("url", ""))
     is_short = bool(item.get("is_short"))
@@ -117,7 +128,8 @@ def _classic_youtube_candidate(item: dict, query: str) -> dict:
         "page_url": url,
         "source": "youtube",
         "thumbnail": item.get("thumbnail", ""),
-        "description": "",
+        "description": _youtube_description(item.get("channel", ""), item.get("description", "")),
+        "channel": item.get("channel", ""),
         "duration": item.get("duration"),
         "is_short": is_short,
         "width": item.get("width") or (1080 if is_short else None),

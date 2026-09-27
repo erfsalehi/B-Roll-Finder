@@ -21,6 +21,7 @@ def test_search_youtube_classic_adapts_results(monkeypatch):
             "source": "youtube",
             "thumbnail": "",
             "description": "",
+            "channel": "",
             "duration": 120,
             "is_short": False,
             "width": None,
@@ -31,6 +32,21 @@ def test_search_youtube_classic_adapts_results(monkeypatch):
             "matched_query": "engine repair",
         }
     ]
+
+
+def test_search_youtube_classic_keeps_channel_and_snippet(monkeypatch):
+    """The ranker and QA disambiguate clickbait titles with the channel + the
+    snippet YouTube shows under the title — keep them from the flat search."""
+    monkeypatch.setattr(
+        "core.director_search.search_youtube_single",
+        lambda keyword, **k: [{"title": "YOU WON'T BELIEVE THIS AC TRICK", "url": "abc123def45",
+                               "channel": "Driver's Therapy",
+                               "description": "AC vent temperature test   with a probe " + "x" * 300}],
+    )
+    c = search_youtube_classic("car ac", num_results=1)[0]
+    assert c["channel"] == "Driver's Therapy"
+    assert c["description"].startswith("by Driver's Therapy — AC vent temperature test with a probe")
+    assert c["description"].endswith("…") and len(c["description"]) < 240
 
 
 def test_fetch_director_footage_uses_youtube_keywords_for_classic(monkeypatch):

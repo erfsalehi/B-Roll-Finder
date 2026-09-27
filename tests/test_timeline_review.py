@@ -123,3 +123,14 @@ def test_follow_up_keeps_carried_issues_when_llm_fails(monkeypatch):
     out = review_timeline([_shot(1), _shot(2)], api_key="k", previous=_PREV, changed_slots={1})
     assert [i["slot_id"] for i in out["issues"]] == [2]
     assert "not re-checked" in out["overall"]
+
+
+def test_summary_shows_youtube_description_not_stock_credit():
+    yt = {"slot_id": 1, "shot_intent": "cold air from vent", "selected_results": [{
+        "title": "INSANE AC HACK!!", "source": "youtube",
+        "description": "by Driver's Therapy — AC vent temperature test with a probe"}]}
+    px = {"slot_id": 2, "shot_intent": "sunny road", "selected_results": [{
+        "title": "Car On Sunny Road", "source": "pexels", "description": "By Jane Doe"}]}
+    out = build_timeline_summary([yt, px])
+    assert "AC vent temperature test" in out           # YouTube: footage hint shown
+    assert "Jane Doe" not in out                         # stock author credit skipped
