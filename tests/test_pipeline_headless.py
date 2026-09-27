@@ -419,3 +419,20 @@ def test_download_routes_by_source(monkeypatch, tmp_path):
     assert res["ok"] == 2
     assert ("direct", "http://x/a.mp4") in routed
     assert ("yt", "https://youtu.be/abc") in routed
+
+
+def test_qa_reviews_the_settled_timeline(_mock_stages, monkeypatch):
+    """Boundary enforcement and the YouTube guarantee can swap a shot's lead
+    clip, so they must run BEFORE the QA review, not after it."""
+    import core.director_rank
+    order = []
+    real_enforce = pipeline.enforce_timeline
+    monkeypatch.setattr(pipeline, "enforce_timeline",
+                        lambda *a, **k: order.append("enforce") or real_enforce(*a, **k))
+    monkeypatch.setattr(pipeline, "ensure_youtube_coverage",
+                        lambda *a, **k: order.append("youtube") or 0)
+    monkeypatch.setattr(core.director_rank, "review_timeline",
+                        lambda *a, **k: order.append("qa") or {"overall": "ok", "issues": []})
+    pipeline.run_pipeline_headless("voice.mp3", project_name="order", download=False)
+    assert order.index("enforce") < order.index("qa")
+    assert order.index("youtube") < order.index("qa")

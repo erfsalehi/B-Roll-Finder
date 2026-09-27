@@ -1224,6 +1224,63 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     return refined
 
 
+def _selection_signature(shots: list) -> dict:
+    """``{slot_id: (clip idents…)}`` for every narration shot — a snapshot to
+    diff against, so a follow-up review knows exactly which shots changed."""
+    from core.director_rank import _asset_ident
+    return {s.get("slot_id"): tuple(str(_asset_ident(c)) for c in (s.get("selected_results") or []))
+            for s in shots if not s.get("is_extra") and s.get("priority") != "none"}
+
+
+def _changed_slots(before: dict, after: dict) -> set:
+    return {sid for sid, sig in after.items() if sig and before.get(sid) != sig}
+
+
+def refine_and_review(shots: list, qa: dict, groq_key: str = None, video_topic: str = "",
+                      errors: list = None, progress=None, severities=("high", "medium"),
+                      only_slots=None) -> tuple:
+    """Refine the flagged shots, settle them, then VERIFY the result.
+
+    Shared by the pipeline's auto-refine and the bot's ``/refine``:
+
+    1. :func:`refine_flagged_shots` re-picks the flagged (or named) shots.
+    2. The changed shots go through the same boundary enforcement and YouTube
+       coverage /download applies — so the review below judges the clips that
+       will actually be delivered, not ones a later step swaps out.
+    3. A follow-up :func:`review_timeline` re-judges only the shots whose clips
+       changed; earlier verdicts on untouched shots carry over. Each /refine
+       therefore shrinks (or re-judges) the flag list instead of starting a
+       fresh audit that always finds a new batch.
+
+    Returns ``(n_refined, qa_report)``; the report is ``qa`` unchanged when no
+    shot's selection actually moved."""
+    from core.director_rank import review_timeline
+
+    key = groq_key or os.getenv("GROQ_API_KEY")
+    if errors is None:
+        errors = []
+    before = _selection_signature(shots)
+    n = refine_flagged_shots(shots, qa, groq_key=key, video_topic=video_topic,
+                             errors=errors, progress=progress, severities=severities,
+                             only_slots=only_slots)
+    enforce_timeline(shots, groq_key=key, video_topic=video_topic, errors=errors,
+                     progress=progress)
+    moved = _changed_slots(before, _selection_signature(shots))
+    if moved:
+        ensure_youtube_coverage([s for s in shots if s.get("slot_id") in moved],
+                                groq_key=key, video_topic=video_topic, errors=errors)
+    changed = _changed_slots(before, _selection_signature(shots))
+    if not changed:
+        return n, qa
+    if progress:
+        progress(f"Re-checking {len(changed)} changed shot(s)")
+    new_qa = review_timeline(shots, api_key=key, video_topic=video_topic,
+                             previous=qa, changed_slots=changed)
+    if n:
+        new_qa["refined"] = n
+    return n, new_qa
+
+
 def _drop_qa_rejected(shots: list) -> int:
     """Remove from each shot's candidate pool any clip a refine already rejected
     for that shot (``qa_rejected``). Filters the list only — the candidate dicts
@@ -1828,40 +1885,42 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         except Exception as e:
             errors.append(f"library images: {e}")
 
-    # 9 — QA review (optional)
-    if run_qa:
-        _p(9, "Final QA review")
-        state.qa = review_timeline(shots, api_key=key, video_topic=topic)
-        # 9b — auto-refine flagged shots, then re-review so the report reflects
-        # the fixes. Off by default; the bot turns it on per-job.
-        if auto_refine and state.qa.get("issues"):
-            _p(9, f"Refining {len(state.qa['issues'])} flagged shot(s)")
-            n_ref = refine_flagged_shots(shots, state.qa, groq_key=key, video_topic=topic,
-                                         errors=errors)
-            state.attempts["refine"] = n_ref
-            if n_ref:
-                _p(9, "Re-reviewing refined timeline")
-                state.qa = review_timeline(shots, api_key=key, video_topic=topic)
-                state.qa["refined"] = n_ref
-    else:
-        state.qa = {"overall": "QA review skipped.", "issues": []}
-
-    # 9c — Boundary enforcement: guarantee every selected clip passes the output
+    # 9 — Boundary enforcement: guarantee every selected clip passes the output
     # quality/duration/orientation boundaries before we download or compile the
     # XML. Failing shots are re-picked (up to 3 rounds), keeping the passing ones
     # untouched; anything still bad is dropped so the FCPXML is never broken.
+    # Runs BEFORE the QA review (as does the YouTube guarantee below) because
+    # both can swap a shot's lead clip — QA must judge the final timeline.
     _p(9, "Validating output boundaries")
     state.validation = enforce_timeline(shots, groq_key=key, video_topic=topic,
                                         errors=errors, progress=lambda lbl: _p(9, lbl))
     state.attempts["enforce_rounds"] = state.validation.get("rounds", 0)
     state.attempts["dropped"] = state.validation.get("dropped", 0)
 
-    # 9e — YouTube coverage guarantee: every shot must carry at least one YouTube
+    # 9b — YouTube coverage guarantee: every shot must carry at least one YouTube
     # clip. The per-shot quota already does this when a YouTube candidate was
     # fetched; this rescues the residual shots whose YouTube search came back empty.
     _p(9, "Ensuring YouTube coverage")
     state.attempts["youtube_secured"] = ensure_youtube_coverage(
         shots, groq_key=key, video_topic=topic, errors=errors)
+
+    # 9c — QA review (optional) of the settled timeline.
+    if run_qa:
+        _p(9, "Final QA review")
+        state.qa = review_timeline(shots, api_key=key, video_topic=topic)
+        # Auto-refine flagged shots, then a follow-up review that verifies just
+        # the replaced shots. Off by default; the bot turns it on per-job.
+        if auto_refine and state.qa.get("issues"):
+            n_flagged = len({i.get("slot_id") for i in state.qa["issues"]})
+            _p(9, f"Refining {n_flagged} flagged shot(s)")
+            n_ref, state.qa = refine_and_review(
+                shots, state.qa, groq_key=key, video_topic=topic, errors=errors,
+                progress=lambda lbl: _p(9, lbl))
+            state.attempts["refine"] = n_ref
+            # refine_and_review re-enforced the changed shots; refresh the verdict.
+            state.validation.update(validate_timeline(shots))
+    else:
+        state.qa = {"overall": "QA review skipped.", "issues": []}
 
     # 9d — Animated text overlays (Remotion) — part of the full process by
     # default (set ENABLE_TEXT_OVERLAYS=false to skip). Built from the transcript

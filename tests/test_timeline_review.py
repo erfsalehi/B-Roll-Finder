@@ -81,3 +81,45 @@ def test_review_uses_smart_tier(monkeypatch):
     monkeypatch.setattr(dr, "_call_llm_json", _fake)
     review_timeline([_shot(1), _shot(2)], api_key="k")
     assert captured.get("tier") == "smart"   # reasoning tier for the global pass
+
+
+# ── follow-up (verification) review ─────────────────────────────────────────
+
+_PREV = {"overall": "x", "issues": [
+    {"slot_id": 1, "severity": "high", "problem": "handshake reads as trust", "suggestion": "invoice"},
+    {"slot_id": 2, "severity": "low", "problem": "eye-roll too harsh", "suggestion": "head shake"},
+]}
+
+
+def test_follow_up_rechecks_only_changed_shots(monkeypatch):
+    seen = {}
+
+    def _fake(client, system_prompt, user_msg, **k):
+        seen["system"], seen["user"] = system_prompt, user_msg
+        return {"overall": "Fixes landed.", "issues": [
+            {"slot_id": 1, "severity": "medium", "problem": "still friendly"},  # changed → kept
+            {"slot_id": 3, "severity": "high", "problem": "brand-new nitpick"},  # unchanged → dropped
+        ]}
+    monkeypatch.setattr(dr, "_call_llm_json", _fake)
+    out = review_timeline([_shot(1), _shot(2), _shot(3)], api_key="k",
+                          previous=_PREV, changed_slots={1})
+    got = {(i["slot_id"], i["problem"], bool(i.get("carried"))) for i in out["issues"]}
+    assert got == {(1, "still friendly", False),            # re-judged
+                   (2, "eye-roll too harsh", True)}         # untouched → carried as-is
+    assert "FOLLOW-UP REVIEW" in seen["system"]
+    assert "Shot 1 [NEW CLIP]" in seen["user"] and "Shot 2 [NEW CLIP]" not in seen["user"]
+
+
+def test_follow_up_resolves_a_fixed_shot(monkeypatch):
+    monkeypatch.setattr(dr, "_call_llm_json", lambda *a, **k: {"overall": "ok", "issues": []})
+    out = review_timeline([_shot(1), _shot(2)], api_key="k", previous=_PREV, changed_slots={1, 2})
+    assert out["issues"] == []                              # both replaced, both now fine
+
+
+def test_follow_up_keeps_carried_issues_when_llm_fails(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("429")
+    monkeypatch.setattr(dr, "_call_llm_json", _boom)
+    out = review_timeline([_shot(1), _shot(2)], api_key="k", previous=_PREV, changed_slots={1})
+    assert [i["slot_id"] for i in out["issues"]] == [2]
+    assert "not re-checked" in out["overall"]

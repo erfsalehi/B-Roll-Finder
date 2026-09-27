@@ -220,3 +220,44 @@ def test_timeline_summary_shows_clip_count():
     shots = [{"slot_id": 20, "text": "a", "duration_needed_sec": 13.5,
               "selected_results": [{"title": "Traffic stop"}, {"title": "b"}, {"title": "c"}]}]
     assert "+2 more clips" in build_timeline_summary(shots)
+
+
+# ── refine_and_review: settle the changed shots, then verify only those ──────
+
+def test_refine_and_review_verifies_only_changed_shots(monkeypatch):
+    import core.pipeline as pl
+    calls = []
+
+    def _refine(shots, qa, **k):
+        shots[1]["selected_results"] = [{"url": "new-8"}]    # slot 8 got a new clip
+        return 1
+    monkeypatch.setattr(pl, "refine_flagged_shots", _refine)
+    monkeypatch.setattr(pl, "enforce_timeline", lambda shots, **k: calls.append("enforce") or {})
+    monkeypatch.setattr(pl, "ensure_youtube_coverage",
+                        lambda shots, **k: calls.append(("yt", [s["slot_id"] for s in shots])) or 0)
+    seen = {}
+
+    def _review(shots, **k):
+        seen.update(k)
+        return {"overall": "ok", "issues": []}
+    monkeypatch.setattr(core.director_rank, "review_timeline", _review)
+
+    shots = [{"slot_id": 5, "priority": "high", "selected_results": [{"url": "vent"}]},
+             {"slot_id": 8, "priority": "high", "selected_results": [{"url": "handshake"}]}]
+    qa = {"issues": [{"slot_id": 5, "severity": "low", "problem": "p"},
+                     {"slot_id": 8, "severity": "high", "problem": "q"}]}
+    n, new_qa = pl.refine_and_review(shots, qa, groq_key="k", errors=[])
+    assert n == 1 and new_qa["refined"] == 1
+    assert calls == ["enforce", ("yt", [8])]                 # only the changed shot re-covered
+    assert seen["changed_slots"] == {8} and seen["previous"] is qa
+
+
+def test_refine_and_review_skips_review_when_nothing_changed(monkeypatch):
+    import core.pipeline as pl
+    monkeypatch.setattr(pl, "refine_flagged_shots", lambda shots, qa, **k: 0)
+    monkeypatch.setattr(pl, "enforce_timeline", lambda shots, **k: {})
+    monkeypatch.setattr(core.director_rank, "review_timeline",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no re-review")))
+    shots = [{"slot_id": 5, "priority": "high", "selected_results": [{"url": "vent"}]}]
+    qa = {"issues": [{"slot_id": 5, "severity": "medium", "problem": "p"}]}
+    assert pl.refine_and_review(shots, qa, groq_key="k", errors=[]) == (0, qa)

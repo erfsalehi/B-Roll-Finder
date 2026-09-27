@@ -164,3 +164,12 @@ def test_files_reports_nothing_and_server_off(monkeypatch):
 def test_files_command_predicate():
     assert tb.is_files_command("/files") and tb.is_files_command("/zips@Bot")
     assert not tb.is_files_command("/links")
+
+
+def test_qa_block_marks_carried_issues():
+    lines = tb.format_qa_block({"overall": "ok", "refined": 2, "issues": [
+        {"slot_id": 8, "severity": "medium", "problem": "still friendly", "suggestion": "x"},
+        {"slot_id": 6, "severity": "low", "problem": "eye-roll", "suggestion": "y", "carried": True}]})
+    assert "(refined 2 shot[s])" in lines[0]
+    assert any("#6 (low, unchanged)" in l for l in lines)
+    assert any("#8 (medium) still" in l for l in lines)

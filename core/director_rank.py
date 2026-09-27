@@ -219,12 +219,13 @@ def _selected_clip_label(shot: dict) -> str:
     return f'"{title}" [{src}{extra}]'
 
 
-def build_timeline_summary(shots: list) -> str:
+def build_timeline_summary(shots: list, changed: set = None) -> str:
     """Render the chronological, selected timeline as text for the reviewer.
 
     One line per shot that actually has a clip bound (priority != 'none',
     not skipped), showing its time, narration intent, and the chosen visual —
-    enough for an LLM to judge thematic flow, repetition, and pacing.
+    enough for an LLM to judge thematic flow, repetition, and pacing. Shots in
+    ``changed`` (a follow-up review) are tagged ``[NEW CLIP]``.
     """
     lines = []
     for s in shots:
@@ -243,16 +244,42 @@ def build_timeline_summary(shots: list) -> str:
         # shot, or a 13s shot cut into 4 clips reads as one clip overstaying.
         n = len(s.get("selected_results") or [])
         more = f" (+{n - 1} more clip{'s' if n > 2 else ''} cut in)" if n > 1 else ""
+        tag = " [NEW CLIP]" if changed and s.get("slot_id") in changed else ""
         lines.append(
-            f"Shot {s.get('slot_id')} "
+            f"Shot {s.get('slot_id')}{tag} "
             f"[{s.get('timestamp_start_str', '?')}–{s.get('timestamp_end_str', '?')}, {dur_str}] "
             f"intent: {intent} | visual: {_selected_clip_label(s)}{more}"
         )
     return "\n".join(lines)
 
 
+def _follow_up_block(previous: dict, changed: set) -> str:
+    """Prompt section for a follow-up review: what was flagged last time and
+    which of those shots have a new clip now."""
+    lines = [
+        "=== FOLLOW-UP REVIEW ===",
+        "This timeline was reviewed before. Since then the clips on the shots tagged "
+        "[NEW CLIP] were replaced; every other shot is exactly as you already reviewed it.",
+        "Earlier issues:",
+    ]
+    for it in (previous or {}).get("issues") or []:
+        state = "replaced" if it.get("slot_id") in changed else "unchanged"
+        lines.append(f"- Shot {it.get('slot_id')} ({it.get('severity')}, now {state}): "
+                     f"{it.get('problem', '')}")
+    lines += [
+        "Your job now is to VERIFY the replacements:",
+        "- For each [NEW CLIP] shot, judge the new visual on its own merits and against "
+        "any earlier issue. Report it ONLY if the new clip still has a real problem.",
+        "- Do NOT report shots without [NEW CLIP] — their earlier verdicts stand as-is. "
+        "If a new clip clashes with or repeats an unchanged neighbour, report it on the "
+        "[NEW CLIP] shot.",
+    ]
+    return "\n".join(lines)
+
+
 def review_timeline(shots: list, api_key: str, video_topic: str = "",
-                    custom_instructions: str = "") -> dict:
+                    custom_instructions: str = "", previous: dict = None,
+                    changed_slots: set = None) -> dict:
     """Stage 5 — a single holistic 'executive producer' pass over the assembled
     timeline (smart/reasoning tier).
 
@@ -263,9 +290,18 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
         {"overall": str, "issues": [{"slot_id", "severity", "problem", "suggestion"}],
          "reviewed": <int shots reviewed>}
 
+    **Follow-up mode** (``previous`` report + ``changed_slots``, after a refine):
+    the reviewer verifies the replaced shots instead of re-auditing everything.
+    New issues are kept only for shots in ``changed_slots``; earlier issues on
+    shots whose clip did not change are carried over (``carried: True``) — so a
+    refine can only resolve or re-judge flags, never spawn a fresh batch of
+    nitpicks on shots nobody touched.
+
     Degrades gracefully: fewer than 2 selected shots, a missing key, or an LLM
-    failure returns an empty issue list with an explanatory ``overall``.
+    failure returns an empty issue list with an explanatory ``overall`` (in
+    follow-up mode the carried issues are still returned).
     """
+    follow_up = previous is not None and changed_slots is not None
     selected = [s for s in shots
                 if s.get("selected_results") and s.get("priority") != "none"
                 and not s.get("skipped") and not s.get("is_extra")]
@@ -275,6 +311,11 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
         return {"overall": "Groq API key required for the review.", "issues": [], "reviewed": 0}
 
     valid_ids = {s.get("slot_id") for s in selected}
+    changed = set(changed_slots or ())
+    # Follow-up: earlier verdicts on shots whose clip didn't change still stand.
+    carried = [dict(it, carried=True) for it in ((previous or {}).get("issues") or [])
+               if follow_up and it.get("slot_id") in valid_ids
+               and it.get("slot_id") not in changed]
 
     system_prompt = _load_review_prompt()
     context = []
@@ -282,9 +323,12 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
         context.append(f"OVERALL VIDEO TOPIC: {video_topic.strip()}")
     if custom_instructions and custom_instructions.strip():
         context.append(f"USER STYLE NOTES: {custom_instructions.strip()}")
+    if follow_up:
+        context.append(_follow_up_block(previous, changed))
     system_prompt = system_prompt.replace("{context_block}", "\n".join(context))
 
-    user_msg = "TIMELINE (chronological):\n" + build_timeline_summary(shots)
+    user_msg = "TIMELINE (chronological):\n" + build_timeline_summary(
+        shots, changed=changed if follow_up else None)
 
     client = Groq(api_key=api_key)
     try:
@@ -292,7 +336,10 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
                               temperature=0.3, max_tokens=2000, tier="smart")
     except Exception as e:
         print(f"Timeline review failed: {e}")
-        return {"overall": f"Review unavailable ({type(e).__name__}).", "issues": [], "reviewed": len(selected)}
+        overall = f"Review unavailable ({type(e).__name__})."
+        if follow_up and changed:
+            overall += f" {len(changed)} replaced shot(s) not re-checked."
+        return {"overall": overall, "issues": carried, "reviewed": len(selected)}
 
     issues = []
     for it in (data.get("issues") or []):
@@ -301,6 +348,8 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
         sid = it.get("slot_id")
         if sid not in valid_ids:          # ignore hallucinated / out-of-range slots
             continue
+        if follow_up and sid not in changed:
+            continue                      # unchanged shots keep their earlier verdict
         sev = str(it.get("severity", "medium")).lower()
         if sev not in ("high", "medium", "low"):
             sev = "medium"
@@ -314,6 +363,7 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
             "suggestion": str(it.get("suggestion", "")).strip(),
         })
 
+    issues += carried
     _order = {"high": 0, "medium": 1, "low": 2}
     issues.sort(key=lambda x: _order.get(x["severity"], 1))
     return {

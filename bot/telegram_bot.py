@@ -599,6 +599,10 @@ def format_qa_block(qa: dict, limit: int = 8) -> list:
     lines.append(head)
     for it in issues[:limit]:
         sev = it.get("severity", "med")
+        # Carried over from the last review: the shot's clip didn't change
+        # (no usable replacement, or it wasn't among the shots refined).
+        if it.get("carried"):
+            sev += ", unchanged"
         sug = it.get("suggestion", "")
         line = f"  ⚠️ #{it.get('slot_id')} ({sev}) {it.get('problem', '')}"
         if sug:
@@ -1563,8 +1567,7 @@ def _run_refine(chat_id, only_slots=None) -> None:
     if not pend:
         send_message(chat_id, "Nothing to /refine. Send a voice file first.")
         return
-    from core.pipeline import refine_flagged_shots, write_fcpxml
-    from core.director_rank import review_timeline
+    from core.pipeline import refine_and_review, write_fcpxml
     proj, settings, qa, shots = pend["project"], pend["settings"], pend["qa"], pend["shots"]
     if not only_slots and not qa.get("issues"):
         send_message(chat_id, "No QA-flagged shots to refine. Name shots to redo, "
@@ -1580,11 +1583,12 @@ def _run_refine(chat_id, only_slots=None) -> None:
     try:
         with bot_settings.apply_env(settings):
             # A manual /refine redoes every flagged shot, low severity included —
-            # only the automatic post-QA pass limits itself to high/medium.
-            n = refine_flagged_shots(shots, qa, groq_key=key, video_topic=pend["topic"],
-                                     errors=pend["errors"], only_slots=only_slots,
-                                     severities=("high", "medium", "low"))
-            new_qa = review_timeline(shots, api_key=key, video_topic=pend["topic"]) if n else qa
+            # only the automatic post-QA pass limits itself to high/medium. The
+            # follow-up review then re-checks only the shots that changed.
+            n, new_qa = refine_and_review(
+                shots, qa, groq_key=key, video_topic=pend["topic"], errors=pend["errors"],
+                only_slots=only_slots, severities=("high", "medium", "low"),
+                progress=lambda lbl: edit_message(chat_id, msg_id, f"🛠 {proj}: {lbl}"))
             write_fcpxml(shots, proj)
     except Exception as e:
         send_message(chat_id, f"❌ Refine failed: {e}")
@@ -1595,8 +1599,6 @@ def _run_refine(chat_id, only_slots=None) -> None:
                                if s.get("selected_results") and not s.get("is_extra"))
     result["n_clips"] = sum(len(s.get("selected_results") or []) for s in shots
                             if not s.get("is_extra"))
-    if n:
-        new_qa["refined"] = n
     result["qa"] = new_qa
     pend["qa"] = new_qa
     _persist_pending()   # selection changed — re-snapshot so a restart keeps it
