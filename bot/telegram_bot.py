@@ -824,6 +824,11 @@ def deliver_project(chat_id, project: str) -> None:
     abs_path = os.path.abspath(res["path"])
     size = res["size_bytes"]
     lines = [f"📦 {project} — {res['files']} file(s), {_human_size(size)}"]
+    skipped = res.get("skipped") or []
+    if skipped:
+        # Left out rather than failing the whole zip; details are in /logs.
+        lines.append(f"⚠️ Left out {len(skipped)} unreadable file(s) (details in /logs): "
+                     + "; ".join(skipped[:3]) + (" …" if len(skipped) > 3 else ""))
 
     link = _download_link_for(abs_path)
     if link:

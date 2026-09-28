@@ -567,8 +567,14 @@ def zip_project(project_name: str, out_path: str = None, progress=None) -> dict:
 
     Packages everything under ``downloads/<project>/`` preserving the folder
     layout, so unzipping recreates ``<project>/director/*.mp4`` + the XML. Returns
-    ``{path, size_bytes, files}``. Raises FileNotFoundError if the project folder
-    doesn't exist yet.
+    ``{path, size_bytes, files, skipped}``. Raises FileNotFoundError if the
+    project folder doesn't exist yet.
+
+    A file that can't be read (``skipped``: ``["<rel path>: <reason>", …]``) is
+    left out instead of aborting the whole bundle — one bad extras clip used to
+    cost the user the entire delivery. The zip is written to a temp name and
+    renamed on success, so a failed run never leaves a half-written ``.zip`` for
+    /download to hand out.
 
     ``progress(done, total)`` (optional) is called after each file is written, so
     a caller can surface the otherwise-silent bundling of a large (multi-GB,
@@ -624,18 +630,52 @@ def zip_project(project_name: str, out_path: str = None, progress=None) -> dict:
         pass   # a disk_usage probe failure must not block a zip that would fit
 
     files = 0
-    # ZIP_DEFLATED barely shrinks already-compressed mp4s but keeps the bundle
-    # to a single portable file; allowZip64 handles multi-GB projects.
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
-        for fp in members:
-            z.write(fp, os.path.relpath(fp, "downloads"))
-            files += 1
-            if progress:
+    skipped = []
+    tmp_path = out_path + ".tmp"   # ".tmp" is also what the walker above skips
+    try:
+        # ZIP_DEFLATED barely shrinks already-compressed mp4s but keeps the bundle
+        # to a single portable file; allowZip64 handles multi-GB projects.
+        # strict_timestamps=False clamps a pre-1980 mtime (yt-dlp stamps files
+        # with the server's Last-Modified) instead of raising.
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True,
+                             strict_timestamps=False) as z:
+            for fp in members:
                 try:
-                    progress(files, total)
-                except Exception:
-                    pass
-    return {"path": out_path, "size_bytes": os.path.getsize(out_path), "files": files}
+                    z.write(fp, os.path.relpath(fp, "downloads"))
+                except (OSError, ValueError, OverflowError) as e:
+                    rel = os.path.relpath(fp, proj_dir)
+                    skipped.append(f"{rel}: {getattr(e, 'strerror', None) or e}")
+                    _log_unzippable(fp, e)
+                    continue
+                files += 1
+                if progress:
+                    try:
+                        progress(files, total)
+                    except Exception:
+                        pass
+        os.replace(tmp_path, out_path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+    return {"path": out_path, "size_bytes": os.path.getsize(out_path), "files": files,
+            "skipped": skipped}
+
+
+def _log_unzippable(fp: str, err: Exception) -> None:
+    """Record why a file couldn't be bundled, with what the filesystem says about
+    it — the bot log (/logs) is the only place a server-side cause shows up."""
+    import traceback
+    try:
+        st = os.lstat(fp)
+        info = (f"mode={oct(st.st_mode)} size={st.st_size} mtime={st.st_mtime!r} "
+                f"nlink={st.st_nlink} symlink={os.path.islink(fp)}")
+    except OSError as e:
+        info = f"lstat failed: {e!r}"
+    print(f"[zip] skipped {fp!r}: {err!r} ({info})")
+    traceback.print_exception(err)
 
 
 def _dl_link(c: dict) -> str:

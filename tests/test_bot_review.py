@@ -108,6 +108,20 @@ def test_deliver_project_large_skips_attach(monkeypatch):
     assert docs == []                                       # too big to attach
 
 
+def test_deliver_project_names_skipped_files(monkeypatch):
+    sent = []
+    monkeypatch.setattr(tb, "send_message", lambda chat, text: sent.append(text))
+    monkeypatch.setattr(tb, "send_document", lambda chat, path, caption="": None)
+    import core.output
+    monkeypatch.setattr(core.output, "zip_project",
+                        lambda name, progress=None: {
+                            "path": f"downloads/{name}.zip", "size_bytes": 200 * 1024 * 1024,
+                            "files": 40,
+                            "skipped": ["director/61-1-mechanic-servicing-car-ac.mp4: Invalid argument"]})
+    tb.deliver_project(99, "car_ac")
+    assert any("Left out 1 unreadable file" in m and "61-1-mechanic" in m for m in sent)
+
+
 # ── /files (re-issue links for what's on disk) ────────────────────────────────
 
 def _fake_zips(monkeypatch, *entries):
