@@ -1121,6 +1121,10 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         'outtmpl': output_path,
         'progress_hooks': [my_hook],
         'quiet': True,
+        # quiet doesn't silence the console progress bar; on the server it went
+        # to the bot log (~95% of a 600KB /logs export). The hook above still
+        # fires, so the bot's own progress reporting is unaffected.
+        'noprogress': True,
         'no_warnings': True,
         'merge_output_format': 'mp4',
         # ── Resume + retry configuration ─────────────────────────────────

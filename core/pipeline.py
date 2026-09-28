@@ -455,7 +455,8 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
         out_path = os.path.join(base_dir, fn)
 
         have_file = False
-        if _has_data(out_path) and _holds_clip(res, url, out_path):
+        if (_has_data(out_path) and _holds_clip(res, url, out_path)
+                and _verify_clip_file(out_path)[0]):
             have_file = True
             _mark_ok(res, out_path)
             _tick("skipped")
@@ -463,8 +464,15 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
             _discard(out_path)
             # A library segment (already trimmed and stored on the server), else
             # the cross-session cache: a copy downloaded for an earlier project.
-            for src in (res.get("segment_path"), download_cache.lookup_path(url)):
+            cached = download_cache.lookup_path(url)
+            for src in (res.get("segment_path"), cached):
                 if src and link_or_copy(src, out_path):
+                    if not _verify_clip_file(out_path)[0]:
+                        # A broken copy — don't reuse it here or in later projects.
+                        _discard(out_path)
+                        if src == cached:
+                            download_cache.forget(url)
+                        continue
                     have_file = True
                     _mark_ok(res, out_path)
                     _tick("skipped")
@@ -482,9 +490,16 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                 if task_state.get("status") == "cancelled":
                     cancelled.set()
                     return
-                if task_state.get("status") == "completed" or (
-                    os.path.exists(out_path) and os.path.getsize(out_path) > 0
-                ):
+                got = task_state.get("status") == "completed" or _has_data(out_path)
+                bad = ""
+                if got:
+                    ok, why = _verify_clip_file(out_path)
+                    if not ok:
+                        # Treated as a failed download: the repair loop re-picks
+                        # the shot, and nothing broken is cached or zipped.
+                        bad = f"downloaded file is not a playable video ({why})"
+                        _discard(out_path)
+                if got and not bad:
                     have_file = True
                     _mark_ok(res, out_path)
                     _tick("ok")
@@ -508,7 +523,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                         with lock:
                             errors.append(f"clip_library store ({fn}): {e}")
                 else:
-                    err = task_state.get('error_msg', 'unknown error')
+                    err = bad or task_state.get('error_msg', 'unknown error')
                     _mark_failed(res, err)
                     with lock:
                         errors.append(f"{fn}: {err}")
@@ -572,6 +587,36 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
 
     return {"ok": counts["ok"], "failed": counts["failed"], "skipped": counts["skipped"],
             "dir": base_dir, "errors": errors}
+
+
+def _verify_clip_file(path: str) -> tuple:
+    """``(ok, reason)`` — whether ``path`` is a readable video file.
+
+    A download that failed (or was cut short by a flaky proxy) can still leave
+    a non-empty file behind, and one used to be accepted as a good clip: it went
+    into the zip and the XML (with ffprobe's 3600s fallback duration), into the
+    cross-project download cache, and into the Clip Library. ffprobe must parse
+    it and find a video stream. When the file can't be checked at all (no
+    ffprobe, probe timeout) it's given the benefit of the doubt."""
+    import json
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type", "-of", "json", path],
+            capture_output=True, text=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True, ""
+    except OSError as e:
+        return False, f"unreadable file ({e})"
+    if r.returncode != 0:
+        lines = (r.stderr or "").strip().splitlines()
+        return False, (lines[-1] if lines else "ffprobe could not parse it")[:200]
+    try:
+        streams = json.loads(r.stdout or "{}").get("streams") or []
+    except ValueError:
+        streams = []
+    return (True, "") if streams else (False, "no video stream")
 
 
 def _clip_has_file(c: dict) -> bool:
@@ -1446,8 +1491,16 @@ def _evaluate_and_repair_xml(xml: str, xml_dir: str) -> str:
     Missing-media warnings are logged but never block, since repair can't
     materialise a file that isn't on disk."""
     report = evaluate_fcpxml(xml, xml_dir=xml_dir, check_media=True)
+    # One summary line, not one per clip: before /download (the review gate and
+    # every /refine rewrite the XML) nearly every clip is legitimately missing,
+    # which used to put ~35 lines per write into the bot log.
+    missing = [w for w in report["warnings"] if "media not found on disk" in w]
     for w in report["warnings"]:
-        print(f"[timeline] warning: {w}")
+        if w not in missing:
+            print(f"[timeline] warning: {w}")
+    if missing:
+        print(f"[timeline] {len(missing)} clip(s) not on disk yet (expected before "
+              f"/download); first: {missing[0]}")
     if report["ok"]:
         return xml
     print(f"[timeline] {len(report['errors'])} structural issue(s) found; "

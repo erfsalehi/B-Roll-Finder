@@ -436,3 +436,96 @@ def test_qa_reviews_the_settled_timeline(_mock_stages, monkeypatch):
     pipeline.run_pipeline_headless("voice.mp3", project_name="order", download=False)
     assert order.index("enforce") < order.index("qa")
     assert order.index("youtube") < order.index("qa")
+
+
+# ── downloaded files must be playable videos ─────────────────────────────────
+
+from core.pipeline import _verify_clip_file as _real_verify   # conftest stubs the module attr
+
+
+def test_unplayable_download_is_a_failure_not_a_clip(monkeypatch, tmp_path):
+    """A failed/truncated download that leaves a non-empty file used to count
+    as a good clip — shipped in the zip, cached for later projects, and stored
+    in the Clip Library."""
+    monkeypatch.chdir(tmp_path)
+    from core import download_cache
+    download_cache._reset_for_tests()
+    import core.direct_downloader
+
+    def _direct(url, out, ts, **k):
+        ts["status"] = "error"; ts["error_msg"] = "EOFError: 8 bytes missing"
+        open(out, "wb").write(b"half a video")          # leftover bytes
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video", _direct)
+    monkeypatch.setattr(pipeline, "_verify_clip_file",
+                        lambda p: (False, "moov atom not found"))
+    stored = []
+    import core.clip_library
+    monkeypatch.setattr(core.clip_library, "store_clip", lambda *a, **k: stored.append(a))
+
+    clip = {"url": "http://x/broken.mp4", "source": "pexels", "matched_query": "ac"}
+    shots = [{"slot_id": 74, "priority": "medium", "selected_results": [clip]}]
+    res = pipeline.download_selected_clips(shots, "proj")
+    assert res["ok"] == 0 and res["failed"] == 1
+    assert clip.get("_dl_failed") and "not a playable video" in clip["_dl_error"]
+    assert not any(f.endswith(".mp4") for f in os.listdir(res["dir"]))   # discarded
+    assert download_cache.lookup_path("http://x/broken.mp4") is None      # not cached
+    assert stored == []                                                  # not in library
+    download_cache._reset_for_tests()
+
+
+def test_broken_cached_copy_is_forgotten_and_redownloaded(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    from core import download_cache
+    download_cache._reset_for_tests()
+    bad = tmp_path / "old-project-clip.mp4"
+    bad.write_bytes(b"corrupt")
+    download_cache.register("http://x/c.mp4", str(bad))
+
+    import core.direct_downloader
+    calls = []
+
+    def _direct(url, out, ts, **k):
+        calls.append(url); ts["status"] = "completed"
+        open(out, "wb").write(b"good video")
+    monkeypatch.setattr(core.direct_downloader, "download_direct_video", _direct)
+    monkeypatch.setattr(pipeline, "_verify_clip_file",
+                        lambda p: (b"good" in open(p, "rb").read(), "corrupt"))
+
+    clip = {"url": "http://x/c.mp4", "source": "pexels", "matched_query": "q"}
+    res = pipeline.download_selected_clips([{"slot_id": 1, "priority": "medium",
+                                             "selected_results": [clip]}], "proj")
+    assert calls == ["http://x/c.mp4"]              # cache copy rejected → fresh download
+    assert res["ok"] == 1 and clip.get("_dl_ok")
+    assert download_cache.lookup_path("http://x/c.mp4") != str(bad)
+    download_cache._reset_for_tests()
+
+
+def test_verify_clip_file_rejects_garbage_and_accepts_a_real_video(tmp_path):
+    import shutil, subprocess
+    if not (shutil.which("ffprobe") and shutil.which("ffmpeg")):
+        pytest.skip("ffmpeg/ffprobe not installed")
+    junk = tmp_path / "junk.mp4"
+    junk.write_bytes(b"\x00" * 4096)
+    ok, why = _real_verify(str(junk))
+    assert not ok and why
+
+    real = tmp_path / "real.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(real)], check=True)
+    assert _real_verify(str(real)) == (True, "")
+
+
+def test_missing_media_warnings_collapse_to_one_line(tmp_path, capsys):
+    """Before /download nearly every clip is missing; that used to print one
+    '[timeline] warning' line per clip on every XML write (~35 per /refine)."""
+    from core.output import generate_fcpxml
+    shots = [{"slot_id": i, "priority": "medium", "timestamp": (i - 1) * 3.0,
+              "end_timestamp": i * 3.0, "text": f"line {i}",
+              "selected_results": [{"url": f"https://x/{i}.mp4", "source": "pexels",
+                                    "matched_query": "q", "title": f"clip {i}"}]}
+             for i in range(1, 6)]
+    xml = generate_fcpxml(shots, project_name="p")
+    pipeline._evaluate_and_repair_xml(xml, str(tmp_path))
+    out = capsys.readouterr().out
+    assert "5 clip(s) not on disk yet (expected before /download)" in out
+    assert out.count("media not found on disk") == 1    # only the one example

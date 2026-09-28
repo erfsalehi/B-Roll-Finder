@@ -15,6 +15,14 @@ def _reset_module_caches():
 
 
 @pytest.fixture(autouse=True)
+def _accept_fake_clip_files(monkeypatch):
+    """Download tests write placeholder bytes, not real videos; skip the ffprobe
+    playability check for them (tests of the check itself call it directly)."""
+    import core.pipeline as pl
+    monkeypatch.setattr(pl, "_verify_clip_file", lambda path: (True, ""))
+
+
+@pytest.fixture(autouse=True)
 def _isolated_project_store(monkeypatch, tmp_path):
     """Never let a test write the real .cache/projects.db (or reuse another
     test's learned edit history)."""
