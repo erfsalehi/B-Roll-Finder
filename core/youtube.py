@@ -706,9 +706,36 @@ def infer_video_resolution(info: dict) -> int:
     return _STORYBOARD_TO_RESOLUTION.get(raw, raw)
 
 
+_SHORTS_TAG = re.compile(r"#shorts?\b", re.IGNORECASE)
+
+
+def _looks_like_short(url: str, title: str, duration) -> bool:
+    """A YouTube Short: at most 60s, a /shorts/ URL, or a #short(s) hashtag in
+    the title. Only the hashtag counts — "short" alone is an ordinary title word
+    ("short ram intake install", "short shifter review", "chip shortage")."""
+    return ((duration is not None and duration <= 60)
+            or "/shorts/" in (url or "").lower()
+            or bool(_SHORTS_TAG.search(title or "")))
+
+
+def _yt_max_seconds() -> float:
+    """Longest YouTube upload worth returning from a search — the same cap
+    (YT_MAX_CLIP_SECONDS) core.pipeline.drop_long_videos applies later, checked
+    here so an over-long video doesn't take one of the few result slots."""
+    try:
+        return float(os.getenv("YT_MAX_CLIP_SECONDS", "1000") or 1000)
+    except ValueError:
+        return 1000.0
+
+
+def _too_long(duration) -> bool:
+    return duration is not None and duration > _yt_max_seconds()
+
+
 def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3, errors: list = None, min_height: int = 0) -> list:
     """
     Uses yt-dlp to search for a single keyword and returns a mix of shorts and long videos.
+    Videos longer than YT_MAX_CLIP_SECONDS are skipped (they'd be dropped later).
 
     Fast path  (min_height == 0): uses only the flat ytsearch metadata — no
     secondary per-video HTTP calls, typically 5-10× faster.
@@ -760,11 +787,9 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
             if not url:
                 continue
             dur = entry.get('duration')
-            is_short = (
-                (dur is not None and dur <= 60)
-                or 'shorts' in url.lower()
-                or 'short' in (entry.get('title') or '').lower()
-            )
+            if _too_long(dur):
+                continue
+            is_short = _looks_like_short(url, entry.get('title'), dur)
             initial_candidates.append({
                 'title':     entry.get('title', 'Unknown Title'),
                 'url':       url,
@@ -819,11 +844,9 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
             if h < min_height:
                 return
             dur = full_info.get('duration')
-            is_s = (
-                (dur is not None and dur <= 60)
-                or 'shorts' in item['url'].lower()
-                or 'short'  in item['title'].lower()
-            )
+            if _too_long(dur):
+                return
+            is_s = _looks_like_short(item['url'], item['title'], dur)
             thumbs = full_info.get('thumbnails') or []
             item.update({
                 'duration':              dur,
@@ -856,12 +879,7 @@ def search_youtube_single(keyword: str, num_shorts: int = 0, num_longs: int = 3,
             flat_h = item.get('height') or 0
             if flat_h >= min_height > 0:
                 # Flat metadata already confirms resolution — no full fetch needed
-                dur = item.get('duration')
-                is_s = (
-                    (dur is not None and dur <= 60)
-                    or 'shorts' in item['url'].lower()
-                    or 'short'  in item['title'].lower()
-                )
+                is_s = _looks_like_short(item['url'], item['title'], item.get('duration'))
                 item['is_short'] = is_s
                 if is_s:
                     if len(shorts_final) < num_shorts:

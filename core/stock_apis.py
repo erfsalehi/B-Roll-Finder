@@ -361,7 +361,12 @@ def _search_pexels_one(keyword: str, api_key: str, num_results: int = 3, page: i
 
     url = "https://api.pexels.com/videos/search"
     headers = {"Authorization": api_key}
-    params = {"query": keyword, "per_page": min(num_results, 80), "page": max(1, page)}
+    # Let Pexels filter server-side: landscape only (portrait clips are dropped
+    # later anyway) and "medium" = Full HD or larger (the 1080p rule below). A
+    # double-size page costs the same single request against the hourly quota
+    # and leaves spares for any result the 1080 check still rejects.
+    params = {"query": keyword, "per_page": min(max(1, num_results) * 2, 80),
+              "page": max(1, page), "orientation": "landscape", "size": "medium"}
 
     results = []
     with _PEXELS_RL:

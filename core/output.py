@@ -458,6 +458,25 @@ def _fits(in_frame: int, duration_frames: int, media_dur_frames: int) -> bool:
     return in_frame > 0 and in_frame + duration_frames <= media_dur_frames
 
 
+def _unused_in_frame(in_frame: int, duration_frames: int, media_dur_frames: int,
+                     used: list):
+    """In-point for another use of a source already on the timeline, so it
+    doesn't replay frames an earlier use showed: ``in_frame`` itself when it's
+    clear of every ``(in, out)`` range in ``used``, else the first spot right
+    after a used range that still fits the media. None when no unused stretch
+    is long enough (the caller keeps ``in_frame`` — a repeat beats a broken cut).
+    """
+    def _clear(start):
+        return all(start + duration_frames <= a or start >= b for a, b in used)
+
+    if _clear(in_frame):
+        return in_frame
+    for _a, b in sorted(used):
+        if b + duration_frames <= media_dur_frames and _clear(b):
+            return b
+    return None
+
+
 def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
                         media_dur_frames: int, fps: float,
                         candidate: dict = None) -> int:
@@ -855,6 +874,7 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     defined_files = set() # To track which files have already been injected
     max_end_frame = 0      # longest clip end across all tracks → sequence duration
     first_clip_placed = False  # lead-in gap-fill: anchor the very first clip at 0
+    used_src: dict = {}    # source URL -> [(in, out)] frames already on the timeline
 
     # ── Timeline Math & Placement ──
     for i, shot in enumerate(shots):
@@ -997,6 +1017,19 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
                 duration_frames, asset_info["media_dur_frames"], fps_exact,
                 candidate=res,
             )
+            # The same source used again (another shot picked the same video):
+            # start after the part already shown, or it replays the same frames.
+            # Library segments are pre-trimmed and used once per video.
+            if not res.get("library_segment_id"):
+                used = used_src.setdefault(url, [])
+                fresh = _unused_in_frame(in_frame_src, duration_frames,
+                                         asset_info["media_dur_frames"], used)
+                if fresh is not None and fresh != in_frame_src:
+                    in_frame_src = fresh
+                    # Not the editor's habit or a trim — keep it out of the
+                    # in-point learning (core.edit_feedback counts default/habit).
+                    res["in_rule"] = "reuse"
+                used.append((in_frame_src, in_frame_src + duration_frames))
             xml.append(f'                <in>{in_frame_src}</in>')
             xml.append(f'                <out>{in_frame_src + duration_frames}</out>')
             

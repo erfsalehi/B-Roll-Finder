@@ -967,15 +967,59 @@ def download_and_repair(shots: list, project_name: str, quality: str = "1080",
             "repaired": repaired_total, "dropped": dropped}
 
 
+def _regenerate_queries(shots: list, targets: list, key: str, video_topic: str,
+                        notes: dict, errors: list, label: str = "regen") -> None:
+    """New search queries for each target, one LLM call per shot (each with its
+    own note from ``notes`` by slot_id), run in parallel — serially they were ~5s
+    apiece. Each call mutates only its own target; neighbours are only read for
+    context. A failed call keeps that shot's old queries (logged to ``errors``)."""
+    import concurrent.futures
+    from core.director import regenerate_shot_queries
+
+    def _one(s):
+        sid = s.get("slot_id")
+        try:
+            regenerate_shot_queries(shots, {sid}, api_key=key, video_topic=video_topic,
+                                    custom_instructions=notes.get(sid, ""), errors=errors)
+        except Exception as e:
+            errors.append(f"{label} slot {sid}: {e}")
+
+    if not targets:
+        return
+    try:
+        workers = int(os.getenv("REFINE_WORKERS", "4") or 4)
+    except ValueError:
+        workers = 4
+    workers = max(1, min(len(targets), workers))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(_one, targets))
+
+
+def _record_tried_queries(s: dict) -> list:
+    """Add the shot's current search queries + YouTube keywords to its
+    ``tried_queries`` (order kept, no repeats) and return the list."""
+    tried = list(s.get("tried_queries") or [])
+    seen = {q.lower() for q in tried}
+    for q in list(s.get("search_queries") or []) + list(s.get("youtube_keywords") or []):
+        q = str(q).strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            tried.append(q)
+    s["tried_queries"] = tried
+    return tried
+
+
 def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
                        errors: list = None, progress=None) -> int:
     """Final repair pass before download: rescue shots that ended up with NO
-    selected clip — whether from a failed fetch (connection reset / DNS) or a
-    failed shot-list block (the LLM JSON got truncated, leaving a shot with no
-    queries). For those shots it regenerates missing queries, re-fetches (with
-    its own retry passes), re-injects the Clip Library, re-ranks, and re-runs
-    auto-select. Idempotent and safe to call repeatedly. Returns how many shots
-    were recovered (now have a selection).
+    selected clip — a failed fetch (connection reset / DNS), a failed shot-list
+    block (the LLM JSON got truncated, leaving a shot with no queries), searches
+    that found nothing, or candidates that were all ranked irrelevant. For those
+    shots it writes NEW queries (avoiding every query in ``tried_queries``),
+    re-fetches (with its own retry passes), re-injects the Clip Library,
+    re-ranks, and re-runs auto-select. Safe to call repeatedly — each call
+    tries fresh queries. Returns how many shots were recovered (now have a
+    selection).
     """
     from core.director import ensure_shot_queries
     from core.director_youtube import seed_youtube_keywords
@@ -990,15 +1034,28 @@ def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
     if progress:
         progress(f"Repairing {still_empty_before} empty shot(s)…")
 
+    if errors is None:
+        errors = []
     # Shots from a truncated director block have no queries — synthesize them.
     ensure_shot_queries(targets, video_topic)
+    # Every empty shot already ran its queries through fetch_with_retries' passes
+    # and got nothing usable (no results, or all ranked irrelevant) — the same
+    # searches can't change that, so write new ones that avoid everything tried
+    # so far. Extras have no narration to write queries from.
+    regen = [s for s in targets if not s.get("is_extra") and (s.get("text") or "").strip()]
+    if key and regen:
+        notes = {s.get("slot_id"): "These searches found no usable footage — write "
+                 "different ones: " + " | ".join(_record_tried_queries(s)) for s in regen}
+        _regenerate_queries(shots, regen, key, video_topic, notes, errors, label="repair regen")
+        for s in regen:
+            # YouTube runs on youtube_keywords, seeded from the OLD queries and
+            # only filled when missing — drop them so they re-seed from the new.
+            s.pop("youtube_keywords", None)
     try:
         seed_youtube_keywords(targets)
     except Exception:
         pass
 
-    if errors is None:
-        errors = []
     fetch_with_retries(targets, errors=errors)   # re-fetch just the empties
 
     try:
@@ -1144,7 +1201,6 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     A shot whose re-fetch comes back empty keeps its previous selection instead
     of going blank. Returns how many targeted shots got a new selection.
     """
-    from core.director import regenerate_shot_queries
     from core.director_youtube import seed_youtube_keywords
     from core.director_search import fetch_with_retries, filter_youtube_sd_candidates
     from core.director_rank import (rank_shot_candidates, auto_select_top_candidates,
@@ -1196,28 +1252,10 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
             for i in by_slot[sid]
         ) or "Find a more relevant, higher-quality clip than the current pick."
 
-    # One query-regeneration LLM call per shot (each carries its own QA notes),
-    # run in parallel — serially they were ~5s apiece, the slowest part of a
-    # /refine. Each call mutates only its own target; neighbours are only read.
-    def _regen(s):
-        sid = s.get("slot_id")
-        try:
-            regenerate_shot_queries(
-                shots, {sid}, api_key=key, video_topic=video_topic,
-                custom_instructions=f"QA feedback to fix for this shot: {notes_by_slot[sid]}",
-                errors=errors,
-            )
-        except Exception as e:
-            errors.append(f"refine regen slot {sid}: {e}")
-
-    import concurrent.futures
-    try:
-        workers = int(os.getenv("REFINE_WORKERS", "4") or 4)
-    except ValueError:
-        workers = 4
-    workers = max(1, min(len(targets), workers))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        list(ex.map(_regen, targets))
+    _regenerate_queries(
+        shots, targets, key, video_topic,
+        {sid: f"QA feedback to fix for this shot: {n}" for sid, n in notes_by_slot.items()},
+        errors, label="refine regen")
 
     for s in targets:
         # The ranker judges the new pool against this too, not just the queries.
@@ -1266,8 +1304,11 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
         errors.append(f"refine rank: {e}")
 
     # The per-shot quota in auto_select binds a YouTube clip for each refreshed
-    # shot, so no separate YouTube-first reordering is needed here.
-    auto_select_top_candidates(shots)   # fills the now-empty refreshed shots
+    # shot, so no separate YouTube-first reordering is needed here. Boundary
+    # enforcement (not QA-driven) may take a clip the ranker called irrelevant:
+    # a valid-but-weak clip beats the failing one it replaces.
+    auto_select_top_candidates(   # fills the now-empty refreshed shots
+        shots, allow_irrelevant_slots=None if qa_driven else set(by_slot))
 
     refined = 0
     for s in targets:

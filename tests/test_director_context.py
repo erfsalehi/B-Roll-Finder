@@ -138,12 +138,24 @@ def test_auto_select_binds_top_non_irrelevant_first():
     assert shot["auto_selected"] is True
 
 
-def test_auto_select_all_irrelevant_falls_back_to_first():
+def test_auto_select_all_irrelevant_leaves_shot_empty():
+    # The ranker rejected everything → no pick, so the fill pass writes new
+    # queries instead of shipping a clip the ranker called wrong.
     shot = _shot(video_results=[
         {"url": "a", "irrelevant": True},
         {"url": "b", "irrelevant": True},
     ])
     auto_select_top_candidates([shot])
+    assert shot["selected_results"] == []
+    assert "auto_selected" not in shot
+
+
+def test_auto_select_all_irrelevant_allowed_for_named_slots():
+    shot = _shot(video_results=[
+        {"url": "a", "irrelevant": True},
+        {"url": "b", "irrelevant": True},
+    ])
+    auto_select_top_candidates([shot], allow_irrelevant_slots={1})
     assert shot["selected_results"][0]["url"] == "a"  # best (least-bad) first
     assert shot["auto_selected"] is True
 

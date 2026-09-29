@@ -498,7 +498,7 @@ def shot_source_quota(shot: dict) -> tuple:
 
 def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
                                seconds_per_clip=None, min_clips=None,
-                               max_clips=None) -> list:
+                               max_clips=None, allow_irrelevant_slots=None) -> list:
     """Phase-3 auto-selection: bind the best ranked clips per shot using
     source quotas, with a deterministic look-back variety guard.
 
@@ -522,6 +522,13 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
       clip per shot, so the shot's other slots go to fresh search results (which
       is also how new footage reaches editors and, through them, the library);
       a library segment is used once per video.
+    * **Fresh YouTube first** — a YouTube video another shot already carries is
+      only taken when this shot has no unused YouTube option left.
+    * **Nothing irrelevant** — a shot whose candidates were ALL ranked irrelevant
+      is left empty, so the fill pass writes new queries for it instead of
+      binding a clip the ranker rejected. ``allow_irrelevant_slots`` (slot_ids)
+      lifts this for shots where any valid clip beats the current one (boundary
+      enforcement replacing a failing clip).
 
     Defaults come from AUTO_SELECT_SECONDS_PER_CLIP (5), AUTO_SELECT_MIN_CLIPS
     (2), AUTO_SELECT_MAX_CLIPS (8), AUTO_SELECT_LOOKBACK (3), AUTO_SELECT_MIN_PEXELS
@@ -551,7 +558,9 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
     # look-back spans whole shots (not individual clips) even when shots bind many.
     recent_shots = deque(maxlen=lookback)
     used_pexels: set = set()   # cross-shot Pexels de-dup (never re-download a clip)
+    used_youtube: set = set()  # YouTube videos already in this video (soft de-dup)
     used_segments: set = set() # library segments already in this video
+    allow_irrelevant = set(allow_irrelevant_slots or ())
 
     def _recent_ids() -> set:
         out = set()
@@ -570,6 +579,8 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
             for c in existing:
                 if _is_pexels(c):
                     used_pexels.add(_pexels_ident(c))
+                if _is_youtube(c):
+                    used_youtube.add(_asset_ident(c))
                 if c.get("library_segment_id"):
                     used_segments.add(c["library_segment_id"])
             continue
@@ -579,8 +590,11 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         if not candidates:
             continue
 
-        non_irrelevant = [c for c in candidates if not c.get("irrelevant")]
-        pool = non_irrelevant or candidates
+        pool = [c for c in candidates if not c.get("irrelevant")]
+        if not pool:
+            if shot.get("slot_id") not in allow_irrelevant:
+                continue   # left empty → fill_empty_shots writes new queries
+            pool = candidates
 
         # Per-shot quota: Pexels + a YouTube count that scales with duration,
         # clamped to the overall max so a long shot can't bind an absurd number.
@@ -597,12 +611,13 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
             return not sid or (sid not in used_segments and sum(
                 1 for x in chosen if x.get("library_segment_id")) < max_library)
 
-        def _take(pred, n, dedup_pexels=False):
+        def _take(pred, n, dedup_pexels=False, avoid=()):
             for c in pool:
                 if len([x for x in chosen if pred(x)]) >= n:
                     break
                 ident = _asset_ident(c)
-                if ident in chosen_ids or ident in recent or not pred(c) or not _library_ok(c):
+                if (ident in chosen_ids or ident in recent or ident in avoid
+                        or not pred(c) or not _library_ok(c)):
                     continue
                 if dedup_pexels and _pexels_ident(c) in used_pexels:
                     continue
@@ -612,9 +627,11 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
                     used_pexels.add(_pexels_ident(c))
 
         # YouTube first so its quota is secured before variety/dedup thins the
-        # pool, then the fixed Pexels count.
-        _take(_is_youtube, want_youtube)                   # YouTube by duration
-        _take(_is_pexels, want_pexels, dedup_pexels=True)  # distinct Pexels
+        # pool, then the fixed Pexels count. Videos no other shot uses go first;
+        # a repeat only fills what's left of the quota.
+        _take(_is_youtube, want_youtube, avoid=used_youtube)  # fresh YouTube
+        _take(_is_youtube, want_youtube)                      # repeats, if short
+        _take(_is_pexels, want_pexels, dedup_pexels=True)     # distinct Pexels
 
         # Hard guarantee: every shot must lead with a YouTube clip when one is
         # available. If variety/recency filtering skipped the only YouTube option,
@@ -630,12 +647,13 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         # Top up from anything left (variety-aware) so we still meet a sensible
         # floor when a source ran short — never leave the slot empty.
         floor = max(min_clips, want_pexels + 1)
-        if len(chosen) < floor:
+        for avoid in (used_youtube, ()):   # fresh YouTube before repeats here too
             for c in pool:
                 if len(chosen) >= floor:
                     break
                 ident = _asset_ident(c)
-                if ident in chosen_ids or ident in recent or not _library_ok(c):
+                if (ident in chosen_ids or ident in recent or ident in avoid
+                        or not _library_ok(c)):
                     continue
                 chosen.append(c)
                 chosen_ids.add(ident)
@@ -649,6 +667,7 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
         shot["selected_results"] = chosen
         shot["auto_selected"] = True
         recent_shots.append(chosen_ids)
+        used_youtube.update(_asset_ident(c) for c in chosen if _is_youtube(c))
         used_segments.update(c["library_segment_id"] for c in chosen
                              if c.get("library_segment_id"))
     return shots
