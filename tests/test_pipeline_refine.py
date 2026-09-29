@@ -162,6 +162,29 @@ def test_refine_reseeds_youtube_keywords_from_new_queries(monkeypatch):
     assert seen["yt"] == [["mechanic handing customer large invoice"]]
 
 
+def test_refine_uses_youtube_queries_written_by_the_regen(monkeypatch):
+    _stub_deps(monkeypatch)
+    monkeypatch.setattr(core.director_youtube, "seed_youtube_keywords", _real_seed)
+    seen = {}
+
+    def _regen(shots, slot_ids, **k):
+        for s in shots:
+            if s["slot_id"] in slot_ids:
+                s["search_queries"] = ["mechanic handing customer large invoice"]
+                s["youtube_keywords"] = ["auto repair shop bill shock"]
+    monkeypatch.setattr(core.director, "regenerate_shot_queries", _regen)
+
+    def _fetch(shots, **k):
+        seen["yt"] = [s.get("youtube_keywords") for s in shots]
+    monkeypatch.setattr(core.director_search, "fetch_with_retries", _fetch)
+
+    shots = [{"slot_id": 8, "priority": "high", "search_queries": ["mechanic customer"],
+              "youtube_keywords": ["mechanic customer"], "selected_results": [{"url": "handshake"}]}]
+    qa = {"issues": [{"slot_id": 8, "severity": "high", "problem": "p", "suggestion": "s"}]}
+    refine_flagged_shots(shots, qa, groq_key="k", errors=[])
+    assert seen["yt"] == [["auto repair shop bill shock"]]
+
+
 def test_refine_keeps_previous_pick_when_nothing_found(monkeypatch):
     _stub_deps(monkeypatch)
     _fetching(monkeypatch, {})                     # re-fetch returns nothing

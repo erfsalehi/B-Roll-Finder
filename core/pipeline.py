@@ -1046,11 +1046,12 @@ def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
     if key and regen:
         notes = {s.get("slot_id"): "These searches found no usable footage — write "
                  "different ones: " + " | ".join(_record_tried_queries(s)) for s in regen}
-        _regenerate_queries(shots, regen, key, video_topic, notes, errors, label="repair regen")
         for s in regen:
-            # YouTube runs on youtube_keywords, seeded from the OLD queries and
-            # only filled when missing — drop them so they re-seed from the new.
+            # YouTube runs on youtube_keywords, which are only filled when missing.
+            # The old ones are already in tried_queries; drop them so the regen's
+            # own youtube_queries (or, failing that, the new stock queries) replace them.
             s.pop("youtube_keywords", None)
+        _regenerate_queries(shots, regen, key, video_topic, notes, errors, label="repair regen")
     try:
         seed_youtube_keywords(targets)
     except Exception:
@@ -1252,6 +1253,11 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
             for i in by_slot[sid]
         ) or "Find a more relevant, higher-quality clip than the current pick."
 
+    # YouTube searches run on youtube_keywords, which are only ever filled when
+    # missing — drop the old ones so the regen's own youtube_queries (or, failing
+    # that, the new stock queries) replace them instead of re-running the old search.
+    for s in targets:
+        s.pop("youtube_keywords", None)
     _regenerate_queries(
         shots, targets, key, video_topic,
         {sid: f"QA feedback to fix for this shot: {n}" for sid, n in notes_by_slot.items()},
@@ -1260,10 +1266,6 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     for s in targets:
         # The ranker judges the new pool against this too, not just the queries.
         s["refine_note"] = notes_by_slot[s.get("slot_id")]
-        # YouTube searches run on youtube_keywords, which were seeded from the
-        # ORIGINAL queries and are only ever filled when missing — drop them so
-        # they re-seed from the new queries instead of re-running the old search.
-        s.pop("youtube_keywords", None)
         s["video_results"] = []
         s.pop("selected_results", None)
         s.pop("auto_selected", None)

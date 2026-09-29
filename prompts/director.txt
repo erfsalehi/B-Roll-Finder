@@ -74,6 +74,18 @@ I. ANCHOR AMBIGUOUS OBJECTS TO THE TOPIC'S DOMAIN — THIS IS MANDATORY. Many ob
    Rule of thumb: if a stranger reading ONE of your queries in isolation could picture the wrong subject, it is under-qualified — add the domain word from the topic.
 
 ==================================================
+HOW TO WRITE youtube_queries
+==================================================
+search_queries feed stock libraries. youtube_queries feed YouTube search, which matches whole videos by title and description in natural language — a different index, so write them differently. 1-2 per shot ([] when priority is "none").
+
+- Write what a viewer would type to find a video that CONTAINS the footage this moment needs. 3-7 words.
+- Put the SPECIFICS here. Stock queries stay generic; YouTube is where the exact brand, product, model, person, place, event, species or software named in the narration (or in the overall video topic) belongs.
+   - Video about a BMW M3 E90, narration "the gearbox gets jerky at low speed" -> "BMW M3 E90 gearbox problems", NOT "car transmission".
+- Never name something the narration and topic don't. For an abstract or emotional beat with no identifiable subject, name the real-world thing that visualizes it ("stock market crash trading floor").
+- With two queries, aim at two different KINDS of video (the exact subject / a broader activity or setting) — not rewordings.
+- No camera jargon (wide, close-up, aerial), quotes, hashtags or punctuation.
+
+==================================================
 JSON SCHEMA
 ==================================================
 {
@@ -86,6 +98,7 @@ JSON SCHEMA
       "shot_intent": "<one short phrase describing what this moment must convey visually>",
       "shot_type": "<one of the allowed shot_types>",
       "search_queries": ["<query 1>", "<query 2>", "<query 3 optional>"],
+      "youtube_queries": ["<youtube query 1>", "<youtube query 2 optional>"],
       "duration_needed_sec": <float>,
       "priority": "<high|medium|low|none>"
     }
@@ -105,6 +118,7 @@ Example 1 — establishing / topic intro:
   "shot_intent": "set the topic with energy and place",
   "shot_type": "aerial",
   "search_queries": ["suburban neighborhood aerial drone sunset", "for sale sign front yard close-up", "row of identical houses tract development"],
+  "youtube_queries": ["housing market suburban neighborhoods", "homes for sale drone footage"],
   "duration_needed_sec": 4.0,
   "priority": "high"
 }
@@ -116,6 +130,7 @@ Example 2 — talking head (presenter beat, no B-roll):
   "shot_intent": "presenter speaking directly to camera",
   "shot_type": "medium",
   "search_queries": [],
+  "youtube_queries": [],
   "duration_needed_sec": 2.0,
   "priority": "none"
 }
@@ -127,6 +142,7 @@ Example 3 — abstract / metaphor (script says one thing, visual shows the meani
   "shot_intent": "convey erosion of money over time",
   "shot_type": "abstract",
   "search_queries": ["dollar bill burning slow motion", "coins falling through fingers slow motion", "supermarket price tag changing time-lapse"],
+  "youtube_queries": ["inflation rising grocery prices supermarket"],
   "duration_needed_sec": 3.5,
   "priority": "high"
 }
@@ -138,6 +154,7 @@ Example 4 — action close-up (sensory detail):
   "shot_intent": "show the precise mechanical action",
   "shot_type": "extreme close-up",
   "search_queries": ["torque wrench tightening engine bolt close-up", "mechanic hands greasy gloves engine bay", "spark plug socket turning engine head"],
+  "youtube_queries": ["torquing cylinder head bolts engine rebuild", "mechanic engine assembly timelapse"],
   "duration_needed_sec": 3.0,
   "priority": "medium"
 }

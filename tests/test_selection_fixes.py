@@ -79,6 +79,25 @@ def test_repair_writes_new_queries_avoiding_tried_ones(monkeypatch):
     assert fetched[3][0] == ["new q2"]
 
 
+def test_repair_uses_youtube_queries_written_by_the_regen(monkeypatch):
+    notes, fetched = _stub_repair(monkeypatch)
+
+    def _regen(shots, slot_ids, custom_instructions="", **k):
+        notes.append(custom_instructions)
+        for s in shots:
+            if s["slot_id"] in slot_ids:
+                s["search_queries"] = ["new stock"]
+                s["youtube_keywords"] = ["bmw e90 gearbox problems"]
+    monkeypatch.setattr(core.director, "regenerate_shot_queries", _regen)
+    shot = {"slot_id": 3, "priority": "medium", "text": "the gearbox whines under load",
+            "search_queries": ["gearbox whine"], "youtube_keywords": ["gearbox noise"],
+            "video_results": [], "selected_results": []}
+
+    pipeline.repair_empty_shots([shot], groq_key="k")
+    assert fetched[3] == (["new stock"], ["bmw e90 gearbox problems"])
+    assert "gearbox noise" in notes[0]          # the old YouTube search is still "tried"
+
+
 def test_repair_skips_regen_for_shots_without_narration(monkeypatch):
     notes, fetched = _stub_repair(monkeypatch)
     extra = {"slot_id": 9, "priority": "medium", "is_extra": True,

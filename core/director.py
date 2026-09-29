@@ -56,7 +56,7 @@ def segment_script_structure(segments: list, api_key: str, video_topic: str = ""
     try:
         # Structural pre-pass is a once-per-video global synthesis → smart tier.
         data = _call_llm_json(client, system_prompt, transcript,
-                              temperature=0.2, max_tokens=2000, tier="smart")
+                              temperature=0.2, max_tokens=3000, tier="smart")
     except Exception as e:
         print(f"Script segmentation failed: {e}")
         return {}
@@ -142,6 +142,50 @@ def subjects_in_span(roadmap: dict, start: float, end: float) -> list:
             out.append(subj)
     return out
 
+
+def _segment_subject_tags(roadmap: dict, block: list) -> list:
+    """Per-segment roadmap subject for a block, or [] when tags would add nothing.
+
+    On a ranked list a block can hold the tail of one item and the start of the
+    next, so each line carries its own subject instead of one block-wide list.
+    Single-subject videos get no tags (the block-level context line is enough).
+    """
+    segs = roadmap.get("segments") if isinstance(roadmap, dict) else None
+    if not segs or len({s.get("subject") for s in segs}) < 2:
+        return []
+    tags = []
+    for s in block:
+        try:
+            mid = (float(s.get("start", 0.0)) + float(s.get("end", 0.0))) / 2.0
+        except (TypeError, ValueError):
+            mid = 0.0
+        tags.append(subject_for_timestamp(roadmap, mid))
+    return tags
+
+
+def _previous_shots_context(shots: list, limit: int = 2) -> str:
+    """Prompt text describing the last shots of the previous block ("" if none).
+
+    Each block is its own LLM call, so without this a shot that only says "the
+    turbo" right after a block boundary has no way to know which car it means.
+    """
+    tail = [s for s in shots if s.get("shot_intent") != "Error Fallback"][-limit:]
+    if not tail:
+        return ""
+    lines = []
+    for s in tail:
+        queries = list(s.get("youtube_keywords") or []) or list(s.get("search_queries") or [])
+        lines.append('  "{text}" (queries: {q})'.format(
+            text=str(s.get("text", ""))[:140].strip(),
+            q="; ".join(queries[:2]) or "—",
+        ))
+    return (
+        "PREVIOUS SHOTS (already covered — context only, do NOT include them in your answer). "
+        "If the new narration refers back to a thing they name only implicitly (\"it\", \"the "
+        "turbo\", \"this car\"), keep that named subject in the new queries:\n"
+        + "\n".join(lines)
+    )
+
 def _build_context_block(video_topic: str, custom_instructions: str) -> str:
     """Compose the {custom_instructions_block} value used by director.txt.
 
@@ -206,7 +250,14 @@ _SEGMENT_CONTEXT_INSTRUCTION = (
     "where appropriate, and use it to disambiguate generic nouns: if the subject "
     "is \"BMW M3 E90\" and the line says \"the transmission is jerky\", search for "
     "that car's transmission (\"BMW M3 gearbox\"), not a generic gearbox. Do NOT "
-    "force the subject into a query when the line is clearly off-subject."
+    "force the subject into a query when the line is clearly off-subject.\n"
+    "Numbered input lines may carry their own '(subject: ...)' tag: that is the "
+    "subject for THAT line, so a block that holds the end of one item and the start "
+    "of the next uses each line's own subject. Never mix two subjects in one shot — "
+    "start a new shot where the subject changes.\n"
+    "The subject's full specific name (make + model, product, person, place) belongs "
+    "in youtube_queries together with what the line says about it (\"mercedes s500 "
+    "air suspension failure\"), even when the line itself only says \"it\"."
 )
 
 
@@ -486,7 +537,7 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
                 # Build the slot matching the new architecture. Timestamps are
                 # kept as floats so the FCP XML lines up frame-accurately with
                 # the voice; the *_str fields stay HH:MM:SS for display.
-                all_shots.append({
+                new_shot = {
                     "slot_id": slot_id,
                     "timestamp": round(float(current_time), 3),
                     "end_timestamp": round(float(end_time), 3),
@@ -499,8 +550,12 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
                     "duration_needed_sec": round(duration, 1),
                     "priority": shot.get("priority", "medium"),
                     "video_results": [] # Will be populated by Stage 2
-                })
-                
+                }
+                yt = _shot_youtube_keywords(shot)
+                if yt:
+                    new_shot["youtube_keywords"] = yt
+                all_shots.append(new_shot)
+
                 current_time = end_time
                 slot_id += 1
 
@@ -535,6 +590,62 @@ def generate_shot_list(script_text: str, wps: float, api_key: str, progress_call
         expand_multisubject_queries(all_shots, api_key, video_topic, custom_instructions)
     ensure_shot_queries(all_shots, video_topic)
     return all_shots
+
+def _shot_youtube_keywords(shot: dict, limit: int = 2) -> list:
+    """The director's own YouTube queries for a shot (cleaned, deduped, capped).
+    Empty when it gave none — ``seed_youtube_keywords`` then derives them from
+    the stock queries."""
+    if shot.get("priority") == "none":
+        return []
+    raw = shot.get("youtube_queries")
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for q in raw:
+        q = " ".join(str(q).split())
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            out.append(q)
+    return out[:limit]
+
+
+def _resolve_block_shot_spans(block: list, shots: list):
+    """0-based inclusive ``[first, last]`` segment indexes per shot when the model
+    answered with ``"segments": [first, last]`` (1-based within the block), else
+    ``None``.
+
+    Any structural problem (missing/non-numeric, out of range, reversed, or
+    overlapping/out-of-order shots) returns ``None`` so the caller falls back to
+    the echoed start/end path. Gaps the model left are absorbed so the spans tile
+    the block exactly — a skipped segment joins the shot before it, and the first
+    and last shots reach the block's edges — because an uncovered stretch of
+    narration is a hole in the timeline."""
+    n = len(block)
+    if not shots or not n:
+        return None
+    spans = []
+    for s in shots:
+        rng = s.get("segments")
+        if not isinstance(rng, (list, tuple)) or len(rng) != 2:
+            return None
+        try:
+            a, b = int(rng[0]), int(rng[1])
+        except (TypeError, ValueError):
+            return None
+        if not 1 <= a <= b <= n:
+            return None
+        spans.append([a - 1, b - 1])
+    prev = -1
+    for a, b in spans:
+        if a <= prev:
+            return None
+        prev = b
+    spans[0][0] = 0
+    for j in range(len(spans) - 1):
+        spans[j][1] = spans[j + 1][0] - 1
+    spans[-1][1] = n - 1
+    return spans
+
 
 def _resolve_block_shot_timings(block: list, shots: list) -> list:
     """Absolute ``(start, end)`` seconds for each shot the Director produced from
@@ -611,9 +722,17 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
         system_prompt_template, video_topic, custom_instructions,
         context_aware=context_aware,
     )
-    system_prompt += "\n\nYou will receive transcription segments as '[start - end]: text'. Group them into logical cinematic shots. " \
-                     "CRITICAL: For each shot, you MUST include 'start' and 'end' keys in the JSON (floats, in seconds) corresponding to the start of the first segment and end of the last segment in that shot. " \
-                     "The 'script_chunk' must contain the verbatim text from those segments."
+    system_prompt += (
+        "\n\nINPUT FORMAT: you will receive numbered transcription segments, one per line, as "
+        "'#N [start - end]: text' (N runs 1..last for this input; a line may also carry "
+        "'(subject: ...)' after the times). Group consecutive segments "
+        "into logical cinematic shots. Every segment must belong to exactly one shot, in order, "
+        "with no gaps and no overlaps.\n"
+        "For THIS input, the schema's 'slot_id', 'start', 'end', 'script_chunk' and "
+        "'duration_needed_sec' are replaced by ONE key: \"segments\": [first, last] — the "
+        "numbers of the first and last segment in the shot, inclusive (a one-segment shot is "
+        "[7, 7]). Do NOT repeat the script text or any times; keep every other key as specified."
+    )
 
     # Block segments. Each block is ONE LLM call, processed sequentially — so on
     # a long transcript the call count (and the rate-limit pressure / wall time)
@@ -629,7 +748,17 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
 
     for i in range(0, len(segments), block_size):
         block = segments[i : i + block_size]
-        user_msg = "\n".join([f"[{s['start']:.2f} - {s['end']:.2f}]: {s['text']}" for s in block])
+        tags = _segment_subject_tags(segment_roadmap, block) if context_aware else []
+        user_msg = "\n".join(
+            f"#{n} [{s['start']:.2f} - {s['end']:.2f}]"
+            + (f" (subject: {tags[n - 1]})" if tags and tags[n - 1] else "")
+            + f": {s['text']}"
+            for n, s in enumerate(block, 1)
+        )
+
+        prev_ctx = _previous_shots_context(all_shots)
+        if prev_ctx:
+            user_msg = f"{prev_ctx}\n\nSEGMENTS TO COVER:\n{user_msg}"
 
         # Prepend the macro-subject(s) covering this block's time span so the
         # Director keeps the overarching topic in mind for each shot's queries.
@@ -652,27 +781,43 @@ def generate_shot_list_from_transcription(segments: list, api_key: str, progress
             if not shots:
                 print(f"DEBUG: No shots found in LLM response for block. Response keys: {data.keys()}")
             
-            # Resolve each shot's absolute timing from the authoritative segment
-            # span — trusting the model's echoed start/end only when they're sane.
-            # This is what stops a block from collapsing onto timestamp 0 when the
-            # model omits the (schema-optional) start/end keys.
-            timings = _resolve_block_shot_timings(block, shots)
-            for shot, (s_time, e_time) in zip(shots, timings):
-                all_shots.append({
+            # Preferred: the model names each shot's first/last segment, so the
+            # text and times come straight from the transcript (nothing echoed,
+            # nothing to mis-time). Otherwise resolve timing from the segment span,
+            # trusting the model's echoed start/end only when they're sane — that
+            # is what stops a block collapsing onto timestamp 0 when it omits them.
+            spans = _resolve_block_shot_spans(block, shots)
+            if spans is not None:
+                resolved = [
+                    (shot,
+                     " ".join(str(seg.get("text", "")).strip() for seg in block[a:b + 1]).strip(),
+                     block[a]["start"], max(block[a]["start"], block[b]["end"]))
+                    for shot, (a, b) in zip(shots, spans)
+                ]
+            else:
+                resolved = [(shot, shot.get("script_chunk", ""), s_time, e_time)
+                            for shot, (s_time, e_time)
+                            in zip(shots, _resolve_block_shot_timings(block, shots))]
+            for shot, text, s_time, e_time in resolved:
+                new_shot = {
                     "slot_id": slot_id,
                     "chunk_id": chunk_id,
                     "timestamp": round(float(s_time), 3),
                     "end_timestamp": round(float(e_time), 3),
                     "timestamp_start_str": format_time(int(float(s_time))),
                     "timestamp_end_str": format_time(int(float(e_time))),
-                    "text": shot.get("script_chunk", ""),
+                    "text": text,
                     "shot_intent": shot.get("shot_intent", "B-roll"),
                     "shot_type": shot.get("shot_type", "medium"),
                     "search_queries": shot.get("search_queries", []),
                     "duration_needed_sec": round(float(e_time) - float(s_time), 1),
                     "priority": shot.get("priority", "medium"),
                     "video_results": []
-                })
+                }
+                yt = _shot_youtube_keywords(shot)
+                if yt:
+                    new_shot["youtube_keywords"] = yt
+                all_shots.append(new_shot)
                 slot_id += 1
                 
         except Exception as e:
@@ -776,7 +921,7 @@ def regenerate_shot_queries(
             + f"\n\nWPS: {wps_est:.2f}\nSCRIPT CHUNK:\n{text}"
             + (f"\n\nPREVIOUSLY TRIED QUERIES (did not produce a usable clip — generate different ones): {old_q}" if old_q else "")
             + "\n\nReturn a JSON with a single-item 'shots' array. "
-            "Produce NEW search_queries that differ from any previously tried queries."
+            "Produce NEW search_queries and NEW youtube_queries that differ from any previously tried queries."
         )
 
         try:
@@ -786,6 +931,9 @@ def regenerate_shot_queries(
                 ns = new_shots[0]
                 if ns.get("search_queries"):
                     target["search_queries"] = ns["search_queries"]
+                yt = _shot_youtube_keywords({**ns, "priority": target.get("priority")})
+                if yt:
+                    target["youtube_keywords"] = yt
                 if ns.get("shot_intent"):
                     target["shot_intent"] = ns["shot_intent"]
                 if ns.get("shot_type"):
