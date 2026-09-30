@@ -23,6 +23,18 @@ def _accept_fake_clip_files(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _storyboard_off_and_isolated(monkeypatch, tmp_path):
+    """The optional storyboard check is off unless a test switches it on, never
+    touches the real .cache/storyboards, and starts each test with a clean tally."""
+    import core.storyboard as sb
+    monkeypatch.delenv("ENABLE_STORYBOARD_CHECK", raising=False)
+    monkeypatch.setenv("STORYBOARD_CACHE_DIR", str(tmp_path / "storyboards"))
+    sb.reset_run_stats()
+    yield
+    sb.reset_run_stats()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_project_store(monkeypatch, tmp_path):
     """Never let a test write the real .cache/projects.db (or reuse another
     test's learned edit history)."""

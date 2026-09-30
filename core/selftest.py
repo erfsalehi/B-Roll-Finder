@@ -232,6 +232,33 @@ def _yt_search_check(state):
     return True, f"{len(results)} result(s) via yt-dlp"
 
 
+def _storyboard_check(state):
+    """The optional storyboard footage check end to end: fetch one search
+    result's storyboard, build its contact sheet, and get a verdict from the
+    vision model. Informational (the check is a per-chat opt-in)."""
+    from core import storyboard
+    if not storyboard.vision_configured():
+        return None, "no OPENROUTER_API_KEY or GEMINI_API_KEY — the storyboard check can't run"
+    results = [r for r in (state.get("yt_results") or []) if r.get("url")]
+    if not results:
+        return None, "no YouTube search result to test on"
+    t0 = time.time()
+    p = storyboard.prepare_video(results[0]["url"])
+    if not p:
+        return False, "no storyboard for the test video (yt-dlp fetch failed, or it has none)"
+    shot = {"text": "city street traffic", "shot_intent": "busy city street with cars"}
+    batch = [(0, results[0])]
+    data = storyboard._vision_json(
+        storyboard._SYSTEM, storyboard._user_text(shot, "", batch, {storyboard._vid(results[0]): p}),
+        [p["jpeg"]])
+    entry = next((e for e in (data.get("candidates") or []) if isinstance(e, dict)), None)
+    if entry is None:
+        return False, "the vision model answered without a candidates list"
+    a = storyboard.analyze(entry, p["times"])
+    return True, (f"ok — {len(p['times'])} frames sheet, verdict {a['verdict']} "
+                  f"({a['relevant']:.0%} on-subject), {time.time() - t0:.0f}s")
+
+
 def _download_one_with_timeout(url, out, quality, timeout):
     """Run download_video in a daemon thread and give up after ``timeout`` s, so a
     slow free proxy (or failover through several) can't hang the preflight. On
@@ -424,6 +451,7 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
         _run("yt-dlp version", _ytdlp_version_check, critical=False)
         _run("yt-dlp auto-update", _ytdlp_update_check, critical=False)
         _run("YouTube search (yt-dlp)", lambda: _yt_search_check(state), critical=True)
+        _run("Storyboard check (optional)", lambda: _storyboard_check(state), critical=False)
         _run("YouTube cookies", _cookie_check, critical=False)
         _run("YouTube proxy", _youtube_proxy_check, critical=False)
         _run("Free proxy-list health", lambda: _dynamic_proxy_health_check(state),

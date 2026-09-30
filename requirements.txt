@@ -17,6 +17,9 @@ pytest==8.4.2
 # "Smart Mode" that needed torch/torchvision/faiss has been removed.
 fastembed
 numpy
+# Already pulled in by fastembed and used by core/captions.py; pinned as a floor
+# because core/storyboard.py builds its contact sheets with it (sized default font).
+Pillow>=10.1
 tqdm
 # ── yt-dlp JS challenge solving ──────────────────────────────────────────────
 # YouTube obfuscates high-res DASH URLs with a JS-based n-parameter challenge.

@@ -129,6 +129,7 @@ Each chat has its own settings, saved to `.cache/bot_settings.json`. The `.env` 
 | Pause to review | on | The review gate |
 | Text overlays / Overlay style | on / Bold Yellow | Also: Clean White, Neon Glow, Boxed News |
 | Extra clips / Related images | on | Library-only extras |
+| Storyboard footage check | off | A vision model looks at each YouTube candidate's storyboard; see [below](#storyboard-footage-check-optional) |
 | Google images / shot, Images per shot | on, 3 | Needs `SERPER_API_KEY` |
 | Detailed queries | off | Per-subject queries for shots that mention several subjects |
 | Delete clips after zip | on | Keep only the zip on disk |
@@ -178,6 +179,21 @@ Before the XML is written it is **evaluated and repaired**: shot timings, SRT an
 | 4 s and longer | 2 | about one per 5 s (`ceil(dur/5)`) |
 
 Every shot gets at least one YouTube clip. A look-back check keeps the same clip from appearing in consecutive shots.
+
+### Storyboard footage check (optional)
+
+A YouTube title says little about what is on screen, and a "Camry review" can be mostly a presenter talking to camera. This check is **off by default**; with it off the pipeline is exactly the one described above. Turn it on per chat in `/settings → Storyboard footage check` (or set `ENABLE_STORYBOARD_CHECK=true`).
+
+YouTube publishes small thumbnails of every video (its *storyboard*, used by the scrubber), so the check needs **no video download**. For each shot's best-ranked YouTube candidates it builds a numbered contact sheet of about 30 frames, and a vision model (OpenRouter GLM, Gemini as backup; the same keys the segment library uses) lists which frames show the footage the shot needs and which show a presenter talking to camera. Then:
+
+- A video that is almost all presenter (80% of frames or more) is **rejected**, and so is one with no on-subject frame when the frames are at most 30 s apart. The shot then picks another candidate, or the usual repair loop searches again.
+- A video with only a sliver of on-subject footage (under 15% of frames), or with none visible in a sparse sample, is **moved to the back** but stays eligible.
+- Each remaining clip is **cut from where the on-subject footage starts** instead of the intro. The Premiere in-point rule is `storyboard`, ranked below every human-sourced rule (segment, learned trim, reviewer rating, reviewer-suggested part) and above the learned editor habit.
+- The QA reviewer sees the result, for example *55% of sampled frames on-subject, 30% presenter to camera, cut starts at 2:10*.
+
+Segment-library clips are never checked. Anything that goes wrong (no storyboard, no vision key, a model error) leaves the candidate exactly as the ranker left it. The review message shows a `🎬 Storyboard check` line with the counts, and `/test` includes an optional preflight for it.
+
+It looks at about 30 frames per video (one per 10–30 s for a typical upload), so it judges the *kind* of footage (a driving shot versus a walkaround), not the exact model or trim, and it can miss a very short stretch. Cost is about $0.0005 per shot's worth of candidates and roughly 10–15 s of model time per shot, run in parallel; storyboards are cached in `.cache/storyboards/`.
 
 ### QA review and auto-refine
 
@@ -348,6 +364,10 @@ The most useful settings (all in `.env.example` with comments):
 | `ENABLE_TEXT_OVERLAYS`, `OVERLAY_STYLE`, `OVERLAY_CHUNK_SEC` | `true`, `kinetic`, `150` | Overlays |
 | `ENABLE_EXTRA_CLIPS`, `EXTRA_PER_KEYWORD`, `EXTRA_MAX_KEYWORDS` | `true`, `2`, `12` | Extras |
 | `ENABLE_SHOT_IMAGES`, `SHOT_IMAGES_PER_SHOT` | `true`, `3` | Per-shot images |
+| `ENABLE_STORYBOARD_CHECK` | `false` | Optional storyboard footage check (bot: per chat in `/settings`) |
+| `STORYBOARD_FRAMES` / `STORYBOARD_MAX_PRESENTER` / `STORYBOARD_WEAK_BELOW` | `30` / `0.8` / `0.15` | Frames per contact sheet; presenter share that rejects; on-subject share that demotes |
+| `STORYBOARD_REJECT_SPACING` / `STORYBOARD_PER_CALL` / `STORYBOARD_WAVES` | `30` / `4` / `2` | Max seconds between frames for "nothing on-subject" to reject; candidates per model call; re-check rounds |
+| `STORYBOARD_MODEL` / `STORYBOARD_REASONING_EFFORT` / `STORYBOARD_MAX_VIDEOS` | segment-library model / `low` / `300` | Vision model; `low`, `medium`, `high` or `none`; cap per run |
 | `ENABLE_RELATED_IMAGES` | `true` | Related stills |
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` / `ENABLE_DETAILED_QUERIES` | off | Query modes |
 | `AUTO_SELECT_SHORT_SEC` / `AUTO_SELECT_YT_SECONDS` / `AUTO_SELECT_MIN_PEXELS` | `4` / `5` / `2` | Selection quota |
@@ -389,6 +409,7 @@ B-Roll Finder/
 │   ├── download_manager.py    parallel downloads, retries, dedup
 │   ├── download_cache.py      cross-session URL → file registry
 │   ├── extras.py              extra contextual clips
+│   ├── storyboard.py          optional storyboard footage check (talking head / on-subject)
 │   ├── shot_images.py         per-shot Google images (Serper)
 │   ├── related_images.py      related stills → Clip Library
 │   ├── overlays_remotion.py   overlay extraction + Remotion rendering

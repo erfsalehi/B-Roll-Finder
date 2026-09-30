@@ -671,6 +671,26 @@ def format_assets_line(result: dict):
     return "  ·  ".join(parts) or None
 
 
+def format_storyboard_line(result: dict):
+    """What the optional storyboard footage check did, or None when it was off
+    (or looked at nothing)."""
+    st = (result.get("attempts") or {}).get("storyboard")
+    if not st or not (st.get("checked") or st.get("failed") or st.get("no_storyboard")):
+        return None
+    parts = [f"{st.get('checked', 0)} clip(s) checked"]
+    if st.get("bad"):
+        parts.append(f"{st['bad']} rejected (presenter-only or off-subject)")
+    if st.get("weak"):
+        parts.append(f"{st['weak']} demoted")
+    if st.get("retimed"):
+        parts.append(f"{st['retimed']} cut where the footage starts")
+    if st.get("no_storyboard"):
+        parts.append(f"{st['no_storyboard']} without a storyboard")
+    if st.get("failed"):
+        parts.append(f"{st['failed']} not checked (vision error)")
+    return "🎬 Storyboard check: " + " · ".join(parts)
+
+
 def format_review(proj: str, result: dict, errors_from: int = 0,
                   action: str = "processing") -> str:
     """Pre-download review: counts, per-shot clip spread, QA flags, errors, and
@@ -690,6 +710,9 @@ def format_review(proj: str, result: dict, errors_from: int = 0,
     assets_line = format_assets_line(result)
     if assets_line:
         lines.append(assets_line)
+    sb_line = format_storyboard_line(result)
+    if sb_line:
+        lines.append(sb_line)
     lines += format_qa_block(result.get("qa") or {})
     errs = result.get("errors") or []
     lines += format_errors_block(errs[errors_from:], action=action,

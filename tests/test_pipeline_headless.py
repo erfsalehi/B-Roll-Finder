@@ -119,6 +119,45 @@ def test_pipeline_skips_qa_when_disabled(_mock_stages, monkeypatch):
     assert res["qa"]["overall"] == "QA review skipped."
 
 
+def test_pipeline_storyboard_toggle_off_runs_the_old_path(_mock_stages, monkeypatch):
+    import core.director_rank
+    seen = {}
+    monkeypatch.setattr(core.director_rank, "rank_shot_candidates",
+                        lambda shots, **k: seen.update(k))
+    res = pipeline.run_pipeline_headless("voice.mp3", project_name="sb_off", download=False)
+    assert "storyboard" not in res["attempts"]
+    assert seen["errors"] is None            # rank's own error list, exactly as before
+
+
+def test_pipeline_storyboard_toggle_on_wires_progress_cancel_and_stats(_mock_stages, monkeypatch):
+    import core.director_rank
+    import core.storyboard as sb
+    monkeypatch.setenv("ENABLE_STORYBOARD_CHECK", "true")
+    seen, labels = {}, []
+
+    def _rank(shots, **k):
+        seen.update(k)
+        sb._bump("checked", 3)
+        sb._bump("bad", 1)
+        k["storyboard_progress"](2, 5)        # the check reporting into the stage line
+    monkeypatch.setattr(core.director_rank, "rank_shot_candidates", _rank)
+    res = pipeline.run_pipeline_headless(
+        "voice.mp3", project_name="sb_on", download=False,
+        progress_callback=lambda step, total, label: labels.append(label),
+        should_cancel=lambda: False)
+    assert isinstance(seen["errors"], list) and callable(seen["should_cancel"])
+    assert "Checking footage · 2/5" in labels
+    assert res["attempts"]["storyboard"]["checked"] == 3 and res["attempts"]["storyboard"]["bad"] == 1
+
+
+def test_pipeline_resets_the_storyboard_tally_per_job(_mock_stages, monkeypatch):
+    import core.storyboard as sb
+    monkeypatch.setenv("ENABLE_STORYBOARD_CHECK", "true")
+    sb._bump("checked", 99)                   # left over from a previous job
+    res = pipeline.run_pipeline_headless("voice.mp3", project_name="sb_reset", download=False)
+    assert res["attempts"]["storyboard"]["checked"] == 0
+
+
 def test_repair_empty_shots_refetches_and_selects(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "k")
     monkeypatch.setenv("AUTO_USE_LIBRARY", "false")   # isolate from the real library

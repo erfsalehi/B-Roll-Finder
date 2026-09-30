@@ -224,7 +224,9 @@ def _selected_clip_label(shot: dict) -> str:
         d = " ".join((c.get("description") or "").split())
         if d:
             desc = f" — {d[:160]}{'…' if len(d) > 160 else ''}"
-    return f'"{title}" [{src}{extra}]{desc}'
+    # Only present when the optional storyboard footage check ran on this clip.
+    from core.storyboard import summary_line
+    return f'"{title}" [{src}{extra}]{desc}{summary_line(c)}'
 
 
 def build_timeline_summary(shots: list, changed: set = None) -> str:
@@ -333,10 +335,16 @@ def review_timeline(shots: list, api_key: str, video_topic: str = "",
         context.append(f"USER STYLE NOTES: {custom_instructions.strip()}")
     if follow_up:
         context.append(_follow_up_block(previous, changed))
+    timeline = build_timeline_summary(shots, changed=changed if follow_up else None)
+    if "[footage check:" in timeline:     # only when the optional storyboard check ran
+        context.append(
+            "A \"[footage check: …]\" note comes from looking at the source video's own "
+            "thumbnails across its whole length (what share show the subject, what share "
+            "show a presenter talking to camera, where the good part starts). Trust it over "
+            "the title and description.")
     system_prompt = system_prompt.replace("{context_block}", "\n".join(context))
 
-    user_msg = "TIMELINE (chronological):\n" + build_timeline_summary(
-        shots, changed=changed if follow_up else None)
+    user_msg = "TIMELINE (chronological):\n" + timeline
 
     client = Groq(api_key=api_key)
     try:
@@ -720,7 +728,8 @@ def clear_auto_selections(shots: list) -> list:
 
 def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "",
                          video_topic: str = "", progress_callback=None,
-                         errors: list = None, max_workers: int = 3) -> list:
+                         errors: list = None, max_workers: int = 3,
+                         storyboard_progress=None, should_cancel=None) -> list:
     """
     Stage 3: Ranks and filters each shot's video_results by relevance.
     - Reorders shot['video_results'] best → worst
@@ -728,6 +737,11 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
     - Marks irrelevant candidates with candidate['irrelevant'] = True
     - On failure, sets shot['rank_error'] and appends a string to ``errors``
       (when provided) so the UI can surface it.
+    - With ENABLE_STORYBOARD_CHECK on (bot: /settings), the ranked YouTube
+      candidates are then looked at through their storyboard thumbnails
+      (core.storyboard) — talking-head-only videos are rejected and each clip
+      gets a better in-point. Off (the default) this is skipped entirely.
+      ``storyboard_progress(done, total)`` and ``should_cancel()`` serve that step.
 
     Shots are ranked in BATCHES (``RANK_BATCH_SIZE`` shots per LLM call,
     default 6) instead of one call per shot — that ~6x cut in request count is
@@ -828,4 +842,11 @@ def rank_shot_candidates(shots: list, api_key: str, custom_instructions: str = "
         segment_library.promote_strong(rankable)
     except Exception as e:
         print(f"[rank] couldn't promote library clips: {e}")
+    try:
+        from core import storyboard
+        if storyboard.enabled():
+            storyboard.check_shots(rankable, video_topic=video_topic, errors=errors,
+                                   progress=storyboard_progress, should_cancel=should_cancel)
+    except Exception as e:
+        print(f"[rank] storyboard check failed: {e}")
     return shots

@@ -55,6 +55,8 @@ def _patch_all(monkeypatch, *, yt_dl_ok=True, ffmpeg=True, pexels_key=True):
     # rollup in the generic-path tests.
     monkeypatch.setattr(st, "_ytdlp_version_check", lambda: (True, "fresh"))
     monkeypatch.setattr(st, "_ytdlp_update_check", lambda: (True, "last ran today"))
+    # The optional storyboard check does real network + vision calls.
+    monkeypatch.setattr(st, "_storyboard_check", lambda state: (None, "not tested here"))
     # The free-list health check is skipped unless YT_DLP_PROXY_URL is set; keep
     # the generic-path tests deterministic regardless of the dev's shell env.
     monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)

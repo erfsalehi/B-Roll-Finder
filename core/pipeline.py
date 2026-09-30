@@ -1769,6 +1769,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     from core import usage as _usage
     _usage.reset()
     _reset_image_backends()
+    from core import storyboard as _storyboard
+    _storyboard.reset_run_stats()
 
     # Fresh query cache per job: the cross-shot cache is meant to dedupe API
     # calls WITHIN one run. In the long-lived bot process, leftovers from a
@@ -1893,10 +1895,14 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     drop_long_videos(shots)
     drop_vertical(shots)
 
-    # 7 — Rank
+    # 7 — Rank (with the optional storyboard footage check, when it's switched on)
     _p(7, "Ranking candidates")
     try:
-        rank_shot_candidates(shots, api_key=key, video_topic=topic)
+        rank_shot_candidates(
+            shots, api_key=key, video_topic=topic,
+            errors=errors if _storyboard.enabled() else None,   # old path unchanged
+            should_cancel=should_cancel,
+            storyboard_progress=lambda d, t: _p(7, f"Checking footage · {d}/{t}"))
     except Exception as e:
         errors.append(f"rank: {e}")
 
@@ -2067,6 +2073,9 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
         state.attempts["repaired"] = state.download.get("repaired", 0)
         state.attempts["dropped"] = (state.attempts.get("dropped", 0)
                                      + state.download.get("dropped", 0))
+
+    if _storyboard.enabled():
+        state.attempts["storyboard"] = _storyboard.run_stats()
 
     # Final — FCPXML
     _p(total, "Writing Premiere XML")

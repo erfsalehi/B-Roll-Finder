@@ -513,7 +513,7 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
 def _pick_in_frame(clip_url, filename, duration_frames, media_dur_frames, fps,
                    candidate) -> tuple:
     """``(rule, in_frame)`` for :func:`_preferred_in_frame`; rule is one of
-    segment / trim / rated / verified / habit / default."""
+    segment / trim / rated / verified / storyboard / habit / default."""
     if not clip_url and not filename and not candidate:
         return "default", 0
     if (candidate or {}).get("library_segment_id"):
@@ -545,6 +545,17 @@ def _pick_in_frame(clip_url, filename, duration_frames, media_dur_frames, fps,
             in_frame = sec_to_frames(float(verified), fps)
             if _fits(in_frame, duration_frames, media_dur_frames):
                 return "verified", in_frame
+    except Exception:
+        pass
+    try:
+        # Optional storyboard footage check: where the on-subject footage starts,
+        # so a long upload isn't cut at its presenter intro. Machine-derived, so
+        # it ranks below every human-sourced rule above.
+        sb = (candidate or {}).get("storyboard_in_sec")
+        if sb:
+            in_frame = sec_to_frames(float(sb), fps)
+            if _fits(in_frame, duration_frames, media_dur_frames):
+                return "storyboard", in_frame
     except Exception:
         pass
     try:

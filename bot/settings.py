@@ -29,6 +29,7 @@ OPTIONS = [
     {"key": "library_num", "label": "Library / shot","type": "choice", "env": "AUTO_LIBRARY_NUM",  "choices": [1, 2, 3, 5, 8, 10]},
     {"key": "min_height",  "label": "Min height",    "type": "choice", "env": "AUTO_MIN_HEIGHT",   "choices": [0, 480, 720, 1080], "fmt": lambda v: "off" if not v else f"{v}p"},
     {"key": "quality",     "label": "Download quality","type": "choice","choices": [480, 720, 1080], "fmt": lambda v: f"{v}p"},
+    {"key": "storyboard_check", "label": "Storyboard footage check", "type": "bool", "env": "ENABLE_STORYBOARD_CHECK"},
     {"key": "qa",          "label": "QA review (5.5)","type": "bool",   "env": "ENABLE_QA_REVIEW"},
     {"key": "auto_refine", "label": "Auto-refine flagged", "type": "bool"},
     {"key": "auto_fill",   "label": "Auto-fill empty shots", "type": "bool"},
@@ -55,6 +56,10 @@ DEFAULTS = {
     "use_library": True, "library_num": 5,
     "min_height": 720,
     "quality": 1080,
+    # Off = the original pipeline, untouched. On = a vision model looks at each
+    # YouTube candidate's storyboard thumbnails (needs OPENROUTER_API_KEY or
+    # GEMINI_API_KEY): rejects presenter-only videos, cuts from where the footage is.
+    "storyboard_check": False,
     "qa": True,
     "auto_refine": True,
     "auto_fill": True,
