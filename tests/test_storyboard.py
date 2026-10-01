@@ -60,6 +60,11 @@ def _yt(vid, title="clip", **extra):
                  "title": title}, **extra)
 
 
+def _px(n):
+    return {"source": "pexels", "url": f"https://videos.pexels.com/{n}.mp4",
+            "page_url": f"https://www.pexels.com/video/stock-{n}/", "title": f"stock {n}"}
+
+
 def _shot(slot, cands, dur=3.0):
     return {"slot_id": slot, "priority": "medium", "text": f"narration {slot}",
             "shot_intent": "engine bay of a car", "duration_needed_sec": dur,
@@ -265,8 +270,36 @@ def test_only_youtube_non_library_non_irrelevant_candidates_are_sent(monkeypatch
              _yt("a", "seg", library_segment_id=7),
              _yt("b", "rejected", irrelevant=True),
              _yt("c", "ok")]
-    sb.check_shots([_shot(1, cands)])
+    sb.check_shots([_shot(1, cands, dur=6.0)])          # quota 2: the segment fills one
     assert asked == [(1, ["ok"])]
+
+
+def test_library_segment_counts_toward_the_quota(monkeypatch):
+    asked = _turn_on(monkeypatch, {})
+    sb.check_shots([_shot(1, [_yt("a", "seg", library_segment_id=7), _yt("c", "other")])])
+    assert asked == []                                  # quota 1 already met by the segment
+
+
+def test_weak_top_pick_does_not_fill_the_quota(monkeypatch):
+    """A weak clip is demoted, so the check must keep going until one passes —
+    otherwise an unchecked (maybe presenter-only) clip is what gets picked."""
+    bad = {"presenter": list(range(1, 21))}
+    asked = _turn_on(monkeypatch, {"thin": {"on_subject": [10, 11]}, "talker": bad,
+                                   "real": {"on_subject": [2, 3, 4, 5, 6, 7]}})
+    shots = [_shot(1, [_yt("a", "thin"), _yt("b", "talker"), _yt("c", "real"), _px(1)])]
+    sb.check_shots(shots)
+    assert asked == [(1, ["thin", "talker"]), (1, ["real"])]
+    dr.auto_select_top_candidates(shots)
+    assert [c["title"] for c in shots[0]["selected_results"]] == ["real", "stock 1"]
+
+
+def test_weak_stays_ahead_of_unchecked_candidates(monkeypatch):
+    _turn_on(monkeypatch, {"thin": {"on_subject": [10, 11]},
+                           "talker": {"presenter": list(range(1, 21))}})
+    monkeypatch.setenv("STORYBOARD_WAVES", "1")
+    shots = [_shot(1, [_yt("a", "thin"), _yt("b", "talker"), _yt("c", "unseen")])]
+    sb.check_shots(shots)
+    assert [c["title"] for c in shots[0]["video_results"]] == ["thin", "talker", "unseen"]
 
 
 def test_second_wave_checks_next_candidates_when_first_were_bad(monkeypatch):
@@ -577,3 +610,46 @@ def test_review_message_line():
     assert "42 clip(s) checked" in line and "8 rejected" in line and "3 demoted" in line
     assert "20 cut where the footage starts" in line and "2 without a storyboard" in line
     assert "1 not checked" in line
+
+
+# ── the clips actually picked ────────────────────────────────────────────────
+
+def test_check_selected_covers_picks_past_the_checked_ones(monkeypatch):
+    """Three shots share one candidate list (query cache); "fresh YouTube first"
+    sends shot 3 past the two clips the rank-time check looked at."""
+    bad = {"presenter": list(range(1, 21))}
+    good = {"on_subject": [2, 3, 4, 5, 6, 7]}
+    _turn_on(monkeypatch, {"d": good, "e": good, "f": bad, "g": good})
+    shared = [_yt("d", "d"), _yt("e", "e"), _yt("f", "f"), _yt("g", "g")]
+    shots = [_shot(i, shared + [_px(i)]) for i in (1, 2, 3)]
+    sb.check_shots(shots)
+    dr.auto_select_top_candidates(shots)
+    assert shots[2]["selected_results"][0]["title"] == "f"     # the gap
+    swapped = sb.check_selected(shots)
+    assert swapped == 1
+    pick = shots[2]["selected_results"][0]
+    assert pick["title"] == "g" and pick["sb_verdict"] == "good"
+    assert pick["storyboard_in_sec"] == 5.0
+    assert sb.run_stats()["replaced"] == 1
+    for s in shots:                           # YouTube picks carry their verdicts
+        assert all(c.get("sb_checked") for c in s["selected_results"] if dr._is_youtube(c))
+
+
+def test_check_selected_keeps_a_lone_bad_pick_and_skips_manual_ones(monkeypatch):
+    bad = {"presenter": list(range(1, 21))}
+    _turn_on(monkeypatch, {"only": bad, "mine": bad})
+    auto = _shot(1, [_yt("a", "only")])
+    auto.update(selected_results=[auto["video_results"][0]], auto_selected=True)
+    manual = _shot(2, [_yt("b", "mine")])
+    manual["selected_results"] = [manual["video_results"][0]]
+    assert sb.check_selected([auto, manual]) == 0
+    assert auto["selected_results"][0]["title"] == "only"      # never leave a slot empty
+    assert auto["selected_results"][0]["sb_verdict"] == "bad"
+    assert "sb_checked" not in manual["selected_results"][0]
+
+
+def test_check_selected_off_does_nothing(monkeypatch):
+    monkeypatch.setattr(sb, "_vision_json", lambda *a: pytest.fail("must not call the model"))
+    s = _shot(1, [_yt("a")])
+    s.update(selected_results=list(s["video_results"]), auto_selected=True)
+    assert sb.check_selected([s]) == 0

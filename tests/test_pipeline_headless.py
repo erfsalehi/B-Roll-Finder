@@ -568,3 +568,14 @@ def test_missing_media_warnings_collapse_to_one_line(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "5 clip(s) not on disk yet (expected before /download)" in out
     assert out.count("media not found on disk") == 1    # only the one example
+
+
+def test_pipeline_storyboard_checks_the_bound_picks(_mock_stages, monkeypatch):
+    import core.storyboard as sb
+    calls = []
+    monkeypatch.setattr(sb, "check_selected", lambda shots, **k: calls.append(k) or 0)
+    pipeline.run_pipeline_headless("voice.mp3", project_name="sb_off2", download=False)
+    assert calls == []                        # off: the old path, untouched
+    monkeypatch.setenv("ENABLE_STORYBOARD_CHECK", "true")
+    pipeline.run_pipeline_headless("voice.mp3", project_name="sb_picks", download=False)
+    assert calls and isinstance(calls[0]["errors"], list)

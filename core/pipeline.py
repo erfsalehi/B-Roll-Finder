@@ -693,6 +693,19 @@ def drop_undownloaded(shots: list) -> int:
     return dropped
 
 
+def _check_picked_footage(shots: list, video_topic: str = "", errors: list = None) -> None:
+    """Optional storyboard footage check on the YouTube clips just bound: selection
+    can reach past the candidates checked at rank time (variety rules, top-ups,
+    spares), so a presenter-only pick is swapped here. No-op when it's off."""
+    from core import storyboard
+    if not storyboard.enabled():
+        return
+    try:
+        storyboard.check_selected(shots, video_topic=video_topic, errors=errors)
+    except Exception as e:
+        print(f"[storyboard] checking picks failed: {e}")
+
+
 def repick_failed_shots(shots: list, slot_ids, groq_key: str = None,
                         video_topic: str = "", errors: list = None,
                         blacklist: set = None) -> int:
@@ -789,6 +802,7 @@ def repick_failed_shots(shots: list, slot_ids, groq_key: str = None,
             s["auto_selected"] = True
         if len(sel) > before:
             repaired += 1
+    _check_picked_footage(targets, video_topic, errors)
     return repaired
 
 
@@ -891,6 +905,7 @@ def ensure_youtube_coverage(shots: list, groq_key: str = None, video_topic: str 
                 n += 1
         if n:
             secured += 1
+            _check_picked_footage([s], video_topic, errors)
     return secured
 
 
@@ -1073,6 +1088,7 @@ def repair_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
         errors.append(f"repair rank: {e}")
 
     auto_select_top_candidates(shots)   # full list → only fills the still-empty ones
+    _check_picked_footage(targets, video_topic, errors)
     return still_empty_before - sum(1 for s in targets if not s.get("selected_results"))
 
 
@@ -1173,6 +1189,7 @@ def fill_empty_shots(shots: list, groq_key: str = None, video_topic: str = "",
         # auto_select binds a YouTube clip per shot via the per-shot quota
         # (shot_source_quota), so no separate YouTube-first reordering is needed.
         auto_select_top_candidates(shots)
+        _check_picked_footage(shots, video_topic, errors)
         still = sum(1 for s in shots
                     if s.get("priority") != "none" and not s.get("selected_results"))
         filled += before - still
@@ -1311,6 +1328,7 @@ def refine_flagged_shots(shots: list, qa: dict, groq_key: str = None, video_topi
     # a valid-but-weak clip beats the failing one it replaces.
     auto_select_top_candidates(   # fills the now-empty refreshed shots
         shots, allow_irrelevant_slots=None if qa_driven else set(by_slot))
+    _check_picked_footage(targets, video_topic, errors)
 
     refined = 0
     for s in targets:
@@ -1909,6 +1927,7 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     # 8 — Auto-select (the per-shot quota binds a YouTube clip for every shot).
     _p(8, "Auto-selecting clips")
     auto_select_top_candidates(shots)
+    _check_picked_footage(shots, topic, errors)
 
     # Central run state — everything below records into it, and it renders the
     # result dict at the end (same keys callers already use, plus validation +

@@ -367,6 +367,7 @@ The most useful settings (all in `.env.example` with comments):
 | `ENABLE_STORYBOARD_CHECK` | `false` | Optional storyboard footage check (bot: per chat in `/settings`) |
 | `STORYBOARD_FRAMES` / `STORYBOARD_MAX_PRESENTER` / `STORYBOARD_WEAK_BELOW` | `30` / `0.8` / `0.15` | Frames per contact sheet; presenter share that rejects; on-subject share that demotes |
 | `STORYBOARD_REJECT_SPACING` / `STORYBOARD_PER_CALL` / `STORYBOARD_WAVES` | `30` / `4` / `2` | Max seconds between frames for "nothing on-subject" to reject; candidates per model call; re-check rounds |
+| `STORYBOARD_SELECT_ROUNDS` | `3` | After auto-select, rounds of checking picks the rank-time check didn't cover and swapping rejected ones |
 | `STORYBOARD_MODEL` / `STORYBOARD_REASONING_EFFORT` / `STORYBOARD_MAX_VIDEOS` | segment-library model / `low` / `300` | Vision model; `low`, `medium`, `high` or `none`; cap per run |
 | `ENABLE_RELATED_IMAGES` | `true` | Related stills |
 | `ENABLE_CONTEXT_AWARE_KEYWORDS` / `ENABLE_DETAILED_QUERIES` | off | Query modes |

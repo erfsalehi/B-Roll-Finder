@@ -85,7 +85,7 @@ def reset_run_stats() -> None:
     with _tally_lock:
         _tally.clear()
         _tally.update(videos=0, checked=0, good=0, weak=0, bad=0, no_storyboard=0,
-                      failed=0, retimed=0)
+                      failed=0, retimed=0, replaced=0)
 
 
 def run_stats() -> dict:
@@ -498,8 +498,11 @@ def _candidates_to_check(shot: dict, want: int, per_call: int, extra: int) -> li
     many as the shot still needs plus a spare. Library segments are never checked."""
     from core.director_rank import _is_youtube
     vr = shot.get("video_results") or []
-    good = sum(1 for c in vr if _is_youtube(c) and c.get("sb_checked")
-               and c.get("sb_verdict") != "bad")
+    # A weak clip is demoted, so it doesn't fill the quota; a library segment
+    # (never checked, a human chose it) does.
+    good = sum(1 for c in vr if _is_youtube(c) and not c.get("irrelevant") and (
+        c.get("library_segment_id")
+        or (c.get("sb_checked") and c.get("sb_verdict") in ("good", "unknown"))))
     if good >= want:
         return []
     take = min(per_call, max(1, want - good) + extra)
@@ -524,75 +527,64 @@ def _settle(shot: dict) -> None:
         if c.get("sb_verdict") == "bad" and not c.get("irrelevant"):
             c = dict(c, irrelevant=True)
         out.append(c)
-    shot["video_results"] = ([c for c in out if c.get("sb_verdict") != "weak"]
-                             + [c for c in out if c.get("sb_verdict") == "weak"])
+    weak = [c for c in out if c.get("sb_verdict") == "weak"]
+    if not weak:
+        shot["video_results"] = out
+        return
+    rest = [c for c in out if c.get("sb_verdict") != "weak"]
+    # Behind every clip the check passed, but still ahead of the ones it hasn't
+    # seen (those may be presenter-only). Never moved up.
+    passed = max((k for k, c in enumerate(rest) if c.get("sb_checked")
+                  and c.get("sb_verdict") in ("good", "unknown")), default=-1)
+    was = sum(1 for c in out[:out.index(weak[0])] if c.get("sb_verdict") != "weak")
+    at = max(passed + 1, was)
+    shot["video_results"] = rest[:at] + weak + rest[at:]
 
 
-def check_shots(shots: list, video_topic: str = "", errors: list = None,
-                progress=None, should_cancel=None) -> dict:
-    """Run the footage check over the shots' YouTube candidates, in place.
+class _Checker:
+    """One check session. Videos are prepared once and shared between shots and
+    waves; the model is asked once per shot per wave (the shot's narration decides
+    what counts as on-subject)."""
 
-    Waves: check each shot's best unchecked YouTube candidates; a shot that lost
-    some to the check gets its next ones (``STORYBOARD_WAVES``, default 2). Videos
-    are prepared once and shared between shots; the model is asked once per shot
-    (its narration decides what counts as on-subject). Returns the run tally."""
-    if not enabled():
-        return run_stats()
-    if errors is None:
-        errors = []
-    for s in shots:
-        _settle(s)   # verdicts from an earlier pass survive a re-rank
-    if not vision_configured():
-        errors.append("storyboard check: no vision key (OPENROUTER_API_KEY or GEMINI_API_KEY) — skipped")
-        return run_stats()
+    def __init__(self, video_topic="", errors=None, progress=None, should_cancel=None):
+        self.video_topic = video_topic
+        self.errors = errors if errors is not None else []
+        self.progress = progress
+        self.should_cancel = should_cancel
+        self.prepared: dict = {}    # video id → prepared video, or None (no storyboard)
+        self.done = self.total = 0
+        self.per_call = max(1, _env_int("STORYBOARD_PER_CALL", 4))
+        self.max_videos = max(1, _env_int("STORYBOARD_MAX_VIDEOS", 300))
+        self.prep_workers = max(1, _env_int("STORYBOARD_WORKERS", 4))
+        self.llm_workers = max(1, _env_int("STORYBOARD_LLM_WORKERS", 3))
 
-    from core.director_rank import shot_source_quota
-    per_call = max(1, _env_int("STORYBOARD_PER_CALL", 4))
-    extra = max(0, _env_int("STORYBOARD_EXTRA", 1))
-    waves = max(1, _env_int("STORYBOARD_WAVES", 2))
-    max_videos = max(1, _env_int("STORYBOARD_MAX_VIDEOS", 300))
-    prep_workers = max(1, _env_int("STORYBOARD_WORKERS", 4))
-    llm_workers = max(1, _env_int("STORYBOARD_LLM_WORKERS", 3))
+    def cancelled(self) -> bool:
+        return bool(self.should_cancel and self.should_cancel())
 
-    cancelled = lambda: bool(should_cancel and should_cancel())   # noqa: E731
-    prepared: dict = {}     # video id → prepared video, or None (no storyboard)
-    done = [0]
-    total = [0]
-
-    def _tick(n=1):
-        done[0] += n
-        if progress:
+    def _tick(self):
+        self.done += 1
+        if self.progress:
             try:
-                progress(done[0], total[0])
+                self.progress(self.done, self.total)
             except Exception:
                 pass
 
-    for _wave in range(waves):
-        if cancelled():
-            break
-        work = []
-        for s in shots:
-            if s.get("priority") == "none" or s.get("skipped"):
-                continue
-            picks = _candidates_to_check(s, shot_source_quota(s)[1], per_call, extra)
-            if picks:
-                work.append((s, picks))
-        if not work:
-            break
-
+    def run(self, work: list) -> None:
+        """Check ``work`` = ``[(shot, [(index, candidate), …])]`` (one entry per
+        shot; indices into its ``video_results``), writing verdicts in place."""
         # 1 — prepare each new video once
         new_vids: dict = {}
         for _s, picks in work:
             for _i, c in picks:
                 v = _vid(c)
-                if v not in prepared and v not in new_vids:
+                if v not in self.prepared and v not in new_vids:
                     new_vids[v] = c.get("url") or c.get("page_url")
-        room = max_videos - len(prepared)
+        room = self.max_videos - len(self.prepared)
         if len(new_vids) > room:
-            errors.append(f"storyboard check: only the first {max_videos} videos are checked "
-                          f"(STORYBOARD_MAX_VIDEOS)")
+            self.errors.append(f"storyboard check: only the first {self.max_videos} videos "
+                               f"are checked (STORYBOARD_MAX_VIDEOS)")
             new_vids = dict(list(new_vids.items())[:max(0, room)])
-        total[0] += len(new_vids) + len(work)
+        self.total += len(new_vids) + len(work)
 
         def _prep(item):
             v, url = item
@@ -603,36 +595,40 @@ def check_shots(shots: list, video_topic: str = "", errors: list = None,
                 return v, None
 
         if new_vids:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(prep_workers, len(new_vids))) as ex:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(self.prep_workers, len(new_vids))) as ex:
                 for v, p in ex.map(_prep, list(new_vids.items())):
-                    prepared[v] = p
+                    self.prepared[v] = p
                     _bump("videos" if p else "no_storyboard")
-                    _tick()
-        if cancelled():
-            break
+                    self._tick()
+        if self.cancelled():
+            return
 
         # 2 — one model call per shot
+        prepared = self.prepared
+
         def _judge(item):
             shot, picks = item
             batch = [(i, c) for i, c in picks if prepared.get(_vid(c))]
             if not batch:
                 return shot, picks, [], None
             try:
-                data = _vision_json(_SYSTEM, _user_text(shot, video_topic, batch, prepared),
+                data = _vision_json(_SYSTEM, _user_text(shot, self.video_topic, batch, prepared),
                                     [prepared[_vid(c)]["jpeg"] for _i, c in batch])
                 return shot, picks, batch, data
             except Exception as e:
                 print(f"[storyboard] shot {shot.get('slot_id')}: {type(e).__name__}: {str(e)[:150]}")
                 return shot, picks, batch, e
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(llm_workers, len(work))) as ex:
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(self.llm_workers, len(work))) as ex:
             for shot, picks, batch, data in ex.map(_judge, work):
-                _tick()
+                self._tick()
                 if isinstance(data, Exception):
                     _bump("failed", len(batch))
-                    if not any("storyboard check failed" in e for e in errors):
-                        errors.append(f"storyboard check failed ({type(data).__name__}) "
-                                      f"— those clips kept as ranked")
+                    if not any("storyboard check failed" in e for e in self.errors):
+                        self.errors.append(f"storyboard check failed ({type(data).__name__}) "
+                                           f"— those clips kept as ranked")
                     # Fail open, and mark as checked so a later wave doesn't retry forever.
                     for i, c in picks:
                         shot["video_results"][i] = dict(c, sb_checked=True, sb_verdict="unknown")
@@ -671,9 +667,153 @@ def check_shots(shots: list, video_topic: str = "", errors: list = None,
         for s, _p in work:
             _settle(s)
 
+
+def _print_stats() -> dict:
     st = run_stats()
     if st.get("checked") or st.get("no_storyboard") or st.get("failed"):
         print(f"[storyboard] {st.get('checked', 0)} clip(s) checked — {st.get('good', 0)} good, "
-              f"{st.get('weak', 0)} weak, {st.get('bad', 0)} rejected; "
+              f"{st.get('weak', 0)} weak, {st.get('bad', 0)} rejected, "
+              f"{st.get('replaced', 0)} pick(s) swapped; "
               f"{st.get('no_storyboard', 0)} without storyboard, {st.get('failed', 0)} failed")
     return st
+
+
+def check_shots(shots: list, video_topic: str = "", errors: list = None,
+                progress=None, should_cancel=None) -> dict:
+    """Run the footage check over the shots' YouTube candidates, in place.
+
+    Waves: check each shot's best unchecked YouTube candidates; a shot that lost
+    some to the check gets its next ones (``STORYBOARD_WAVES``, default 2).
+    Returns the run tally. Auto-select can still reach past what this checked
+    (variety rules, top-ups) — :func:`check_selected` covers the actual picks."""
+    if not enabled():
+        return run_stats()
+    if errors is None:
+        errors = []
+    for s in shots:
+        _settle(s)   # verdicts from an earlier pass survive a re-rank
+    if not vision_configured():
+        errors.append("storyboard check: no vision key (OPENROUTER_API_KEY or GEMINI_API_KEY) — skipped")
+        return run_stats()
+
+    from core.director_rank import shot_source_quota
+    checker = _Checker(video_topic, errors, progress, should_cancel)
+    extra = max(0, _env_int("STORYBOARD_EXTRA", 1))
+    waves = max(1, _env_int("STORYBOARD_WAVES", 2))
+    for _wave in range(waves):
+        if checker.cancelled():
+            break
+        work = []
+        for s in shots:
+            if s.get("priority") == "none" or s.get("skipped"):
+                continue
+            picks = _candidates_to_check(s, shot_source_quota(s)[1], checker.per_call, extra)
+            if picks:
+                work.append((s, picks))
+        if not work:
+            break
+        checker.run(work)
+    return _print_stats()
+
+
+# ── the clips actually picked ────────────────────────────────────────────────
+
+def _skip_pick(c: dict) -> bool:
+    """Picks the check leaves alone: not YouTube, or a human already chose the cut."""
+    from core.director_rank import _is_youtube
+    return (not _is_youtube(c) or bool(c.get("library_segment_id"))
+            or c.get("verified_in_sec") is not None)
+
+
+def _sync_picks(shot: dict, taken: set) -> int:
+    """Point the shot's picks at their checked copies in ``video_results`` and swap
+    each rejected one for the next unrejected YouTube candidate (one no other shot
+    uses first). A rejected pick with no replacement is dropped — unless it's all
+    the shot has (a slot is never left empty). Returns how many were swapped."""
+    from core.director_rank import _is_youtube, _asset_ident
+    vr = shot.get("video_results") or []
+    cur = {_asset_ident(c): c for c in vr}
+    sel = [cur.get(_asset_ident(p), p) for p in shot.get("selected_results") or []]
+    if not sel:
+        return 0
+    if not any(p.get("sb_verdict") == "bad" and not _skip_pick(p) for p in sel):
+        shot["selected_results"] = sel
+        return 0
+    ids = {_asset_ident(p) for p in sel}
+    spares = [c for c in vr if _is_youtube(c) and not c.get("irrelevant")
+              and not c.get("library_segment_id") and _asset_ident(c) not in ids]
+    spares.sort(key=lambda c: _asset_ident(c) in taken)     # stable: fresh ones first
+    out, swapped = [], 0
+    for p in sel:
+        if p.get("sb_verdict") != "bad" or _skip_pick(p):
+            out.append(p)
+        elif spares:
+            c = spares.pop(0)
+            out.append(c)
+            taken.add(_asset_ident(c))
+            swapped += 1
+            print(f"[storyboard] shot {shot.get('slot_id')}: swapped "
+                  f"{(p.get('title') or '?')[:50]!r} → {(c.get('title') or '?')[:50]!r}")
+    shot["selected_results"] = out or sel
+    return swapped
+
+
+def _picks_to_check(shot: dict, per_call: int) -> list:
+    """``[(index, candidate)]`` — the shot's picks the check hasn't seen yet."""
+    from core.director_rank import _asset_ident
+    vr = shot.get("video_results") or []
+    where = {_asset_ident(c): i for i, c in enumerate(vr)}
+    out = []
+    for p in shot.get("selected_results") or []:
+        i = where.get(_asset_ident(p))
+        if i is None or _skip_pick(p):
+            continue      # e.g. a kept, already-downloaded clip from an older pool
+        c = vr[i]
+        if c.get("sb_checked") or c.get("irrelevant") or not _vid(c):
+            continue
+        out.append((i, c))
+        if len(out) >= per_call:
+            break
+    return out
+
+
+def check_selected(shots: list, video_topic: str = "", errors: list = None,
+                   should_cancel=None) -> int:
+    """Check the YouTube clips auto-select actually bound, in place.
+
+    The rank-time check covers each shot's top candidates, but selection can go
+    past them — "fresh YouTube first" skips videos other shots already use, and
+    top-ups take whatever is left. Here every unchecked auto pick is checked and a
+    rejected one is swapped for the next candidate, which is checked in turn
+    (``STORYBOARD_SELECT_ROUNDS``, default 3). Manual picks, extras, library
+    segments and reviewer-verified clips are left alone. Returns how many picks
+    were swapped."""
+    if not enabled() or not vision_configured():
+        return 0
+    from core.director_rank import _asset_ident
+    targets = [s for s in shots if s.get("auto_selected") and s.get("selected_results")
+               and not s.get("is_extra") and s.get("priority") != "none"
+               and not s.get("skipped")]
+    if not targets:
+        return 0
+    checker = _Checker(video_topic, errors, None, should_cancel)
+    rounds = max(1, _env_int("STORYBOARD_SELECT_ROUNDS", 3))
+    swapped = 0
+    for rnd in range(rounds + 1):
+        taken = {_asset_ident(c) for s in shots for c in (s.get("selected_results") or [])}
+        for s in targets:
+            swapped += _sync_picks(s, taken)
+        if rnd == rounds or checker.cancelled():
+            break         # a last swap's replacement stays unchecked (fails open)
+        work = []
+        for s in targets:
+            picks = _picks_to_check(s, checker.per_call)
+            if picks:
+                work.append((s, picks))
+        if not work:
+            break
+        checker.run(work)
+    if swapped:
+        _bump("replaced", swapped)
+    _print_stats()
+    return swapped
