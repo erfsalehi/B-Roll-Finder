@@ -44,6 +44,11 @@ OPTIONS = [
     {"key": "shot_images", "label": "Google images / shot", "type": "bool", "env": "ENABLE_SHOT_IMAGES"},
     {"key": "shot_images_num", "label": "Images per shot", "type": "choice", "env": "SHOT_IMAGES_PER_SHOT",
      "choices": [1, 2, 3, 4, 5]},
+    {"key": "motion_cards", "label": "Motion cards", "type": "choice", "env": "MOTION_CARDS_MODE",
+     "choices": ["off", "steps", "auto"],
+     "fmt": lambda v: {"off": "⬜ off", "steps": "list steps only",
+                       "auto": "steps + low confidence"}.get(v, v)},
+    {"key": "ai_images", "label": "AI images for cards", "type": "bool", "env": "ENABLE_AI_IMAGES"},
     {"key": "detailed_queries", "label": "Detailed queries", "type": "bool", "env": "ENABLE_DETAILED_QUERIES"},
     {"key": "purge_after_zip", "label": "Delete clips after zip", "type": "bool"},
 ]
@@ -71,6 +76,12 @@ DEFAULTS = {
     # Needs SERPER_API_KEY (no-op without it); ~1 Serper credit per shot.
     "shot_images": True,
     "shot_images_num": 3,
+    # A designed split-screen card (photo + caption + a step number or second photo)
+    # on every list step and, in "auto", wherever the footage is low-confidence
+    # (core.confidence). Pictures come from Google first; "AI images" lets one be
+    # generated when none fits (needs a funded OpenRouter key; capped per video).
+    "motion_cards": "auto",
+    "ai_images": True,
     "detailed_queries": False,
     "purge_after_zip": True,
 }

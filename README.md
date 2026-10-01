@@ -131,6 +131,7 @@ Each chat has its own settings, saved to `.cache/bot_settings.json`. The `.env` 
 | Extra clips / Related images | on | Library-only extras |
 | Storyboard footage check | off | A vision model looks at each YouTube candidate's storyboard; see [below](#storyboard-footage-check-optional) |
 | Google images / shot, Images per shot | on, 3 | Needs `SERPER_API_KEY` |
+| Motion cards, AI images for cards | auto, on | Designed split-screen cards on list steps and weak footage; see [below](#motion-cards) |
 | Detailed queries | off | Per-subject queries for shots that mention several subjects |
 | Delete clips after zip | on | Keep only the zip on disk |
 
@@ -151,6 +152,9 @@ downloads/<project>/
 ├── download_links.txt       source URL of every clip
 ├── <clips>.mp4              named by shot number + query
 ├── overlays/                transparent ProRes 4444 .mov overlays (true alpha)
+├── cards/                   motion-card clips (opaque H.264), layer V3 in the XML
+├── cards.txt                each card's picture source + the footage confidence of every shot
+├── images/cards/            the pictures the cards use (Google crops and AI generations)
 └── images/shots/shot_NN/    Google images per shot, plus sources.txt
 ```
 
@@ -222,6 +226,25 @@ A reasoning LLM picks the headings, stats, money figures and emphasis words wort
 - Rendering needs Node plus `npm ci` in `remotion/`. The Docker image includes both. If overlays fail, the main job still completes.
 
 The Streamlit app also has its original PNG caption generator (fonts, outlines, emoji prefixes, Freesound SFX).
+
+---
+
+## Motion cards
+
+A designed split-screen graphic for the moments where plain footage isn't enough: a photo with a caption on the left, and on the right a big step number, a figure from the narration, or a second photo. The right half is never empty. The look copies a reference edit, measured frame by frame (a green panel wipes in from the right while the photo card grows from the middle of the frame; one easing curve drives all three), and is rendered with Remotion (`remotion/src/ImageCard.tsx`) to an opaque H.264 clip.
+
+**Where a card goes** (`/settings → Motion cards`, env `MOTION_CARDS_MODE`: `off` · `steps` · `auto`):
+
+- Every **list step** ("Method 2 — Waterless Spray and Wipe", "Safety step one…"). One LLM call reads the whole narration and numbers the steps (a wording-rule fallback covers an LLM failure). The card sits on the first ~4 s of the step (`CARD_STEP_SEC`).
+- In `auto`, every shot whose footage is **low confidence** gets a card over the whole shot (at least `CARD_MIN_SEC`, 3 s, and up to `CARD_MAX_SEC`, 10 s), capped at 25% of the timeline (`CARD_MAX_FRACTION`). A shot that ended up with no footage at all gets one too.
+
+**Confidence score** (`core/confidence.py`). Every clip gets a fit from where it came from (verified/used library clip 0.85–0.92, YouTube 0.60, stock 0.55), the ranker's order (+0.15 for its first choice down to −0.10 for a deep pick), the optional storyboard verdict and the editors' record with it. A shot scores `0.7 × average fit + 0.3 × worst fit`, minus penalties for a QA flag (0.08–0.35), repeated query rewrites, a named subject no clip mentions, a shot the director marked `graphic` or `abstract`, and a generic topic-fallback pick (capped at 0.30). Below 0.45 (`CARD_CONF_THRESHOLD`) is low. These weights are starting points, not measured: every score is written with its reasons to `cards.txt` and shown per shot in `/details`, so they can be tuned against what reviewers and editors actually keep.
+
+**Pictures** (`core/card_images.py`). The card's picture comes from the shot's Google images (or a fresh Serper search with the card's own query). A vision model rates each one against the narration and rejects watermarks, captioned graphics, collages and screenshots. If none fits and the subject is **generic**, one image is generated through OpenRouter's image API (default `microsoft/mai-image-2.6-flash`, about $0.015; chosen in a bake-off against five other models, with Recraft Flash and FLUX Klein as fallbacks). A **named** brand, model, product or person is never generated, because a picture of the wrong Camry is worse than none: that card keeps the footage, or for a list step becomes a text card. Generation is capped per video (`AI_IMAGES_MAX_PER_VIDEO` 6, `AI_IMAGES_MAX_USD` 0.30). Image generation needs credits: the `DEEPSEEK_API_KEY` slot (the paid OpenRouter account) is tried first, because the free-tier `OPENROUTER_API_KEY` entries can't generate. A card that wouldn't be a better picture than the footage it covers is skipped.
+
+**In Premiere.** Cards are their own video track (V3), above the footage and the text overlays, with a marker saying why each is there. Disable the track and the footage underneath is exactly as it was. `cards.txt` lists every card's picture source (page, or model + prompt). They are planned before the review (the review message and `/details` show them), re-planned after `/refine` and `/redo`, and rendered at `/download`, after the footage is on disk, so a shot whose downloads all failed also gets one.
+
+Rendering needs Node plus `npm ci` in `remotion/` (the same setup as the text overlays). If a render or picture fails, that card is skipped and the job completes. `/test` has a "Motion cards" preflight (Remotion installed, a funded key, the model still listed); `/cleanup overlays` also clears the card render cache.
 
 ---
 

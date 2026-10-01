@@ -75,3 +75,31 @@ def test_display_value(tmp_path, monkeypatch):
     mh_opt = s._OPT_BY_KEY["min_height"]
     assert "on" in s.display_value(qa_opt, True) and "off" in s.display_value(qa_opt, False)
     assert s.display_value(mh_opt, 0) == "off" and s.display_value(mh_opt, 720) == "720p"
+
+
+def test_motion_card_options_cycle_and_map_to_the_env(tmp_path, monkeypatch):
+    s = _fresh(tmp_path, monkeypatch)
+    cfg = s.get_settings(5)
+    assert cfg["motion_cards"] == "auto" and cfg["ai_images"] is True
+    seen = [cfg["motion_cards"]]
+    for _ in range(3):
+        seen.append(s.toggle(5, "motion_cards")["motion_cards"])
+    assert seen == ["auto", "off", "steps", "auto"]            # cycles and wraps
+    s.set_value(5, "motion_cards", "steps")
+    s.set_value(5, "ai_images", False)
+    env = s.env_overrides(s.get_settings(5))
+    assert env["MOTION_CARDS_MODE"] == "steps" and env["ENABLE_AI_IMAGES"] == "false"
+    opt = s._OPT_BY_KEY["motion_cards"]
+    assert s.display_value(opt, "auto") == "steps + low confidence"
+    assert s.display_value(opt, "off") == "⬜ off"
+
+
+def test_a_job_runs_under_the_chats_card_settings(tmp_path, monkeypatch):
+    s = _fresh(tmp_path, monkeypatch)
+    s.set_value(9, "motion_cards", "off")
+    import core.scene_plan as sp
+    monkeypatch.delenv("MOTION_CARDS_MODE", raising=False)
+    assert sp.mode() == "auto"
+    with s.apply_env(s.get_settings(9)):
+        assert sp.mode() == "off" and not sp.enabled()
+    assert sp.mode() == "auto"

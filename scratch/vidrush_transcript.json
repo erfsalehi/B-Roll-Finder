@@ -1,0 +1,6245 @@
+[
+ {
+  "start": 0.0,
+  "end": 5.0,
+  "text": "Most car owners pay a lot of attention to their exterior while completely ignoring the engine.",
+  "words": [
+   {
+    "word": "Most",
+    "start": 0.0,
+    "end": 0.34
+   },
+   {
+    "word": "car",
+    "start": 0.34,
+    "end": 0.66
+   },
+   {
+    "word": "owners",
+    "start": 0.66,
+    "end": 0.9
+   },
+   {
+    "word": "pay",
+    "start": 0.9,
+    "end": 1.2
+   },
+   {
+    "word": "a",
+    "start": 1.2,
+    "end": 1.5
+   },
+   {
+    "word": "lot",
+    "start": 1.5,
+    "end": 1.7
+   },
+   {
+    "word": "of",
+    "start": 1.7,
+    "end": 1.78
+   },
+   {
+    "word": "attention",
+    "start": 1.78,
+    "end": 2.14
+   },
+   {
+    "word": "to",
+    "start": 2.14,
+    "end": 2.34
+   },
+   {
+    "word": "their",
+    "start": 2.34,
+    "end": 2.5
+   },
+   {
+    "word": "exterior",
+    "start": 2.5,
+    "end": 3.06
+   },
+   {
+    "word": "while",
+    "start": 3.06,
+    "end": 3.38
+   },
+   {
+    "word": "completely",
+    "start": 3.38,
+    "end": 4.08
+   },
+   {
+    "word": "ignoring",
+    "start": 4.08,
+    "end": 4.46
+   },
+   {
+    "word": "the",
+    "start": 4.46,
+    "end": 4.68
+   },
+   {
+    "word": "engine.",
+    "start": 4.68,
+    "end": 5.48
+   }
+  ]
+ },
+ {
+  "start": 5.64,
+  "end": 11.58,
+  "text": "Years of road grime, highway dust, spilled motor oil, and decaying debris are not just an eyesore.",
+  "words": [
+   {
+    "word": "Years",
+    "start": 5.66,
+    "end": 5.9
+   },
+   {
+    "word": "of",
+    "start": 5.9,
+    "end": 6.1
+   },
+   {
+    "word": "road",
+    "start": 6.1,
+    "end": 6.42
+   },
+   {
+    "word": "grime,",
+    "start": 6.42,
+    "end": 7.08
+   },
+   {
+    "word": "highway",
+    "start": 7.08,
+    "end": 7.36
+   },
+   {
+    "word": "dust,",
+    "start": 7.36,
+    "end": 8.14
+   },
+   {
+    "word": "spilled",
+    "start": 8.14,
+    "end": 8.32
+   },
+   {
+    "word": "motor",
+    "start": 8.32,
+    "end": 8.72
+   },
+   {
+    "word": "oil,",
+    "start": 8.72,
+    "end": 8.9
+   },
+   {
+    "word": "and",
+    "start": 8.9,
+    "end": 9.34
+   },
+   {
+    "word": "decaying",
+    "start": 9.34,
+    "end": 9.76
+   },
+   {
+    "word": "debris",
+    "start": 9.76,
+    "end": 10.12
+   },
+   {
+    "word": "are",
+    "start": 10.12,
+    "end": 10.38
+   },
+   {
+    "word": "not",
+    "start": 10.38,
+    "end": 10.72
+   },
+   {
+    "word": "just",
+    "start": 10.72,
+    "end": 11.0
+   },
+   {
+    "word": "an",
+    "start": 11.0,
+    "end": 11.18
+   },
+   {
+    "word": "eyesore.",
+    "start": 11.18,
+    "end": 12.06
+   }
+  ]
+ },
+ {
+  "start": 12.2,
+  "end": 17.02,
+  "text": "Today, I'm breaking down four proven methods for cleaning your engine bay you can do yourself",
+  "words": [
+   {
+    "word": "Today,",
+    "start": 12.24,
+    "end": 12.74
+   },
+   {
+    "word": "I'm",
+    "start": 12.74,
+    "end": 12.86
+   },
+   {
+    "word": "breaking",
+    "start": 12.86,
+    "end": 13.12
+   },
+   {
+    "word": "down",
+    "start": 13.12,
+    "end": 13.36
+   },
+   {
+    "word": "four",
+    "start": 13.36,
+    "end": 13.76
+   },
+   {
+    "word": "proven",
+    "start": 13.76,
+    "end": 14.24
+   },
+   {
+    "word": "methods",
+    "start": 14.24,
+    "end": 14.64
+   },
+   {
+    "word": "for",
+    "start": 14.64,
+    "end": 14.82
+   },
+   {
+    "word": "cleaning",
+    "start": 14.82,
+    "end": 15.16
+   },
+   {
+    "word": "your",
+    "start": 15.16,
+    "end": 15.36
+   },
+   {
+    "word": "engine",
+    "start": 15.36,
+    "end": 15.7
+   },
+   {
+    "word": "bay",
+    "start": 15.7,
+    "end": 15.84
+   },
+   {
+    "word": "you",
+    "start": 15.84,
+    "end": 16.22
+   },
+   {
+    "word": "can",
+    "start": 16.22,
+    "end": 16.38
+   },
+   {
+    "word": "do",
+    "start": 16.38,
+    "end": 16.5
+   },
+   {
+    "word": "yourself",
+    "start": 16.5,
+    "end": 16.94
+   },
+   {
+    "word": "without",
+    "start": 16.52,
+    "end": 17.68
+   }
+  ]
+ },
+ {
+  "start": 17.02,
+  "end": 22.439999,
+  "text": "without having to pay $300 to a detail shop. Stick around till the end because I'm going",
+  "words": [
+   {
+    "word": "having",
+    "start": 17.68,
+    "end": 17.98
+   },
+   {
+    "word": "to",
+    "start": 17.98,
+    "end": 18.16
+   },
+   {
+    "word": "pay $300",
+    "start": 18.16,
+    "end": 19.04
+   },
+   {
+    "word": "to",
+    "start": 19.04,
+    "end": 19.38
+   },
+   {
+    "word": "a",
+    "start": 19.38,
+    "end": 19.5
+   },
+   {
+    "word": "detail",
+    "start": 19.5,
+    "end": 19.86
+   },
+   {
+    "word": "shop.",
+    "start": 19.86,
+    "end": 20.18
+   },
+   {
+    "word": "Stick",
+    "start": 20.18,
+    "end": 20.92
+   },
+   {
+    "word": "around",
+    "start": 20.92,
+    "end": 21.2
+   },
+   {
+    "word": "till",
+    "start": 21.2,
+    "end": 21.36
+   },
+   {
+    "word": "the",
+    "start": 21.36,
+    "end": 21.5
+   },
+   {
+    "word": "end",
+    "start": 21.5,
+    "end": 21.76
+   },
+   {
+    "word": "because",
+    "start": 21.76,
+    "end": 22.06
+   },
+   {
+    "word": "to",
+    "start": 21.94,
+    "end": 22.62
+   },
+   {
+    "word": "I'm",
+    "start": 22.06,
+    "end": 22.34
+   },
+   {
+    "word": "going",
+    "start": 22.34,
+    "end": 22.42
+   }
+  ]
+ },
+ {
+  "start": 22.439999,
+  "end": 26.82,
+  "text": "to reveal five safety steps you must take before you clean your engine bay.",
+  "words": [
+   {
+    "word": "reveal",
+    "start": 22.62,
+    "end": 22.82
+   },
+   {
+    "word": "five",
+    "start": 22.82,
+    "end": 23.32
+   },
+   {
+    "word": "safety",
+    "start": 23.32,
+    "end": 23.8
+   },
+   {
+    "word": "steps",
+    "start": 23.8,
+    "end": 24.14
+   },
+   {
+    "word": "you",
+    "start": 24.14,
+    "end": 24.5
+   },
+   {
+    "word": "must",
+    "start": 24.5,
+    "end": 24.94
+   },
+   {
+    "word": "take",
+    "start": 24.94,
+    "end": 25.3
+   },
+   {
+    "word": "before",
+    "start": 25.3,
+    "end": 25.78
+   },
+   {
+    "word": "you",
+    "start": 25.78,
+    "end": 26.04
+   },
+   {
+    "word": "clean",
+    "start": 26.04,
+    "end": 26.2
+   },
+   {
+    "word": "your",
+    "start": 26.2,
+    "end": 26.36
+   },
+   {
+    "word": "engine",
+    "start": 26.36,
+    "end": 26.66
+   },
+   {
+    "word": "bay.",
+    "start": 26.66,
+    "end": 27.3
+   }
+  ]
+ },
+ {
+  "start": 26.82,
+  "end": 34.22,
+  "text": "Method 1. Low-pressure foam and soft brush. This approach targets broad highway dust and road grime",
+  "words": [
+   {
+    "word": "Method",
+    "start": 27.76,
+    "end": 27.98
+   },
+   {
+    "word": "1.",
+    "start": 27.98,
+    "end": 28.92
+   },
+   {
+    "word": "Low-pressure",
+    "start": 28.92,
+    "end": 29.42
+   },
+   {
+    "word": "foam",
+    "start": 29.42,
+    "end": 29.74
+   },
+   {
+    "word": "and",
+    "start": 29.74,
+    "end": 30.04
+   },
+   {
+    "word": "soft",
+    "start": 30.04,
+    "end": 30.44
+   },
+   {
+    "word": "brush.",
+    "start": 30.44,
+    "end": 31.26
+   },
+   {
+    "word": "This",
+    "start": 31.26,
+    "end": 31.32
+   },
+   {
+    "word": "approach",
+    "start": 31.32,
+    "end": 31.76
+   },
+   {
+    "word": "targets",
+    "start": 31.76,
+    "end": 32.2
+   },
+   {
+    "word": "broad",
+    "start": 32.2,
+    "end": 32.66
+   },
+   {
+    "word": "highway",
+    "start": 32.66,
+    "end": 33.02
+   },
+   {
+    "word": "dust",
+    "start": 33.02,
+    "end": 33.42
+   },
+   {
+    "word": "and",
+    "start": 33.42,
+    "end": 33.62
+   },
+   {
+    "word": "road",
+    "start": 33.62,
+    "end": 33.86
+   },
+   {
+    "word": "using",
+    "start": 33.72,
+    "end": 34.62
+   },
+   {
+    "word": "grime",
+    "start": 33.86,
+    "end": 34.24
+   }
+  ]
+ },
+ {
+  "start": 34.22,
+  "end": 39.38,
+  "text": "using a water-based degreaser, such as Simple Green or Gunk, applied through a foam sprayer.",
+  "words": [
+   {
+    "word": "a",
+    "start": 34.62,
+    "end": 34.82
+   },
+   {
+    "word": "water-based",
+    "start": 34.82,
+    "end": 35.36
+   },
+   {
+    "word": "degreaser,",
+    "start": 35.36,
+    "end": 35.94
+   },
+   {
+    "word": "such",
+    "start": 35.94,
+    "end": 36.32
+   },
+   {
+    "word": "as",
+    "start": 36.32,
+    "end": 36.58
+   },
+   {
+    "word": "Simple",
+    "start": 36.58,
+    "end": 36.84
+   },
+   {
+    "word": "Green",
+    "start": 36.84,
+    "end": 37.1
+   },
+   {
+    "word": "or",
+    "start": 37.1,
+    "end": 37.36
+   },
+   {
+    "word": "Gunk,",
+    "start": 37.36,
+    "end": 37.98
+   },
+   {
+    "word": "applied",
+    "start": 37.98,
+    "end": 38.38
+   },
+   {
+    "word": "through",
+    "start": 38.38,
+    "end": 38.62
+   },
+   {
+    "word": "a",
+    "start": 38.62,
+    "end": 38.78
+   },
+   {
+    "word": "foam",
+    "start": 38.78,
+    "end": 39.04
+   },
+   {
+    "word": "sprayer.",
+    "start": 39.04,
+    "end": 39.66
+   }
+  ]
+ },
+ {
+  "start": 39.38,
+  "end": 44.94,
+  "text": "After spraying, let the product dwell for 2-3 minutes, according to manufacturer instructions.",
+  "words": [
+   {
+    "word": "After",
+    "start": 39.92,
+    "end": 40.22
+   },
+   {
+    "word": "spraying,",
+    "start": 40.22,
+    "end": 40.66
+   },
+   {
+    "word": "let",
+    "start": 40.66,
+    "end": 41.12
+   },
+   {
+    "word": "the",
+    "start": 41.12,
+    "end": 41.24
+   },
+   {
+    "word": "product",
+    "start": 41.24,
+    "end": 41.58
+   },
+   {
+    "word": "dwell",
+    "start": 41.58,
+    "end": 41.88
+   },
+   {
+    "word": "for",
+    "start": 41.88,
+    "end": 42.12
+   },
+   {
+    "word": "2-3",
+    "start": 42.12,
+    "end": 42.66
+   },
+   {
+    "word": "minutes,",
+    "start": 42.66,
+    "end": 43.24
+   },
+   {
+    "word": "according",
+    "start": 43.24,
+    "end": 43.48
+   },
+   {
+    "word": "to",
+    "start": 43.48,
+    "end": 43.7
+   },
+   {
+    "word": "manufacturer",
+    "start": 43.7,
+    "end": 44.28
+   },
+   {
+    "word": "instructions.",
+    "start": 44.28,
+    "end": 45.38
+   }
+  ]
+ },
+ {
+  "start": 44.94,
+  "end": 50.5,
+  "text": "Use a soft bristle brush to gently agitate the dirt before rinsing with a low-pressure stream.",
+  "words": [
+   {
+    "word": "Use",
+    "start": 45.38,
+    "end": 45.58
+   },
+   {
+    "word": "a",
+    "start": 45.58,
+    "end": 45.78
+   },
+   {
+    "word": "soft",
+    "start": 45.78,
+    "end": 46.12
+   },
+   {
+    "word": "bristle",
+    "start": 46.12,
+    "end": 46.38
+   },
+   {
+    "word": "brush",
+    "start": 46.38,
+    "end": 46.82
+   },
+   {
+    "word": "to",
+    "start": 46.82,
+    "end": 47.0
+   },
+   {
+    "word": "gently",
+    "start": 47.0,
+    "end": 47.44
+   },
+   {
+    "word": "agitate",
+    "start": 47.44,
+    "end": 47.92
+   },
+   {
+    "word": "the",
+    "start": 47.92,
+    "end": 48.1
+   },
+   {
+    "word": "dirt",
+    "start": 48.1,
+    "end": 48.36
+   },
+   {
+    "word": "before",
+    "start": 48.36,
+    "end": 48.78
+   },
+   {
+    "word": "rinsing",
+    "start": 48.78,
+    "end": 49.22
+   },
+   {
+    "word": "with",
+    "start": 49.22,
+    "end": 49.44
+   },
+   {
+    "word": "a",
+    "start": 49.44,
+    "end": 49.58
+   },
+   {
+    "word": "low-pressure",
+    "start": 49.58,
+    "end": 50.16
+   },
+   {
+    "word": "stream.",
+    "start": 50.16,
+    "end": 50.86
+   }
+  ]
+ },
+ {
+  "start": 50.5,
+  "end": 56.52,
+  "text": "Field reports on forums like Z-Post show visible surface improvement on mixed soil vehicles using",
+  "words": [
+   {
+    "word": "Field",
+    "start": 50.98,
+    "end": 51.22
+   },
+   {
+    "word": "reports",
+    "start": 51.22,
+    "end": 51.6
+   },
+   {
+    "word": "on",
+    "start": 51.6,
+    "end": 51.84
+   },
+   {
+    "word": "forums",
+    "start": 51.84,
+    "end": 52.22
+   },
+   {
+    "word": "like",
+    "start": 52.22,
+    "end": 52.5
+   },
+   {
+    "word": "Z-Post",
+    "start": 52.5,
+    "end": 53.04
+   },
+   {
+    "word": "show",
+    "start": 53.04,
+    "end": 53.4
+   },
+   {
+    "word": "visible",
+    "start": 53.4,
+    "end": 53.86
+   },
+   {
+    "word": "surface",
+    "start": 53.86,
+    "end": 54.28
+   },
+   {
+    "word": "improvement",
+    "start": 54.28,
+    "end": 54.74
+   },
+   {
+    "word": "on",
+    "start": 54.74,
+    "end": 55.02
+   },
+   {
+    "word": "mixed",
+    "start": 55.02,
+    "end": 55.3
+   },
+   {
+    "word": "soil",
+    "start": 55.3,
+    "end": 55.56
+   },
+   {
+    "word": "vehicles",
+    "start": 55.56,
+    "end": 56.02
+   },
+   {
+    "word": "using",
+    "start": 56.02,
+    "end": 56.44
+   },
+   {
+    "word": "this",
+    "start": 56.52,
+    "end": 56.66
+   }
+  ]
+ },
+ {
+  "start": 56.52,
+  "end": 61.64,
+  "text": "this sequence, though these individual observations lack the backing of controlled laboratory",
+  "words": [
+   {
+    "word": "this",
+    "start": 56.52,
+    "end": 56.66
+   },
+   {
+    "word": "sequence,",
+    "start": 56.66,
+    "end": 57.6
+   },
+   {
+    "word": "though",
+    "start": 57.6,
+    "end": 57.78
+   },
+   {
+    "word": "these",
+    "start": 57.78,
+    "end": 58.08
+   },
+   {
+    "word": "individual",
+    "start": 58.08,
+    "end": 58.66
+   },
+   {
+    "word": "observations",
+    "start": 58.66,
+    "end": 59.4
+   },
+   {
+    "word": "lack",
+    "start": 59.4,
+    "end": 59.84
+   },
+   {
+    "word": "the",
+    "start": 59.84,
+    "end": 60.0
+   },
+   {
+    "word": "backing",
+    "start": 60.0,
+    "end": 60.32
+   },
+   {
+    "word": "of",
+    "start": 60.32,
+    "end": 60.5
+   },
+   {
+    "word": "controlled",
+    "start": 60.5,
+    "end": 60.92
+   },
+   {
+    "word": "laboratory",
+    "start": 60.92,
+    "end": 61.46
+   },
+   {
+    "word": "trials.",
+    "start": 61.14,
+    "end": 62.56
+   }
+  ]
+ },
+ {
+  "start": 61.64,
+  "end": 62.8,
+  "text": "trials.",
+  "words": [
+   {
+    "word": "Method",
+    "start": 62.36,
+    "end": 62.84
+   },
+   {
+    "word": "2",
+    "start": 62.84,
+    "end": 63.16
+   }
+  ]
+ },
+ {
+  "start": 62.8,
+  "end": 65.66,
+  "text": "Method 2 \u2013 Waterless Spray and Wipe",
+  "words": [
+   {
+    "word": "2",
+    "start": 62.84,
+    "end": 63.16
+   },
+   {
+    "word": "\u2013",
+    "start": 63.16,
+    "end": 63.76
+   },
+   {
+    "word": "Waterless",
+    "start": 63.76,
+    "end": 64.14
+   },
+   {
+    "word": "Spray",
+    "start": 64.14,
+    "end": 64.54
+   },
+   {
+    "word": "and",
+    "start": 64.54,
+    "end": 64.74
+   },
+   {
+    "word": "Wipe",
+    "start": 64.74,
+    "end": 65.14
+   },
+   {
+    "word": "For",
+    "start": 65.16,
+    "end": 65.7
+   },
+   {
+    "word": "localized",
+    "start": 65.7,
+    "end": 66.24
+   }
+  ]
+ },
+ {
+  "start": 65.66,
+  "end": 71.2,
+  "text": "For localized oil spills or tacky surface films, a waterless technique avoids moisture-related",
+  "words": [
+   {
+    "word": "localized",
+    "start": 65.7,
+    "end": 66.24
+   },
+   {
+    "word": "oil",
+    "start": 66.24,
+    "end": 66.6
+   },
+   {
+    "word": "spills",
+    "start": 66.6,
+    "end": 67.02
+   },
+   {
+    "word": "or",
+    "start": 67.02,
+    "end": 67.2
+   },
+   {
+    "word": "tacky",
+    "start": 67.2,
+    "end": 67.72
+   },
+   {
+    "word": "surface",
+    "start": 67.72,
+    "end": 68.1
+   },
+   {
+    "word": "films,",
+    "start": 68.1,
+    "end": 68.62
+   },
+   {
+    "word": "a",
+    "start": 68.62,
+    "end": 68.98
+   },
+   {
+    "word": "waterless",
+    "start": 68.98,
+    "end": 69.4
+   },
+   {
+    "word": "technique",
+    "start": 69.4,
+    "end": 69.84
+   },
+   {
+    "word": "avoids",
+    "start": 69.84,
+    "end": 70.38
+   },
+   {
+    "word": "moisture-related",
+    "start": 70.38,
+    "end": 71.1
+   },
+   {
+    "word": "issues",
+    "start": 70.7,
+    "end": 71.56
+   }
+  ]
+ },
+ {
+  "start": 71.2,
+  "end": 72.8,
+  "text": "issues entirely.",
+  "words": [
+   {
+    "word": "entirely.",
+    "start": 71.56,
+    "end": 72.56
+   },
+   {
+    "word": "This",
+    "start": 72.3,
+    "end": 72.84
+   },
+   {
+    "word": "method",
+    "start": 72.84,
+    "end": 73.2
+   }
+  ]
+ },
+ {
+  "start": 72.8,
+  "end": 77.6,
+  "text": "This method uses a dedicated engine cleaner, such as Meguiar's Super Degreaser, sprayed",
+  "words": [
+   {
+    "word": "method",
+    "start": 72.84,
+    "end": 73.2
+   },
+   {
+    "word": "uses",
+    "start": 73.2,
+    "end": 73.48
+   },
+   {
+    "word": "a",
+    "start": 73.48,
+    "end": 73.64
+   },
+   {
+    "word": "dedicated",
+    "start": 73.64,
+    "end": 74.22
+   },
+   {
+    "word": "engine",
+    "start": 74.22,
+    "end": 74.64
+   },
+   {
+    "word": "cleaner,",
+    "start": 74.64,
+    "end": 75.02
+   },
+   {
+    "word": "such",
+    "start": 75.02,
+    "end": 75.38
+   },
+   {
+    "word": "as",
+    "start": 75.38,
+    "end": 75.7
+   },
+   {
+    "word": "Meguiar's",
+    "start": 75.7,
+    "end": 76.12
+   },
+   {
+    "word": "Super",
+    "start": 76.12,
+    "end": 76.44
+   },
+   {
+    "word": "Degreaser,",
+    "start": 76.44,
+    "end": 77.24
+   },
+   {
+    "word": "directly",
+    "start": 77.1,
+    "end": 78.2
+   },
+   {
+    "word": "sprayed",
+    "start": 77.24,
+    "end": 77.6
+   }
+  ]
+ },
+ {
+  "start": 77.6,
+  "end": 79.92,
+  "text": "directly onto a cool engine.",
+  "words": [
+   {
+    "word": "onto",
+    "start": 78.2,
+    "end": 78.48
+   },
+   {
+    "word": "a",
+    "start": 78.48,
+    "end": 78.76
+   },
+   {
+    "word": "cool",
+    "start": 78.76,
+    "end": 78.98
+   },
+   {
+    "word": "engine.",
+    "start": 78.98,
+    "end": 79.64
+   },
+   {
+    "word": "Let",
+    "start": 79.42,
+    "end": 79.92
+   },
+   {
+    "word": "the",
+    "start": 79.92,
+    "end": 80.08
+   }
+  ]
+ },
+ {
+  "start": 79.92,
+  "end": 84.96,
+  "text": "Let the solvent dwell for 1-2 minutes, then wipe the area with a lint-free microfiber",
+  "words": [
+   {
+    "word": "the",
+    "start": 79.92,
+    "end": 80.08
+   },
+   {
+    "word": "solvent",
+    "start": 80.08,
+    "end": 80.4
+   },
+   {
+    "word": "dwell",
+    "start": 80.4,
+    "end": 80.74
+   },
+   {
+    "word": "for",
+    "start": 80.74,
+    "end": 80.96
+   },
+   {
+    "word": "1-2",
+    "start": 80.96,
+    "end": 81.56
+   },
+   {
+    "word": "minutes,",
+    "start": 81.56,
+    "end": 82.08
+   },
+   {
+    "word": "then",
+    "start": 82.08,
+    "end": 82.5
+   },
+   {
+    "word": "wipe",
+    "start": 82.5,
+    "end": 82.82
+   },
+   {
+    "word": "the",
+    "start": 82.82,
+    "end": 82.98
+   },
+   {
+    "word": "area",
+    "start": 82.98,
+    "end": 83.3
+   },
+   {
+    "word": "with",
+    "start": 83.3,
+    "end": 83.5
+   },
+   {
+    "word": "a",
+    "start": 83.5,
+    "end": 83.72
+   },
+   {
+    "word": "lint-free",
+    "start": 83.72,
+    "end": 84.16
+   },
+   {
+    "word": "microfiber",
+    "start": 84.16,
+    "end": 84.76
+   },
+   {
+    "word": "towel.",
+    "start": 84.62,
+    "end": 85.38
+   }
+  ]
+ },
+ {
+  "start": 84.96,
+  "end": 85.96,
+  "text": "towel.",
+  "words": [
+   {
+    "word": "While",
+    "start": 85.96,
+    "end": 85.98
+   },
+   {
+    "word": "industry",
+    "start": 85.98,
+    "end": 86.26
+   }
+  ]
+ },
+ {
+  "start": 85.96,
+  "end": 93.96,
+  "text": "While industry discussions from chemical guys suggest this prevents water damage, these claims are qualitative rather than verified by rigorous testing.",
+  "words": [
+   {
+    "word": "While",
+    "start": 85.96,
+    "end": 85.98
+   },
+   {
+    "word": "industry",
+    "start": 85.98,
+    "end": 86.26
+   },
+   {
+    "word": "discussions",
+    "start": 86.26,
+    "end": 86.8
+   },
+   {
+    "word": "from",
+    "start": 86.8,
+    "end": 86.98
+   },
+   {
+    "word": "chemical",
+    "start": 86.98,
+    "end": 87.44
+   },
+   {
+    "word": "guys",
+    "start": 87.44,
+    "end": 87.72
+   },
+   {
+    "word": "suggest",
+    "start": 87.72,
+    "end": 88.18
+   },
+   {
+    "word": "this",
+    "start": 88.18,
+    "end": 88.4
+   },
+   {
+    "word": "prevents",
+    "start": 88.4,
+    "end": 88.86
+   },
+   {
+    "word": "water",
+    "start": 88.86,
+    "end": 89.18
+   },
+   {
+    "word": "damage,",
+    "start": 89.18,
+    "end": 90.02
+   },
+   {
+    "word": "these",
+    "start": 90.02,
+    "end": 90.12
+   },
+   {
+    "word": "claims",
+    "start": 90.12,
+    "end": 90.44
+   },
+   {
+    "word": "are",
+    "start": 90.44,
+    "end": 90.66
+   },
+   {
+    "word": "qualitative",
+    "start": 90.66,
+    "end": 91.36
+   },
+   {
+    "word": "rather",
+    "start": 91.36,
+    "end": 91.76
+   },
+   {
+    "word": "than",
+    "start": 91.76,
+    "end": 92.02
+   },
+   {
+    "word": "verified",
+    "start": 92.02,
+    "end": 92.52
+   },
+   {
+    "word": "by",
+    "start": 92.52,
+    "end": 92.72
+   },
+   {
+    "word": "rigorous",
+    "start": 92.72,
+    "end": 93.12
+   },
+   {
+    "word": "testing.",
+    "start": 93.12,
+    "end": 93.9
+   },
+   {
+    "word": "Strong",
+    "start": 93.46,
+    "end": 94.42
+   }
+  ]
+ },
+ {
+  "start": 93.96,
+  "end": 100.96,
+  "text": "Strong chemical solvents require proper ventilation and can degrade rubber hoses if left on surfaces too long.",
+  "words": [
+   {
+    "word": "chemical",
+    "start": 94.42,
+    "end": 94.88
+   },
+   {
+    "word": "solvents",
+    "start": 94.88,
+    "end": 95.32
+   },
+   {
+    "word": "require",
+    "start": 95.32,
+    "end": 95.72
+   },
+   {
+    "word": "proper",
+    "start": 95.72,
+    "end": 96.14
+   },
+   {
+    "word": "ventilation",
+    "start": 96.14,
+    "end": 96.82
+   },
+   {
+    "word": "and",
+    "start": 96.82,
+    "end": 97.22
+   },
+   {
+    "word": "can",
+    "start": 97.22,
+    "end": 97.38
+   },
+   {
+    "word": "degrade",
+    "start": 97.38,
+    "end": 97.74
+   },
+   {
+    "word": "rubber",
+    "start": 97.74,
+    "end": 98.04
+   },
+   {
+    "word": "hoses",
+    "start": 98.04,
+    "end": 98.44
+   },
+   {
+    "word": "if",
+    "start": 98.44,
+    "end": 98.72
+   },
+   {
+    "word": "left",
+    "start": 98.72,
+    "end": 98.92
+   },
+   {
+    "word": "on",
+    "start": 98.92,
+    "end": 99.1
+   },
+   {
+    "word": "surfaces",
+    "start": 99.1,
+    "end": 99.54
+   },
+   {
+    "word": "too",
+    "start": 99.54,
+    "end": 99.78
+   },
+   {
+    "word": "long.",
+    "start": 99.78,
+    "end": 100.4
+   },
+   {
+    "word": "Cleaning",
+    "start": 100.46,
+    "end": 100.78
+   },
+   {
+    "word": "your",
+    "start": 100.78,
+    "end": 100.96
+   },
+   {
+    "word": "engine",
+    "start": 100.96,
+    "end": 101.28
+   }
+  ]
+ },
+ {
+  "start": 100.96,
+  "end": 108.96,
+  "text": "Cleaning your engine bay makes visual inspections easier so you can spot leaks, but it will not repair mechanical faults or provide performance gains.",
+  "words": [
+   {
+    "word": "engine",
+    "start": 100.96,
+    "end": 101.28
+   },
+   {
+    "word": "bay",
+    "start": 101.28,
+    "end": 101.46
+   },
+   {
+    "word": "makes",
+    "start": 101.46,
+    "end": 101.74
+   },
+   {
+    "word": "visual",
+    "start": 101.74,
+    "end": 102.18
+   },
+   {
+    "word": "inspections",
+    "start": 102.18,
+    "end": 102.74
+   },
+   {
+    "word": "easier",
+    "start": 102.74,
+    "end": 103.28
+   },
+   {
+    "word": "so",
+    "start": 103.28,
+    "end": 103.56
+   },
+   {
+    "word": "you",
+    "start": 103.56,
+    "end": 103.68
+   },
+   {
+    "word": "can",
+    "start": 103.68,
+    "end": 103.8
+   },
+   {
+    "word": "spot",
+    "start": 103.8,
+    "end": 104.1
+   },
+   {
+    "word": "leaks,",
+    "start": 104.1,
+    "end": 104.54
+   },
+   {
+    "word": "but",
+    "start": 104.54,
+    "end": 104.92
+   },
+   {
+    "word": "it",
+    "start": 104.92,
+    "end": 105.02
+   },
+   {
+    "word": "will",
+    "start": 105.02,
+    "end": 105.12
+   },
+   {
+    "word": "not",
+    "start": 105.12,
+    "end": 105.48
+   },
+   {
+    "word": "repair",
+    "start": 105.48,
+    "end": 105.84
+   },
+   {
+    "word": "mechanical",
+    "start": 105.84,
+    "end": 106.34
+   },
+   {
+    "word": "faults",
+    "start": 106.34,
+    "end": 106.78
+   },
+   {
+    "word": "or",
+    "start": 106.78,
+    "end": 107.12
+   },
+   {
+    "word": "provide",
+    "start": 107.12,
+    "end": 107.52
+   },
+   {
+    "word": "performance",
+    "start": 107.52,
+    "end": 108.1
+   },
+   {
+    "word": "gains.",
+    "start": 108.1,
+    "end": 109.44
+   }
+  ]
+ },
+ {
+  "start": 108.96,
+  "end": 123.14533,
+  "text": "Method 3 uses high temperature low moisture vapor to melt stubborn baked deposits A portable steam cleaner delivering hot vapor allows you to target grease on compatible accessible surfaces You will need a suitable",
+  "words": [
+   {
+    "word": "Method",
+    "start": 109.32,
+    "end": 109.62
+   },
+   {
+    "word": "3",
+    "start": 109.62,
+    "end": 110.04
+   },
+   {
+    "word": "uses",
+    "start": 110.04,
+    "end": 110.48
+   },
+   {
+    "word": "high",
+    "start": 110.48,
+    "end": 110.82
+   },
+   {
+    "word": "temperature,",
+    "start": 110.82,
+    "end": 111.52
+   },
+   {
+    "word": "low",
+    "start": 111.52,
+    "end": 111.86
+   },
+   {
+    "word": "moisture",
+    "start": 111.86,
+    "end": 112.3
+   },
+   {
+    "word": "vapor",
+    "start": 112.3,
+    "end": 112.62
+   },
+   {
+    "word": "to",
+    "start": 112.62,
+    "end": 112.88
+   },
+   {
+    "word": "melt",
+    "start": 112.88,
+    "end": 113.12
+   },
+   {
+    "word": "stubborn,",
+    "start": 113.12,
+    "end": 113.76
+   },
+   {
+    "word": "baked-on",
+    "start": 113.76,
+    "end": 114.32
+   },
+   {
+    "word": "deposits.",
+    "start": 114.32,
+    "end": 115.44
+   },
+   {
+    "word": "A",
+    "start": 115.5,
+    "end": 115.58
+   },
+   {
+    "word": "portable",
+    "start": 115.58,
+    "end": 116.02
+   },
+   {
+    "word": "steam",
+    "start": 116.02,
+    "end": 116.44
+   },
+   {
+    "word": "cleaner",
+    "start": 116.44,
+    "end": 116.7
+   },
+   {
+    "word": "delivering",
+    "start": 116.68533,
+    "end": 117.10533
+   },
+   {
+    "word": "hot",
+    "start": 117.10533,
+    "end": 117.52533
+   },
+   {
+    "word": "vapor",
+    "start": 117.52533,
+    "end": 117.84533
+   },
+   {
+    "word": "allows",
+    "start": 117.58533,
+    "end": 118.50533
+   },
+   {
+    "word": "you",
+    "start": 118.50533,
+    "end": 118.62533
+   },
+   {
+    "word": "to",
+    "start": 118.62533,
+    "end": 118.78533
+   },
+   {
+    "word": "target",
+    "start": 118.78533,
+    "end": 119.10533
+   },
+   {
+    "word": "grease",
+    "start": 119.10533,
+    "end": 119.50533
+   },
+   {
+    "word": "on",
+    "start": 119.50533,
+    "end": 119.72533
+   },
+   {
+    "word": "compatible,",
+    "start": 119.72533,
+    "end": 120.48533
+   },
+   {
+    "word": "accessible",
+    "start": 120.48533,
+    "end": 121.06533
+   },
+   {
+    "word": "surfaces.",
+    "start": 121.06533,
+    "end": 122.34533
+   },
+   {
+    "word": "You",
+    "start": 122.34533,
+    "end": 122.44533
+   },
+   {
+    "word": "will",
+    "start": 122.44533,
+    "end": 122.56533
+   },
+   {
+    "word": "need",
+    "start": 122.56533,
+    "end": 122.70533
+   },
+   {
+    "word": "a",
+    "start": 122.70533,
+    "end": 122.84533
+   },
+   {
+    "word": "machine",
+    "start": 122.76533,
+    "end": 123.70533
+   },
+   {
+    "word": "suitable",
+    "start": 122.84533,
+    "end": 123.10533
+   }
+  ]
+ },
+ {
+  "start": 123.14533,
+  "end": 128.68533,
+  "text": "machine and clean microfiber towels ready for immediate wiping and drying. Equipment directions",
+  "words": [
+   {
+    "word": "and",
+    "start": 123.70533,
+    "end": 123.92533
+   },
+   {
+    "word": "clean",
+    "start": 123.92533,
+    "end": 124.30533
+   },
+   {
+    "word": "microfiber",
+    "start": 124.30533,
+    "end": 124.92533
+   },
+   {
+    "word": "towels",
+    "start": 124.92533,
+    "end": 125.34533
+   },
+   {
+    "word": "ready",
+    "start": 125.34533,
+    "end": 125.68533
+   },
+   {
+    "word": "for",
+    "start": 125.68533,
+    "end": 125.905334
+   },
+   {
+    "word": "immediate",
+    "start": 125.905334,
+    "end": 126.38533
+   },
+   {
+    "word": "wiping",
+    "start": 126.38533,
+    "end": 126.72533
+   },
+   {
+    "word": "and",
+    "start": 126.72533,
+    "end": 127.02533
+   },
+   {
+    "word": "drying.",
+    "start": 127.02533,
+    "end": 127.56533
+   },
+   {
+    "word": "Equipment",
+    "start": 127.56533,
+    "end": 128.20532
+   },
+   {
+    "word": "require",
+    "start": 128.18533,
+    "end": 129.18533
+   },
+   {
+    "word": "directions",
+    "start": 128.20532,
+    "end": 128.62534
+   }
+  ]
+ },
+ {
+  "start": 128.68533,
+  "end": 134.30533,
+  "text": "require holding the steam wand at least six inches away from sensitive areas, though there is no",
+  "words": [
+   {
+    "word": "holding",
+    "start": 129.18533,
+    "end": 129.56534
+   },
+   {
+    "word": "the",
+    "start": 129.56534,
+    "end": 129.80533
+   },
+   {
+    "word": "steam",
+    "start": 129.80533,
+    "end": 130.06534
+   },
+   {
+    "word": "wand",
+    "start": 130.06534,
+    "end": 130.26534
+   },
+   {
+    "word": "at",
+    "start": 130.26534,
+    "end": 130.48534
+   },
+   {
+    "word": "least",
+    "start": 130.48534,
+    "end": 130.94533
+   },
+   {
+    "word": "six",
+    "start": 130.94533,
+    "end": 131.26534
+   },
+   {
+    "word": "inches",
+    "start": 131.26534,
+    "end": 131.52533
+   },
+   {
+    "word": "away",
+    "start": 131.52533,
+    "end": 131.86533
+   },
+   {
+    "word": "from",
+    "start": 131.86533,
+    "end": 132.08533
+   },
+   {
+    "word": "sensitive",
+    "start": 132.08533,
+    "end": 132.46533
+   },
+   {
+    "word": "areas,",
+    "start": 132.46533,
+    "end": 132.94533
+   },
+   {
+    "word": "though",
+    "start": 132.94533,
+    "end": 133.54533
+   },
+   {
+    "word": "there",
+    "start": 133.54533,
+    "end": 133.80533
+   },
+   {
+    "word": "is",
+    "start": 133.80533,
+    "end": 134.08533
+   },
+   {
+    "word": "universal",
+    "start": 133.86533,
+    "end": 134.92532
+   },
+   {
+    "word": "no",
+    "start": 134.08533,
+    "end": 134.28532
+   }
+  ]
+ },
+ {
+  "start": 134.30533,
+  "end": 139.88533,
+  "text": "universal wand spacing for the entire bay. Field guidance from Ace Mars Auto Care and Viper Car",
+  "words": [
+   {
+    "word": "wand",
+    "start": 134.92532,
+    "end": 135.24533
+   },
+   {
+    "word": "spacing",
+    "start": 135.24533,
+    "end": 135.58533
+   },
+   {
+    "word": "for",
+    "start": 135.58533,
+    "end": 135.78532
+   },
+   {
+    "word": "the",
+    "start": 135.78532,
+    "end": 135.90533
+   },
+   {
+    "word": "entire",
+    "start": 135.90533,
+    "end": 136.32533
+   },
+   {
+    "word": "bay.",
+    "start": 136.32533,
+    "end": 137.02533
+   },
+   {
+    "word": "Field",
+    "start": 137.02533,
+    "end": 137.30533
+   },
+   {
+    "word": "guidance",
+    "start": 137.30533,
+    "end": 137.70532
+   },
+   {
+    "word": "from",
+    "start": 137.70532,
+    "end": 137.96533
+   },
+   {
+    "word": "Ace",
+    "start": 137.96533,
+    "end": 138.24533
+   },
+   {
+    "word": "Mars",
+    "start": 138.24533,
+    "end": 138.42532
+   },
+   {
+    "word": "Auto",
+    "start": 138.42532,
+    "end": 138.84534
+   },
+   {
+    "word": "Care",
+    "start": 138.84534,
+    "end": 138.98534
+   },
+   {
+    "word": "and",
+    "start": 138.98534,
+    "end": 139.24533
+   },
+   {
+    "word": "Viper",
+    "start": 139.24533,
+    "end": 139.58533
+   },
+   {
+    "word": "Car",
+    "start": 139.58533,
+    "end": 139.84534
+   },
+   {
+    "word": "detailing",
+    "start": 139.88533,
+    "end": 140.38533
+   }
+  ]
+ },
+ {
+  "start": 139.88533,
+  "end": 145.22533,
+  "text": "detailing shows that steam significantly reduces water pooling compared to a conventional rinse.",
+  "words": [
+   {
+    "word": "detailing",
+    "start": 139.88533,
+    "end": 140.38533
+   },
+   {
+    "word": "shows",
+    "start": 140.38533,
+    "end": 140.94533
+   },
+   {
+    "word": "that",
+    "start": 140.94533,
+    "end": 141.22533
+   },
+   {
+    "word": "steam",
+    "start": 141.22533,
+    "end": 141.52533
+   },
+   {
+    "word": "significantly",
+    "start": 141.52533,
+    "end": 142.34534
+   },
+   {
+    "word": "reduces",
+    "start": 142.34534,
+    "end": 142.88533
+   },
+   {
+    "word": "water",
+    "start": 142.88533,
+    "end": 143.36533
+   },
+   {
+    "word": "pooling",
+    "start": 143.36533,
+    "end": 143.72533
+   },
+   {
+    "word": "compared",
+    "start": 143.72533,
+    "end": 144.08533
+   },
+   {
+    "word": "to",
+    "start": 144.08533,
+    "end": 144.26534
+   },
+   {
+    "word": "a",
+    "start": 144.26534,
+    "end": 144.38533
+   },
+   {
+    "word": "conventional",
+    "start": 144.38533,
+    "end": 144.82533
+   },
+   {
+    "word": "rinse.",
+    "start": 144.82533,
+    "end": 145.70532
+   }
+  ]
+ },
+ {
+  "start": 145.72533,
+  "end": 152.20532,
+  "text": "However, reduced pooling does not mean zero risk. Condensation still forms, requiring you to",
+  "words": [
+   {
+    "word": "However,",
+    "start": 145.74533,
+    "end": 146.50533
+   },
+   {
+    "word": "reduced",
+    "start": 146.50533,
+    "end": 146.94533
+   },
+   {
+    "word": "pooling",
+    "start": 146.94533,
+    "end": 147.36533
+   },
+   {
+    "word": "does",
+    "start": 147.36533,
+    "end": 147.56534
+   },
+   {
+    "word": "not",
+    "start": 147.56534,
+    "end": 147.94533
+   },
+   {
+    "word": "mean",
+    "start": 147.94533,
+    "end": 148.24533
+   },
+   {
+    "word": "zero",
+    "start": 148.24533,
+    "end": 148.60533
+   },
+   {
+    "word": "risk.",
+    "start": 148.60533,
+    "end": 149.74533
+   },
+   {
+    "word": "Condensation",
+    "start": 149.74533,
+    "end": 150.02533
+   },
+   {
+    "word": "still",
+    "start": 150.02533,
+    "end": 150.58533
+   },
+   {
+    "word": "forms,",
+    "start": 150.58533,
+    "end": 151.52533
+   },
+   {
+    "word": "requiring",
+    "start": 151.52533,
+    "end": 151.74533
+   },
+   {
+    "word": "you",
+    "start": 151.74533,
+    "end": 151.98532
+   },
+   {
+    "word": "manually",
+    "start": 151.96533,
+    "end": 152.70532
+   },
+   {
+    "word": "to",
+    "start": 151.98532,
+    "end": 152.12534
+   }
+  ]
+ },
+ {
+  "start": 152.20532,
+  "end": 158.08533,
+  "text": "manually wipe and dry all seams and connectors immediately. Delicate plastics, exposed electrical",
+  "words": [
+   {
+    "word": "wipe",
+    "start": 152.70532,
+    "end": 153.02533
+   },
+   {
+    "word": "and",
+    "start": 153.02533,
+    "end": 153.24533
+   },
+   {
+    "word": "dry",
+    "start": 153.24533,
+    "end": 153.46533
+   },
+   {
+    "word": "all",
+    "start": 153.46533,
+    "end": 153.82533
+   },
+   {
+    "word": "seams",
+    "start": 153.82533,
+    "end": 154.18533
+   },
+   {
+    "word": "and",
+    "start": 154.18533,
+    "end": 154.36533
+   },
+   {
+    "word": "connectors",
+    "start": 154.36533,
+    "end": 154.78534
+   },
+   {
+    "word": "immediately.",
+    "start": 154.78534,
+    "end": 156.08533
+   },
+   {
+    "word": "Delicate",
+    "start": 156.08533,
+    "end": 156.34534
+   },
+   {
+    "word": "plastics,",
+    "start": 156.34534,
+    "end": 157.42532
+   },
+   {
+    "word": "exposed",
+    "start": 157.42532,
+    "end": 157.58533
+   },
+   {
+    "word": "electrical",
+    "start": 157.58533,
+    "end": 158.04533
+   },
+   {
+    "word": "components,",
+    "start": 157.98532,
+    "end": 158.96533
+   }
+  ]
+ },
+ {
+  "start": 158.08533,
+  "end": 163.78532,
+  "text": "components, and turbocharger housings can suffer thermal shock or moisture intrusion, making steam",
+  "words": [
+   {
+    "word": "and",
+    "start": 158.96533,
+    "end": 159.12534
+   },
+   {
+    "word": "turbocharger",
+    "start": 159.12534,
+    "end": 159.76534
+   },
+   {
+    "word": "housings",
+    "start": 159.76534,
+    "end": 160.20532
+   },
+   {
+    "word": "can",
+    "start": 160.20532,
+    "end": 160.46533
+   },
+   {
+    "word": "suffer",
+    "start": 160.46533,
+    "end": 160.82533
+   },
+   {
+    "word": "thermal",
+    "start": 160.82533,
+    "end": 161.28534
+   },
+   {
+    "word": "shock",
+    "start": 161.28534,
+    "end": 161.64532
+   },
+   {
+    "word": "or",
+    "start": 161.64532,
+    "end": 161.82533
+   },
+   {
+    "word": "moisture",
+    "start": 161.82533,
+    "end": 162.24533
+   },
+   {
+    "word": "intrusion,",
+    "start": 162.24533,
+    "end": 163.24533
+   },
+   {
+    "word": "making",
+    "start": 163.24533,
+    "end": 163.38533
+   },
+   {
+    "word": "steam",
+    "start": 163.38533,
+    "end": 163.76534
+   }
+  ]
+ },
+ {
+  "start": 163.78532,
+  "end": 169.02533,
+  "text": "unsuitable for certain vehicles. This method currently relies on field-level observations",
+  "words": [
+   {
+    "word": "unsuitable",
+    "start": 163.84534,
+    "end": 164.64532
+   },
+   {
+    "word": "for",
+    "start": 164.64532,
+    "end": 164.84534
+   },
+   {
+    "word": "certain",
+    "start": 164.84534,
+    "end": 165.12534
+   },
+   {
+    "word": "vehicles.",
+    "start": 165.12534,
+    "end": 166.16533
+   },
+   {
+    "word": "This",
+    "start": 166.16533,
+    "end": 166.38533
+   },
+   {
+    "word": "method",
+    "start": 166.38533,
+    "end": 166.68533
+   },
+   {
+    "word": "currently",
+    "start": 166.68533,
+    "end": 167.16533
+   },
+   {
+    "word": "relies",
+    "start": 167.16533,
+    "end": 167.54533
+   },
+   {
+    "word": "on",
+    "start": 167.54533,
+    "end": 167.76534
+   },
+   {
+    "word": "field-level",
+    "start": 167.76534,
+    "end": 168.34534
+   },
+   {
+    "word": "observations",
+    "start": 168.34534,
+    "end": 168.86533
+   },
+   {
+    "word": "rather",
+    "start": 169.02533,
+    "end": 169.60533
+   }
+  ]
+ },
+ {
+  "start": 169.02533,
+  "end": 173.10533,
+  "text": "rather than controlled, full-parameter comparative laboratory trials.",
+  "words": [
+   {
+    "word": "rather",
+    "start": 169.02533,
+    "end": 169.60533
+   },
+   {
+    "word": "than",
+    "start": 169.60533,
+    "end": 169.92532
+   },
+   {
+    "word": "controlled,",
+    "start": 169.92532,
+    "end": 170.84534
+   },
+   {
+    "word": "full-parameter",
+    "start": 170.84534,
+    "end": 171.44533
+   },
+   {
+    "word": "comparative",
+    "start": 171.44533,
+    "end": 171.98532
+   },
+   {
+    "word": "laboratory",
+    "start": 171.98532,
+    "end": 172.60533
+   },
+   {
+    "word": "trials.",
+    "start": 172.60533,
+    "end": 173.58533
+   }
+  ]
+ },
+ {
+  "start": 174.00533,
+  "end": 180.60533,
+  "text": "Dry ice blasting utilizes pressurized carbon dioxide pellets that freeze and fracture contaminants on contact.",
+  "words": [
+   {
+    "word": "Dry",
+    "start": 174.02533,
+    "end": 174.24533
+   },
+   {
+    "word": "ice",
+    "start": 174.24533,
+    "end": 174.48532
+   },
+   {
+    "word": "blasting",
+    "start": 174.48532,
+    "end": 174.88533
+   },
+   {
+    "word": "utilizes",
+    "start": 174.88533,
+    "end": 175.52533
+   },
+   {
+    "word": "pressurized",
+    "start": 175.52533,
+    "end": 176.32533
+   },
+   {
+    "word": "carbon",
+    "start": 176.32533,
+    "end": 176.72533
+   },
+   {
+    "word": "dioxide",
+    "start": 176.72533,
+    "end": 177.16533
+   },
+   {
+    "word": "pellets",
+    "start": 177.16533,
+    "end": 177.66533
+   },
+   {
+    "word": "that",
+    "start": 177.66533,
+    "end": 177.92532
+   },
+   {
+    "word": "freeze",
+    "start": 177.92532,
+    "end": 178.28534
+   },
+   {
+    "word": "and",
+    "start": 178.28534,
+    "end": 178.62534
+   },
+   {
+    "word": "fracture",
+    "start": 178.62534,
+    "end": 179.12534
+   },
+   {
+    "word": "contaminants",
+    "start": 179.12534,
+    "end": 179.82533
+   },
+   {
+    "word": "on",
+    "start": 179.82533,
+    "end": 180.00534
+   },
+   {
+    "word": "contact.",
+    "start": 180.00534,
+    "end": 181.08533
+   }
+  ]
+ },
+ {
+  "start": 181.12534,
+  "end": 184.76532,
+  "text": "Because the carbon dioxide pellets sublimate immediately upon impact,",
+  "words": [
+   {
+    "word": "Because",
+    "start": 181.16533,
+    "end": 181.36533
+   },
+   {
+    "word": "the",
+    "start": 181.36533,
+    "end": 181.52533
+   },
+   {
+    "word": "carbon",
+    "start": 181.52533,
+    "end": 181.80533
+   },
+   {
+    "word": "dioxide",
+    "start": 181.80533,
+    "end": 182.34534
+   },
+   {
+    "word": "pellets",
+    "start": 182.34534,
+    "end": 182.72533
+   },
+   {
+    "word": "sublimate",
+    "start": 182.72533,
+    "end": 183.22533
+   },
+   {
+    "word": "immediately",
+    "start": 183.22533,
+    "end": 183.90533
+   },
+   {
+    "word": "upon",
+    "start": 183.90533,
+    "end": 184.24533
+   },
+   {
+    "word": "impact,",
+    "start": 184.24533,
+    "end": 185.18533
+   }
+  ]
+ },
+ {
+  "start": 185.18533,
+  "end": 189.70532,
+  "text": "the process leaves zero liquid residue, completely eliminating moisture risks.",
+  "words": [
+   {
+    "word": "the",
+    "start": 185.22533,
+    "end": 185.28534
+   },
+   {
+    "word": "process",
+    "start": 185.28534,
+    "end": 185.74533
+   },
+   {
+    "word": "leaves",
+    "start": 185.74533,
+    "end": 186.06534
+   },
+   {
+    "word": "zero",
+    "start": 186.06534,
+    "end": 186.54533
+   },
+   {
+    "word": "liquid",
+    "start": 186.54533,
+    "end": 186.96533
+   },
+   {
+    "word": "residue,",
+    "start": 186.96533,
+    "end": 187.70532
+   },
+   {
+    "word": "completely",
+    "start": 187.70532,
+    "end": 188.26532
+   },
+   {
+    "word": "eliminating",
+    "start": 188.26532,
+    "end": 188.90533
+   },
+   {
+    "word": "moisture",
+    "start": 188.90533,
+    "end": 189.32533
+   },
+   {
+    "word": "risks.",
+    "start": 189.32533,
+    "end": 189.66533
+   }
+  ]
+ },
+ {
+  "start": 190.30533,
+  "end": 197.12534,
+  "text": "Specialized machines like those from ColdJet or IceBlast Pro lift heavy grease and stubborn road film efficiently.",
+  "words": [
+   {
+    "word": "Specialized",
+    "start": 190.44533,
+    "end": 190.86533
+   },
+   {
+    "word": "machines",
+    "start": 190.86533,
+    "end": 191.34534
+   },
+   {
+    "word": "like",
+    "start": 191.34534,
+    "end": 191.58533
+   },
+   {
+    "word": "those",
+    "start": 191.58533,
+    "end": 191.84534
+   },
+   {
+    "word": "from",
+    "start": 191.84534,
+    "end": 192.06534
+   },
+   {
+    "word": "ColdJet",
+    "start": 192.06534,
+    "end": 192.64532
+   },
+   {
+    "word": "or",
+    "start": 192.64532,
+    "end": 192.92532
+   },
+   {
+    "word": "IceBlast",
+    "start": 192.92532,
+    "end": 193.54533
+   },
+   {
+    "word": "Pro",
+    "start": 193.54533,
+    "end": 193.74533
+   },
+   {
+    "word": "lift",
+    "start": 193.74533,
+    "end": 194.50534
+   },
+   {
+    "word": "heavy",
+    "start": 194.50534,
+    "end": 194.86533
+   },
+   {
+    "word": "grease",
+    "start": 194.86533,
+    "end": 195.24533
+   },
+   {
+    "word": "and",
+    "start": 195.24533,
+    "end": 195.48532
+   },
+   {
+    "word": "stubborn",
+    "start": 195.48532,
+    "end": 196.00534
+   },
+   {
+    "word": "road",
+    "start": 196.00534,
+    "end": 196.30533
+   },
+   {
+    "word": "film",
+    "start": 196.30533,
+    "end": 196.52533
+   },
+   {
+    "word": "efficiently.",
+    "start": 196.52533,
+    "end": 197.06534
+   }
+  ]
+ },
+ {
+  "start": 197.12534,
+  "end": 203.04532,
+  "text": "However, this is primarily a specialist option rather than an accessible do-it-yourself project.",
+  "words": [
+   {
+    "word": "However,",
+    "start": 197.70532,
+    "end": 198.46533
+   },
+   {
+    "word": "this",
+    "start": 198.46533,
+    "end": 198.54533
+   },
+   {
+    "word": "is",
+    "start": 198.54533,
+    "end": 198.68533
+   },
+   {
+    "word": "primarily",
+    "start": 198.68533,
+    "end": 199.16533
+   },
+   {
+    "word": "a",
+    "start": 199.16533,
+    "end": 199.42532
+   },
+   {
+    "word": "specialist",
+    "start": 199.42532,
+    "end": 199.96533
+   },
+   {
+    "word": "option",
+    "start": 199.96533,
+    "end": 200.40533
+   },
+   {
+    "word": "rather",
+    "start": 200.40533,
+    "end": 200.76532
+   },
+   {
+    "word": "than",
+    "start": 200.76532,
+    "end": 201.06534
+   },
+   {
+    "word": "an",
+    "start": 201.06534,
+    "end": 201.20532
+   },
+   {
+    "word": "accessible",
+    "start": 201.20532,
+    "end": 201.72533
+   },
+   {
+    "word": "do-it-yourself",
+    "start": 201.72533,
+    "end": 202.50534
+   },
+   {
+    "word": "project.",
+    "start": 202.50534,
+    "end": 203.52533
+   }
+  ]
+ },
+ {
+  "start": 203.54532,
+  "end": 215.98532,
+  "text": "Rental costs for the necessary industrial equipment frequently exceed the professional engine bay detailing benchmarks listed in Gage Magazine's 2026 guide, which ranges from $250 to $375.",
+  "words": [
+   {
+    "word": "Rental",
+    "start": 203.62534,
+    "end": 203.78534
+   },
+   {
+    "word": "costs",
+    "start": 203.78534,
+    "end": 204.18533
+   },
+   {
+    "word": "for",
+    "start": 204.18533,
+    "end": 204.38533
+   },
+   {
+    "word": "the",
+    "start": 204.38533,
+    "end": 204.50534
+   },
+   {
+    "word": "necessary",
+    "start": 204.50534,
+    "end": 205.02533
+   },
+   {
+    "word": "industrial",
+    "start": 205.02533,
+    "end": 205.60533
+   },
+   {
+    "word": "equipment",
+    "start": 205.60533,
+    "end": 206.04533
+   },
+   {
+    "word": "frequently",
+    "start": 206.04533,
+    "end": 206.60533
+   },
+   {
+    "word": "exceed",
+    "start": 206.60533,
+    "end": 207.16533
+   },
+   {
+    "word": "the",
+    "start": 207.16533,
+    "end": 207.36533
+   },
+   {
+    "word": "professional",
+    "start": 207.36533,
+    "end": 207.80533
+   },
+   {
+    "word": "engine",
+    "start": 207.80533,
+    "end": 208.36533
+   },
+   {
+    "word": "bay",
+    "start": 208.36533,
+    "end": 208.52533
+   },
+   {
+    "word": "detailing",
+    "start": 208.52533,
+    "end": 209.02533
+   },
+   {
+    "word": "benchmarks",
+    "start": 209.02533,
+    "end": 209.50534
+   },
+   {
+    "word": "listed",
+    "start": 209.50534,
+    "end": 210.00534
+   },
+   {
+    "word": "in",
+    "start": 210.00534,
+    "end": 210.26532
+   },
+   {
+    "word": "Gage",
+    "start": 210.26532,
+    "end": 210.52533
+   },
+   {
+    "word": "Magazine's",
+    "start": 210.52533,
+    "end": 211.12534
+   },
+   {
+    "word": "2026",
+    "start": 211.12534,
+    "end": 212.20532
+   },
+   {
+    "word": "guide,",
+    "start": 212.20532,
+    "end": 213.14532
+   },
+   {
+    "word": "which",
+    "start": 213.14532,
+    "end": 213.24533
+   },
+   {
+    "word": "ranges",
+    "start": 213.24533,
+    "end": 213.58533
+   },
+   {
+    "word": "from $250",
+    "start": 213.58533,
+    "end": 214.64532
+   },
+   {
+    "word": "to $375.",
+    "start": 214.64532,
+    "end": 216.46533
+   },
+   {
+    "word": "While",
+    "start": 215.98532,
+    "end": 217.20532
+   }
+  ]
+ },
+ {
+  "start": 215.98532,
+  "end": 238.77066,
+  "text": "While supplier reports suggest wide compatibility the extreme cold can still cause thermal shock to certain delicate plastics or older rubber hoses meaning not every underhood surface is universally safe Looking back at the four options each targets a specific scenario Low foam tackles general highway dust using a garden hose sprayer",
+  "words": [
+   {
+    "word": "While",
+    "start": 215.98532,
+    "end": 217.20532
+   },
+   {
+    "word": "supplier",
+    "start": 217.20532,
+    "end": 217.64532
+   },
+   {
+    "word": "reports",
+    "start": 217.64532,
+    "end": 218.12534
+   },
+   {
+    "word": "suggest",
+    "start": 218.12534,
+    "end": 218.56534
+   },
+   {
+    "word": "wide",
+    "start": 218.56534,
+    "end": 218.92532
+   },
+   {
+    "word": "compatibility,",
+    "start": 218.92532,
+    "end": 220.14532
+   },
+   {
+    "word": "the",
+    "start": 220.14532,
+    "end": 220.24533
+   },
+   {
+    "word": "extreme",
+    "start": 220.24533,
+    "end": 220.70532
+   },
+   {
+    "word": "cold",
+    "start": 220.70532,
+    "end": 221.08533
+   },
+   {
+    "word": "can",
+    "start": 221.08533,
+    "end": 221.28534
+   },
+   {
+    "word": "still",
+    "start": 221.28534,
+    "end": 221.66533
+   },
+   {
+    "word": "cause",
+    "start": 221.66533,
+    "end": 222.02533
+   },
+   {
+    "word": "thermal",
+    "start": 222.02533,
+    "end": 222.40533
+   },
+   {
+    "word": "shock",
+    "start": 222.40533,
+    "end": 222.74533
+   },
+   {
+    "word": "to",
+    "start": 222.74533,
+    "end": 222.90533
+   },
+   {
+    "word": "certain",
+    "start": 222.90533,
+    "end": 223.26532
+   },
+   {
+    "word": "delicate",
+    "start": 223.26532,
+    "end": 223.70532
+   },
+   {
+    "word": "plastics",
+    "start": 223.70532,
+    "end": 224.30533
+   },
+   {
+    "word": "or",
+    "start": 224.30533,
+    "end": 224.60533
+   },
+   {
+    "word": "older",
+    "start": 224.60533,
+    "end": 224.96533
+   },
+   {
+    "word": "rubber",
+    "start": 224.96533,
+    "end": 225.24533
+   },
+   {
+    "word": "hoses,",
+    "start": 225.24533,
+    "end": 226.26532
+   },
+   {
+    "word": "meaning",
+    "start": 226.26532,
+    "end": 226.38533
+   },
+   {
+    "word": "not",
+    "start": 226.38533,
+    "end": 226.70532
+   },
+   {
+    "word": "every",
+    "start": 226.70532,
+    "end": 227.18533
+   },
+   {
+    "word": "underhood",
+    "start": 227.18533,
+    "end": 227.66533
+   },
+   {
+    "word": "surface",
+    "start": 227.66533,
+    "end": 228.12534
+   },
+   {
+    "word": "is",
+    "start": 228.12534,
+    "end": 228.36533
+   },
+   {
+    "word": "universally",
+    "start": 228.36533,
+    "end": 228.98532
+   },
+   {
+    "word": "safe.",
+    "start": 228.98532,
+    "end": 229.46533
+   },
+   {
+    "word": "Looking",
+    "start": 229.48532,
+    "end": 230.24533
+   },
+   {
+    "word": "back",
+    "start": 230.24533,
+    "end": 230.56534
+   },
+   {
+    "word": "at",
+    "start": 230.56534,
+    "end": 230.70532
+   },
+   {
+    "word": "the",
+    "start": 230.70532,
+    "end": 230.78534
+   },
+   {
+    "word": "four",
+    "start": 230.78534,
+    "end": 231.00534
+   },
+   {
+    "word": "options,",
+    "start": 231.00534,
+    "end": 231.60533
+   },
+   {
+    "word": "each",
+    "start": 231.60533,
+    "end": 232.02533
+   },
+   {
+    "word": "targets",
+    "start": 232.02533,
+    "end": 232.40533
+   },
+   {
+    "word": "a",
+    "start": 232.40533,
+    "end": 232.64532
+   },
+   {
+    "word": "specific",
+    "start": 232.64532,
+    "end": 233.18533
+   },
+   {
+    "word": "scenario.",
+    "start": 233.18533,
+    "end": 234.42532
+   },
+   {
+    "word": "Low-pressure",
+    "start": 234.39066,
+    "end": 234.93066
+   },
+   {
+    "word": "foam",
+    "start": 234.93066,
+    "end": 235.27066
+   },
+   {
+    "word": "tackles",
+    "start": 235.27066,
+    "end": 235.73067
+   },
+   {
+    "word": "general",
+    "start": 235.73067,
+    "end": 236.19066
+   },
+   {
+    "word": "highway",
+    "start": 236.19066,
+    "end": 236.63066
+   },
+   {
+    "word": "dust",
+    "start": 236.63066,
+    "end": 236.99066
+   },
+   {
+    "word": "using",
+    "start": 236.99066,
+    "end": 237.29066
+   },
+   {
+    "word": "a",
+    "start": 237.29066,
+    "end": 237.45065
+   },
+   {
+    "word": "garden",
+    "start": 237.45065,
+    "end": 237.77066
+   },
+   {
+    "word": "hose",
+    "start": 237.77066,
+    "end": 237.97066
+   },
+   {
+    "word": "sprayer.",
+    "start": 237.97066,
+    "end": 238.75066
+   }
+  ]
+ },
+ {
+  "start": 238.77066,
+  "end": 243.77066,
+  "text": "Waterless sprays isolate local oil spills with microfibers and high-solvent degreasers.",
+  "words": [
+   {
+    "word": "Waterless",
+    "start": 238.97066,
+    "end": 239.51067
+   },
+   {
+    "word": "sprays",
+    "start": 239.51067,
+    "end": 239.93066
+   },
+   {
+    "word": "isolate",
+    "start": 239.93066,
+    "end": 240.45065
+   },
+   {
+    "word": "local",
+    "start": 240.45065,
+    "end": 240.89066
+   },
+   {
+    "word": "oil",
+    "start": 240.89066,
+    "end": 241.21066
+   },
+   {
+    "word": "spills",
+    "start": 241.21066,
+    "end": 241.55066
+   },
+   {
+    "word": "with",
+    "start": 241.55066,
+    "end": 241.79066
+   },
+   {
+    "word": "microfibers",
+    "start": 241.79066,
+    "end": 242.57066
+   },
+   {
+    "word": "and",
+    "start": 242.57066,
+    "end": 242.79066
+   },
+   {
+    "word": "high-solvent",
+    "start": 242.79066,
+    "end": 243.49066
+   },
+   {
+    "word": "degreasers.",
+    "start": 243.49066,
+    "end": 244.25066
+   }
+  ]
+ },
+ {
+  "start": 243.77066,
+  "end": 248.77066,
+  "text": "Steam vapor melts baked-on grime using portable heat generators.",
+  "words": [
+   {
+    "word": "Steam",
+    "start": 244.67065,
+    "end": 245.11066
+   },
+   {
+    "word": "vapor",
+    "start": 245.11066,
+    "end": 245.45065
+   },
+   {
+    "word": "melts",
+    "start": 245.45065,
+    "end": 245.87067
+   },
+   {
+    "word": "baked-on",
+    "start": 245.87067,
+    "end": 246.45065
+   },
+   {
+    "word": "grime",
+    "start": 246.45065,
+    "end": 246.83066
+   },
+   {
+    "word": "using",
+    "start": 246.83066,
+    "end": 247.13066
+   },
+   {
+    "word": "portable",
+    "start": 247.13066,
+    "end": 247.59067
+   },
+   {
+    "word": "heat",
+    "start": 247.59067,
+    "end": 247.89066
+   },
+   {
+    "word": "generators.",
+    "start": 247.89066,
+    "end": 248.93066
+   },
+   {
+    "word": "And",
+    "start": 248.27066,
+    "end": 249.17065
+   }
+  ]
+ },
+ {
+  "start": 248.77066,
+  "end": 252.77066,
+  "text": "And dry ice clears severe contamination with cryogenic pellets.",
+  "words": [
+   {
+    "word": "dry",
+    "start": 249.17065,
+    "end": 249.31067
+   },
+   {
+    "word": "ice",
+    "start": 249.31067,
+    "end": 249.71066
+   },
+   {
+    "word": "clears",
+    "start": 249.71066,
+    "end": 250.09067
+   },
+   {
+    "word": "severe",
+    "start": 250.09067,
+    "end": 250.61066
+   },
+   {
+    "word": "contamination",
+    "start": 250.61066,
+    "end": 251.35066
+   },
+   {
+    "word": "with",
+    "start": 251.35066,
+    "end": 251.65067
+   },
+   {
+    "word": "cryogenic",
+    "start": 251.65067,
+    "end": 252.27066
+   },
+   {
+    "word": "pellets.",
+    "start": 252.27066,
+    "end": 252.87067
+   }
+  ]
+ },
+ {
+  "start": 252.77066,
+  "end": 259.31067,
+  "text": "Every approach balances its own trade-offs between equipment costs, moisture exposure, and surface sensitivity.",
+  "words": [
+   {
+    "word": "Every",
+    "start": 253.41066,
+    "end": 253.57066
+   },
+   {
+    "word": "approach",
+    "start": 253.57066,
+    "end": 254.03065
+   },
+   {
+    "word": "balances",
+    "start": 254.03065,
+    "end": 254.55066
+   },
+   {
+    "word": "its",
+    "start": 254.55066,
+    "end": 254.81067
+   },
+   {
+    "word": "own",
+    "start": 254.81067,
+    "end": 255.11066
+   },
+   {
+    "word": "trade-offs",
+    "start": 255.11066,
+    "end": 255.63066
+   },
+   {
+    "word": "between",
+    "start": 255.63066,
+    "end": 255.97066
+   },
+   {
+    "word": "equipment",
+    "start": 255.97066,
+    "end": 256.35065
+   },
+   {
+    "word": "costs,",
+    "start": 256.35065,
+    "end": 257.33066
+   },
+   {
+    "word": "moisture",
+    "start": 257.33066,
+    "end": 257.45065
+   },
+   {
+    "word": "exposure,",
+    "start": 257.45065,
+    "end": 258.31067
+   },
+   {
+    "word": "and",
+    "start": 258.31067,
+    "end": 258.35065
+   },
+   {
+    "word": "surface",
+    "start": 258.35065,
+    "end": 258.75067
+   },
+   {
+    "word": "sensitivity.",
+    "start": 258.75067,
+    "end": 259.79065
+   }
+  ]
+ },
+ {
+  "start": 259.85065,
+  "end": 265.75067,
+  "text": "But regardless of the method selected, physical cleanliness must never be mistaken for mechanical readiness.",
+  "words": [
+   {
+    "word": "But",
+    "start": 259.93066,
+    "end": 260.01065
+   },
+   {
+    "word": "regardless",
+    "start": 260.01065,
+    "end": 260.47067
+   },
+   {
+    "word": "of",
+    "start": 260.47067,
+    "end": 260.71066
+   },
+   {
+    "word": "the",
+    "start": 260.71066,
+    "end": 260.81067
+   },
+   {
+    "word": "method",
+    "start": 260.81067,
+    "end": 261.11066
+   },
+   {
+    "word": "selected,",
+    "start": 261.11066,
+    "end": 262.15067
+   },
+   {
+    "word": "physical",
+    "start": 262.15067,
+    "end": 262.41064
+   },
+   {
+    "word": "cleanliness",
+    "start": 262.41064,
+    "end": 262.93066
+   },
+   {
+    "word": "must",
+    "start": 262.93066,
+    "end": 263.33066
+   },
+   {
+    "word": "never",
+    "start": 263.33066,
+    "end": 263.81067
+   },
+   {
+    "word": "be",
+    "start": 263.81067,
+    "end": 264.03067
+   },
+   {
+    "word": "mistaken",
+    "start": 264.03067,
+    "end": 264.49066
+   },
+   {
+    "word": "for",
+    "start": 264.49066,
+    "end": 264.77066
+   },
+   {
+    "word": "mechanical",
+    "start": 264.77066,
+    "end": 265.33066
+   },
+   {
+    "word": "readiness.",
+    "start": 265.33066,
+    "end": 265.73065
+   }
+  ]
+ },
+ {
+  "start": 266.75067,
+  "end": 271.31067,
+  "text": "Safety step one is verifying the engine is turned off and completely cool.",
+  "words": [
+   {
+    "word": "Safety",
+    "start": 266.79065,
+    "end": 267.07065
+   },
+   {
+    "word": "step",
+    "start": 267.07065,
+    "end": 267.29065
+   },
+   {
+    "word": "one",
+    "start": 267.29065,
+    "end": 267.71066
+   },
+   {
+    "word": "is",
+    "start": 267.71066,
+    "end": 268.05066
+   },
+   {
+    "word": "verifying",
+    "start": 268.05066,
+    "end": 268.59067
+   },
+   {
+    "word": "the",
+    "start": 268.59067,
+    "end": 268.79065
+   },
+   {
+    "word": "engine",
+    "start": 268.79065,
+    "end": 269.11066
+   },
+   {
+    "word": "is",
+    "start": 269.11066,
+    "end": 269.31067
+   },
+   {
+    "word": "turned",
+    "start": 269.31067,
+    "end": 269.65067
+   },
+   {
+    "word": "off",
+    "start": 269.65067,
+    "end": 269.97067
+   },
+   {
+    "word": "and",
+    "start": 269.97067,
+    "end": 270.19067
+   },
+   {
+    "word": "completely",
+    "start": 270.19067,
+    "end": 270.89066
+   },
+   {
+    "word": "cool.",
+    "start": 270.89066,
+    "end": 271.31067
+   }
+  ]
+ },
+ {
+  "start": 271.93066,
+  "end": 277.41064,
+  "text": "Applying chemical degreasers to a hot engine block causes the liquids to evaporate almost instantly,",
+  "words": [
+   {
+    "word": "Applying",
+    "start": 272.05066,
+    "end": 272.29065
+   },
+   {
+    "word": "chemical",
+    "start": 272.29065,
+    "end": 272.75067
+   },
+   {
+    "word": "degreasers",
+    "start": 272.75067,
+    "end": 273.27066
+   },
+   {
+    "word": "to",
+    "start": 273.27066,
+    "end": 273.45065
+   },
+   {
+    "word": "a",
+    "start": 273.45065,
+    "end": 273.65067
+   },
+   {
+    "word": "hot",
+    "start": 273.65067,
+    "end": 273.89066
+   },
+   {
+    "word": "engine",
+    "start": 273.89066,
+    "end": 274.21066
+   },
+   {
+    "word": "block",
+    "start": 274.21066,
+    "end": 274.51065
+   },
+   {
+    "word": "causes",
+    "start": 274.51065,
+    "end": 275.09067
+   },
+   {
+    "word": "the",
+    "start": 275.09067,
+    "end": 275.29065
+   },
+   {
+    "word": "liquids",
+    "start": 275.29065,
+    "end": 275.63068
+   },
+   {
+    "word": "to",
+    "start": 275.63068,
+    "end": 275.81067
+   },
+   {
+    "word": "evaporate",
+    "start": 275.81067,
+    "end": 276.37067
+   },
+   {
+    "word": "almost",
+    "start": 276.37067,
+    "end": 276.73065
+   },
+   {
+    "word": "instantly,",
+    "start": 276.73065,
+    "end": 277.89066
+   }
+  ]
+ },
+ {
+  "start": 277.41064,
+  "end": 282.25067,
+  "text": "which ruins cleaning performance and leaves permanent chemical streaks on metal surfaces.",
+  "words": [
+   {
+    "word": "which",
+    "start": 277.87067,
+    "end": 278.03067
+   },
+   {
+    "word": "ruins",
+    "start": 278.03067,
+    "end": 278.47067
+   },
+   {
+    "word": "cleaning",
+    "start": 278.47067,
+    "end": 278.83066
+   },
+   {
+    "word": "performance",
+    "start": 278.83066,
+    "end": 279.39066
+   },
+   {
+    "word": "and",
+    "start": 279.39066,
+    "end": 279.79065
+   },
+   {
+    "word": "leaves",
+    "start": 279.79065,
+    "end": 280.03067
+   },
+   {
+    "word": "permanent",
+    "start": 280.03067,
+    "end": 280.55066
+   },
+   {
+    "word": "chemical",
+    "start": 280.55066,
+    "end": 281.03067
+   },
+   {
+    "word": "streaks",
+    "start": 281.03067,
+    "end": 281.31067
+   },
+   {
+    "word": "on",
+    "start": 281.31067,
+    "end": 281.51065
+   },
+   {
+    "word": "metal",
+    "start": 281.51065,
+    "end": 281.75067
+   },
+   {
+    "word": "surfaces.",
+    "start": 281.75067,
+    "end": 282.71066
+   }
+  ]
+ },
+ {
+  "start": 282.77066,
+  "end": 290.77066,
+  "text": "More importantly, letting the vehicle sit until the upper radiator hose is cold to the touch reduces the risk of severe thermal burns.",
+  "words": [
+   {
+    "word": "More",
+    "start": 282.77066,
+    "end": 283.13068
+   },
+   {
+    "word": "importantly,",
+    "start": 283.13068,
+    "end": 283.75067
+   },
+   {
+    "word": "letting",
+    "start": 283.75067,
+    "end": 284.29065
+   },
+   {
+    "word": "the",
+    "start": 284.29065,
+    "end": 284.47067
+   },
+   {
+    "word": "vehicle",
+    "start": 284.47067,
+    "end": 284.73065
+   },
+   {
+    "word": "sit",
+    "start": 284.73065,
+    "end": 285.15067
+   },
+   {
+    "word": "until",
+    "start": 285.15067,
+    "end": 285.41064
+   },
+   {
+    "word": "the",
+    "start": 285.41064,
+    "end": 285.61066
+   },
+   {
+    "word": "upper",
+    "start": 285.61066,
+    "end": 285.91064
+   },
+   {
+    "word": "radiator",
+    "start": 285.91064,
+    "end": 286.39066
+   },
+   {
+    "word": "hose",
+    "start": 286.39066,
+    "end": 286.71066
+   },
+   {
+    "word": "is",
+    "start": 286.71066,
+    "end": 286.85065
+   },
+   {
+    "word": "cold",
+    "start": 286.85065,
+    "end": 287.19067
+   },
+   {
+    "word": "to",
+    "start": 287.19067,
+    "end": 287.35065
+   },
+   {
+    "word": "the",
+    "start": 287.35065,
+    "end": 287.47067
+   },
+   {
+    "word": "touch",
+    "start": 287.47067,
+    "end": 287.85065
+   },
+   {
+    "word": "reduces",
+    "start": 287.85065,
+    "end": 288.61066
+   },
+   {
+    "word": "the",
+    "start": 288.61066,
+    "end": 288.85065
+   },
+   {
+    "word": "risk",
+    "start": 288.85065,
+    "end": 289.15067
+   },
+   {
+    "word": "of",
+    "start": 289.15067,
+    "end": 289.33066
+   },
+   {
+    "word": "severe",
+    "start": 289.33066,
+    "end": 289.87067
+   },
+   {
+    "word": "thermal",
+    "start": 289.87067,
+    "end": 290.29065
+   },
+   {
+    "word": "burns.",
+    "start": 290.29065,
+    "end": 291.01065
+   }
+  ]
+ },
+ {
+  "start": 290.77066,
+  "end": 296.77066,
+  "text": "Always wait until under hood temperatures fall below 90 degrees Celsius before proceeding.",
+  "words": [
+   {
+    "word": "Always",
+    "start": 291.23065,
+    "end": 291.65067
+   },
+   {
+    "word": "wait",
+    "start": 291.65067,
+    "end": 292.03067
+   },
+   {
+    "word": "until",
+    "start": 292.03067,
+    "end": 292.35065
+   },
+   {
+    "word": "under",
+    "start": 292.35065,
+    "end": 292.75067
+   },
+   {
+    "word": "hood",
+    "start": 292.75067,
+    "end": 292.87067
+   },
+   {
+    "word": "temperatures",
+    "start": 292.87067,
+    "end": 293.39066
+   },
+   {
+    "word": "fall",
+    "start": 293.39066,
+    "end": 293.71066
+   },
+   {
+    "word": "below",
+    "start": 293.71066,
+    "end": 294.21066
+   },
+   {
+    "word": "90",
+    "start": 294.21066,
+    "end": 294.65067
+   },
+   {
+    "word": "degrees",
+    "start": 294.65067,
+    "end": 295.03067
+   },
+   {
+    "word": "Celsius",
+    "start": 295.03067,
+    "end": 295.41064
+   },
+   {
+    "word": "before",
+    "start": 295.41064,
+    "end": 296.15067
+   },
+   {
+    "word": "proceeding.",
+    "start": 296.15067,
+    "end": 296.93066
+   }
+  ]
+ },
+ {
+  "start": 296.77066,
+  "end": 299.77066,
+  "text": "Safety Step 2 requires addressing the battery.",
+  "words": [
+   {
+    "word": "Safety",
+    "start": 297.23065,
+    "end": 297.55066
+   },
+   {
+    "word": "Step",
+    "start": 297.55066,
+    "end": 297.77066
+   },
+   {
+    "word": "2",
+    "start": 297.77066,
+    "end": 298.21066
+   },
+   {
+    "word": "requires",
+    "start": 298.21066,
+    "end": 298.79065
+   },
+   {
+    "word": "addressing",
+    "start": 298.79065,
+    "end": 299.31067
+   },
+   {
+    "word": "the",
+    "start": 299.31067,
+    "end": 299.55066
+   },
+   {
+    "word": "battery.",
+    "start": 299.55066,
+    "end": 300.25067
+   }
+  ]
+ },
+ {
+  "start": 299.77066,
+  "end": 306.77066,
+  "text": "Instead of relying on generic online instructions, consult your specific vehicle's owner's manual.",
+  "words": [
+   {
+    "word": "Instead",
+    "start": 300.53067,
+    "end": 300.79065
+   },
+   {
+    "word": "of",
+    "start": 300.79065,
+    "end": 301.05066
+   },
+   {
+    "word": "relying",
+    "start": 301.05066,
+    "end": 301.35065
+   },
+   {
+    "word": "on",
+    "start": 301.35065,
+    "end": 301.55066
+   },
+   {
+    "word": "generic",
+    "start": 301.55066,
+    "end": 302.07068
+   },
+   {
+    "word": "online",
+    "start": 302.07068,
+    "end": 302.49066
+   },
+   {
+    "word": "instructions,",
+    "start": 302.49066,
+    "end": 303.53067
+   },
+   {
+    "word": "consult",
+    "start": 303.53067,
+    "end": 303.93066
+   },
+   {
+    "word": "your",
+    "start": 303.93066,
+    "end": 304.31067
+   },
+   {
+    "word": "specific",
+    "start": 304.31067,
+    "end": 304.97064
+   },
+   {
+    "word": "vehicle's",
+    "start": 304.97064,
+    "end": 305.61066
+   },
+   {
+    "word": "owner's",
+    "start": 305.61066,
+    "end": 305.87067
+   },
+   {
+    "word": "manual.",
+    "start": 305.87067,
+    "end": 306.61066
+   },
+   {
+    "word": "Battery",
+    "start": 306.77066,
+    "end": 307.13068
+   }
+  ]
+ },
+ {
+  "start": 306.77066,
+  "end": 313.83066,
+  "text": "Battery procedures vary by manufacturer, and third-party advice does not supersede your vehicle's official service guidelines.",
+  "words": [
+   {
+    "word": "Battery",
+    "start": 306.77066,
+    "end": 307.13068
+   },
+   {
+    "word": "procedures",
+    "start": 307.13068,
+    "end": 307.63068
+   },
+   {
+    "word": "vary",
+    "start": 307.63068,
+    "end": 308.05066
+   },
+   {
+    "word": "by",
+    "start": 308.05066,
+    "end": 308.23065
+   },
+   {
+    "word": "manufacturer,",
+    "start": 308.23065,
+    "end": 309.27066
+   },
+   {
+    "word": "and",
+    "start": 309.27066,
+    "end": 309.43066
+   },
+   {
+    "word": "third-party",
+    "start": 309.43066,
+    "end": 309.95065
+   },
+   {
+    "word": "advice",
+    "start": 309.95065,
+    "end": 310.39066
+   },
+   {
+    "word": "does",
+    "start": 310.39066,
+    "end": 310.65067
+   },
+   {
+    "word": "not",
+    "start": 310.65067,
+    "end": 311.07068
+   },
+   {
+    "word": "supersede",
+    "start": 311.07068,
+    "end": 311.67065
+   },
+   {
+    "word": "your",
+    "start": 311.67065,
+    "end": 311.85065
+   },
+   {
+    "word": "vehicle's",
+    "start": 311.85065,
+    "end": 312.35065
+   },
+   {
+    "word": "official",
+    "start": 312.35065,
+    "end": 312.89066
+   },
+   {
+    "word": "service",
+    "start": 312.89066,
+    "end": 313.33066
+   },
+   {
+    "word": "guidelines.",
+    "start": 313.33066,
+    "end": 314.31067
+   }
+  ]
+ },
+ {
+  "start": 314.55066,
+  "end": 322.97064,
+  "text": "Determine whether your manual directs you to disconnect the 12-volt battery, negative terminal first, or to insulate the terminals with non-conductive caps.",
+  "words": [
+   {
+    "word": "Determine",
+    "start": 314.65067,
+    "end": 314.93066
+   },
+   {
+    "word": "whether",
+    "start": 314.93066,
+    "end": 315.15067
+   },
+   {
+    "word": "your",
+    "start": 315.15067,
+    "end": 315.35065
+   },
+   {
+    "word": "manual",
+    "start": 315.35065,
+    "end": 315.71066
+   },
+   {
+    "word": "directs",
+    "start": 315.71066,
+    "end": 316.15067
+   },
+   {
+    "word": "you",
+    "start": 316.15067,
+    "end": 316.27066
+   },
+   {
+    "word": "to",
+    "start": 316.27066,
+    "end": 316.41064
+   },
+   {
+    "word": "disconnect",
+    "start": 316.41064,
+    "end": 316.95065
+   },
+   {
+    "word": "the",
+    "start": 316.95065,
+    "end": 317.13068
+   },
+   {
+    "word": "12-volt",
+    "start": 317.13068,
+    "end": 317.55066
+   },
+   {
+    "word": "battery,",
+    "start": 317.55066,
+    "end": 318.35065
+   },
+   {
+    "word": "negative",
+    "start": 318.35065,
+    "end": 318.71066
+   },
+   {
+    "word": "terminal",
+    "start": 318.71066,
+    "end": 319.07068
+   },
+   {
+    "word": "first,",
+    "start": 319.07068,
+    "end": 319.97064
+   },
+   {
+    "word": "or",
+    "start": 319.97064,
+    "end": 320.13068
+   },
+   {
+    "word": "to",
+    "start": 320.13068,
+    "end": 320.45065
+   },
+   {
+    "word": "insulate",
+    "start": 320.45065,
+    "end": 320.93066
+   },
+   {
+    "word": "the",
+    "start": 320.93066,
+    "end": 321.11066
+   },
+   {
+    "word": "terminals",
+    "start": 321.11066,
+    "end": 321.51065
+   },
+   {
+    "word": "with",
+    "start": 321.51065,
+    "end": 321.79065
+   },
+   {
+    "word": "non-conductive",
+    "start": 321.79065,
+    "end": 322.63068
+   },
+   {
+    "word": "caps.",
+    "start": 322.63068,
+    "end": 323.45065
+   }
+  ]
+ },
+ {
+  "start": 323.11066,
+  "end": 332.09067,
+  "text": "Finally, remember that hybrid and electric vehicle high-voltage components carry severe shock hazards and are never targets for do-it-yourself cleaning.",
+  "words": [
+   {
+    "word": "Finally,",
+    "start": 323.57068,
+    "end": 324.33066
+   },
+   {
+    "word": "remember",
+    "start": 324.33066,
+    "end": 324.69067
+   },
+   {
+    "word": "that",
+    "start": 324.69067,
+    "end": 324.89066
+   },
+   {
+    "word": "hybrid",
+    "start": 324.89066,
+    "end": 325.33066
+   },
+   {
+    "word": "and",
+    "start": 325.33066,
+    "end": 325.55066
+   },
+   {
+    "word": "electric",
+    "start": 325.55066,
+    "end": 326.01065
+   },
+   {
+    "word": "vehicle",
+    "start": 326.01065,
+    "end": 326.41064
+   },
+   {
+    "word": "high-voltage",
+    "start": 326.41064,
+    "end": 327.07068
+   },
+   {
+    "word": "components",
+    "start": 327.07068,
+    "end": 327.61066
+   },
+   {
+    "word": "carry",
+    "start": 327.61066,
+    "end": 328.03067
+   },
+   {
+    "word": "severe",
+    "start": 328.03067,
+    "end": 328.73065
+   },
+   {
+    "word": "shock",
+    "start": 328.73065,
+    "end": 329.17065
+   },
+   {
+    "word": "hazards",
+    "start": 329.17065,
+    "end": 329.51065
+   },
+   {
+    "word": "and",
+    "start": 329.51065,
+    "end": 329.91064
+   },
+   {
+    "word": "are",
+    "start": 329.91064,
+    "end": 330.01065
+   },
+   {
+    "word": "never",
+    "start": 330.01065,
+    "end": 330.45065
+   },
+   {
+    "word": "targets",
+    "start": 330.45065,
+    "end": 330.91064
+   },
+   {
+    "word": "for",
+    "start": 330.91064,
+    "end": 331.11066
+   },
+   {
+    "word": "do-it-yourself",
+    "start": 331.11066,
+    "end": 331.71066
+   },
+   {
+    "word": "cleaning.",
+    "start": 331.71066,
+    "end": 332.07068
+   }
+  ]
+ },
+ {
+  "start": 332.09067,
+  "end": 337.09067,
+  "text": "Protecting electrical and intake pathways requires physical barriers.",
+  "words": [
+   {
+    "word": "Protecting",
+    "start": 332.97064,
+    "end": 333.43066
+   },
+   {
+    "word": "electrical",
+    "start": 333.43066,
+    "end": 333.95065
+   },
+   {
+    "word": "and",
+    "start": 333.95065,
+    "end": 334.21066
+   },
+   {
+    "word": "intake",
+    "start": 334.21066,
+    "end": 334.65067
+   },
+   {
+    "word": "pathways",
+    "start": 334.65067,
+    "end": 335.15067
+   },
+   {
+    "word": "requires",
+    "start": 335.15067,
+    "end": 335.71066
+   },
+   {
+    "word": "physical",
+    "start": 335.71066,
+    "end": 336.29065
+   },
+   {
+    "word": "barriers.",
+    "start": 336.29065,
+    "end": 337.57068
+   }
+  ]
+ },
+ {
+  "start": 337.09067,
+  "end": 357.356,
+  "text": "Before applying any liquids or steam seal the fuse box the alternator the engine control unit exposed sensor connectors and the air intake openings Wrap these parts securely in heavy aluminum foil or thick plastic bags using electrical tape to secure the edges CRC Industries guidelines identify these specific",
+  "words": [
+   {
+    "word": "Before",
+    "start": 337.37067,
+    "end": 337.61066
+   },
+   {
+    "word": "applying",
+    "start": 337.61066,
+    "end": 338.05066
+   },
+   {
+    "word": "any",
+    "start": 338.05066,
+    "end": 338.41064
+   },
+   {
+    "word": "liquids",
+    "start": 338.41064,
+    "end": 338.81067
+   },
+   {
+    "word": "or",
+    "start": 338.81067,
+    "end": 339.01065
+   },
+   {
+    "word": "steam,",
+    "start": 339.01065,
+    "end": 339.89066
+   },
+   {
+    "word": "seal",
+    "start": 339.89066,
+    "end": 339.93066
+   },
+   {
+    "word": "the",
+    "start": 339.93066,
+    "end": 340.13068
+   },
+   {
+    "word": "fuse",
+    "start": 340.13068,
+    "end": 340.43066
+   },
+   {
+    "word": "box,",
+    "start": 340.43066,
+    "end": 341.07068
+   },
+   {
+    "word": "the",
+    "start": 341.07068,
+    "end": 341.21066
+   },
+   {
+    "word": "alternator,",
+    "start": 341.21066,
+    "end": 342.11066
+   },
+   {
+    "word": "the",
+    "start": 342.11066,
+    "end": 342.21066
+   },
+   {
+    "word": "engine",
+    "start": 342.21066,
+    "end": 342.49066
+   },
+   {
+    "word": "control",
+    "start": 342.49066,
+    "end": 342.91064
+   },
+   {
+    "word": "unit,",
+    "start": 342.91064,
+    "end": 343.81067
+   },
+   {
+    "word": "exposed",
+    "start": 343.81067,
+    "end": 344.07068
+   },
+   {
+    "word": "sensor",
+    "start": 344.07068,
+    "end": 344.45065
+   },
+   {
+    "word": "connectors,",
+    "start": 344.45065,
+    "end": 345.09067
+   },
+   {
+    "word": "and",
+    "start": 345.09067,
+    "end": 345.49066
+   },
+   {
+    "word": "the",
+    "start": 345.49066,
+    "end": 345.63068
+   },
+   {
+    "word": "air",
+    "start": 345.63068,
+    "end": 345.87067
+   },
+   {
+    "word": "intake",
+    "start": 345.87067,
+    "end": 346.25067
+   },
+   {
+    "word": "openings.",
+    "start": 346.25067,
+    "end": 346.77066
+   },
+   {
+    "word": "Wrap",
+    "start": 347.09067,
+    "end": 347.35065
+   },
+   {
+    "word": "these",
+    "start": 347.35065,
+    "end": 347.57068
+   },
+   {
+    "word": "parts",
+    "start": 347.57068,
+    "end": 347.83066
+   },
+   {
+    "word": "securely",
+    "start": 347.83066,
+    "end": 348.41064
+   },
+   {
+    "word": "in",
+    "start": 348.41064,
+    "end": 348.67065
+   },
+   {
+    "word": "heavy-duty",
+    "start": 348.67065,
+    "end": 349.23065
+   },
+   {
+    "word": "aluminum",
+    "start": 349.23065,
+    "end": 349.63068
+   },
+   {
+    "word": "foil",
+    "start": 349.63068,
+    "end": 350.03067
+   },
+   {
+    "word": "or",
+    "start": 350.01596,
+    "end": 350.23596
+   },
+   {
+    "word": "thick",
+    "start": 350.23596,
+    "end": 350.53598
+   },
+   {
+    "word": "plastic",
+    "start": 350.53598,
+    "end": 350.97598
+   },
+   {
+    "word": "bags",
+    "start": 350.97598,
+    "end": 351.37598
+   },
+   {
+    "word": "using",
+    "start": 351.076,
+    "end": 351.99597
+   },
+   {
+    "word": "electrical",
+    "start": 351.99597,
+    "end": 352.49597
+   },
+   {
+    "word": "tape",
+    "start": 352.49597,
+    "end": 352.81598
+   },
+   {
+    "word": "to",
+    "start": 352.81598,
+    "end": 352.95596
+   },
+   {
+    "word": "secure",
+    "start": 352.95596,
+    "end": 353.27597
+   },
+   {
+    "word": "the",
+    "start": 353.27597,
+    "end": 353.43597
+   },
+   {
+    "word": "edges.",
+    "start": 353.43597,
+    "end": 354.296
+   },
+   {
+    "word": "CRC",
+    "start": 354.296,
+    "end": 354.81598
+   },
+   {
+    "word": "Industries",
+    "start": 354.81598,
+    "end": 355.25598
+   },
+   {
+    "word": "guidelines",
+    "start": 355.25598,
+    "end": 355.77597
+   },
+   {
+    "word": "identify",
+    "start": 355.77597,
+    "end": 356.47598
+   },
+   {
+    "word": "these",
+    "start": 356.47598,
+    "end": 356.77597
+   },
+   {
+    "word": "specific",
+    "start": 356.77597,
+    "end": 357.296
+   },
+   {
+    "word": "zones",
+    "start": 356.99597,
+    "end": 357.81598
+   }
+  ]
+ },
+ {
+  "start": 357.356,
+  "end": 362.95596,
+  "text": "zones as highly susceptible to moisture intrusion, but wrapping these components is not an absolute",
+  "words": [
+   {
+    "word": "as",
+    "start": 357.81598,
+    "end": 357.99597
+   },
+   {
+    "word": "highly",
+    "start": 357.99597,
+    "end": 358.43597
+   },
+   {
+    "word": "susceptible",
+    "start": 358.43597,
+    "end": 358.99597
+   },
+   {
+    "word": "to",
+    "start": 358.99597,
+    "end": 359.25598
+   },
+   {
+    "word": "moisture",
+    "start": 359.25598,
+    "end": 359.636
+   },
+   {
+    "word": "intrusion,",
+    "start": 359.636,
+    "end": 360.17596
+   },
+   {
+    "word": "but",
+    "start": 360.17596,
+    "end": 360.71597
+   },
+   {
+    "word": "wrapping",
+    "start": 360.71597,
+    "end": 361.05597
+   },
+   {
+    "word": "these",
+    "start": 361.05597,
+    "end": 361.25598
+   },
+   {
+    "word": "components",
+    "start": 361.25598,
+    "end": 361.636
+   },
+   {
+    "word": "is",
+    "start": 361.636,
+    "end": 361.97598
+   },
+   {
+    "word": "not",
+    "start": 361.97598,
+    "end": 362.33597
+   },
+   {
+    "word": "an",
+    "start": 362.33597,
+    "end": 362.55597
+   },
+   {
+    "word": "absolute",
+    "start": 362.55597,
+    "end": 362.95596
+   },
+   {
+    "word": "shield.",
+    "start": 362.83597,
+    "end": 364.076
+   }
+  ]
+ },
+ {
+  "start": 362.95596,
+  "end": 368.67596,
+  "text": "shield. Fluid can still seep through gaps under pressure, meaning direct spraying must still be",
+  "words": [
+   {
+    "word": "Fluid",
+    "start": 364.076,
+    "end": 364.21597
+   },
+   {
+    "word": "can",
+    "start": 364.21597,
+    "end": 364.37598
+   },
+   {
+    "word": "still",
+    "start": 364.37598,
+    "end": 364.83597
+   },
+   {
+    "word": "seep",
+    "start": 364.83597,
+    "end": 365.17596
+   },
+   {
+    "word": "through",
+    "start": 365.17596,
+    "end": 365.33597
+   },
+   {
+    "word": "gaps",
+    "start": 365.33597,
+    "end": 365.69598
+   },
+   {
+    "word": "under",
+    "start": 365.69598,
+    "end": 365.916
+   },
+   {
+    "word": "pressure,",
+    "start": 365.916,
+    "end": 366.83597
+   },
+   {
+    "word": "meaning",
+    "start": 366.83597,
+    "end": 366.93597
+   },
+   {
+    "word": "direct",
+    "start": 366.93597,
+    "end": 367.37598
+   },
+   {
+    "word": "spraying",
+    "start": 367.37598,
+    "end": 367.79596
+   },
+   {
+    "word": "must",
+    "start": 367.79596,
+    "end": 368.09598
+   },
+   {
+    "word": "still",
+    "start": 368.09598,
+    "end": 368.45596
+   },
+   {
+    "word": "avoided",
+    "start": 368.17596,
+    "end": 369.09598
+   },
+   {
+    "word": "be",
+    "start": 368.45596,
+    "end": 368.636
+   }
+  ]
+ },
+ {
+  "start": 368.67596,
+  "end": 374.45596,
+  "text": "avoided during the process. The physical workspace demands its own distinct precautions. Chemical",
+  "words": [
+   {
+    "word": "during",
+    "start": 369.09598,
+    "end": 369.33597
+   },
+   {
+    "word": "the",
+    "start": 369.33597,
+    "end": 369.45596
+   },
+   {
+    "word": "process.",
+    "start": 369.45596,
+    "end": 370.416
+   },
+   {
+    "word": "The",
+    "start": 370.416,
+    "end": 370.53598
+   },
+   {
+    "word": "physical",
+    "start": 370.53598,
+    "end": 370.99597
+   },
+   {
+    "word": "workspace",
+    "start": 370.99597,
+    "end": 371.45596
+   },
+   {
+    "word": "demands",
+    "start": 371.45596,
+    "end": 371.95596
+   },
+   {
+    "word": "its",
+    "start": 371.95596,
+    "end": 372.136
+   },
+   {
+    "word": "own",
+    "start": 372.136,
+    "end": 372.47598
+   },
+   {
+    "word": "distinct",
+    "start": 372.47598,
+    "end": 373.03598
+   },
+   {
+    "word": "precautions.",
+    "start": 373.03598,
+    "end": 373.89597
+   },
+   {
+    "word": "Chemical",
+    "start": 373.89597,
+    "end": 373.916
+   },
+   {
+    "word": "Chemical",
+    "start": 374.47598,
+    "end": 374.53598
+   }
+  ]
+ },
+ {
+  "start": 374.45596,
+  "end": 378.83597,
+  "text": "Chemical degreasers and cleaning solvents release heavy vapors that can quickly accumulate",
+  "words": [
+   {
+    "word": "Chemical",
+    "start": 374.47598,
+    "end": 374.53598
+   },
+   {
+    "word": "degreasers",
+    "start": 374.53598,
+    "end": 375.11597
+   },
+   {
+    "word": "and",
+    "start": 375.11597,
+    "end": 375.31598
+   },
+   {
+    "word": "cleaning",
+    "start": 375.31598,
+    "end": 375.69598
+   },
+   {
+    "word": "solvents",
+    "start": 375.69598,
+    "end": 376.136
+   },
+   {
+    "word": "release",
+    "start": 376.136,
+    "end": 376.49597
+   },
+   {
+    "word": "heavy",
+    "start": 376.49597,
+    "end": 376.916
+   },
+   {
+    "word": "vapors",
+    "start": 376.916,
+    "end": 377.356
+   },
+   {
+    "word": "that",
+    "start": 377.356,
+    "end": 377.576
+   },
+   {
+    "word": "can",
+    "start": 377.576,
+    "end": 377.73596
+   },
+   {
+    "word": "quickly",
+    "start": 377.73596,
+    "end": 378.17596
+   },
+   {
+    "word": "accumulate",
+    "start": 378.17596,
+    "end": 378.75598
+   },
+   {
+    "word": "in",
+    "start": 378.33597,
+    "end": 379.03598
+   }
+  ]
+ },
+ {
+  "start": 378.83597,
+  "end": 380.39597,
+  "text": "in enclosed spaces.",
+  "words": [
+   {
+    "word": "enclosed",
+    "start": 379.03598,
+    "end": 379.33597
+   },
+   {
+    "word": "spaces.",
+    "start": 379.33597,
+    "end": 380.27597
+   },
+   {
+    "word": "Always",
+    "start": 379.89597,
+    "end": 380.67596
+   }
+  ]
+ },
+ {
+  "start": 380.39597,
+  "end": 385.61597,
+  "text": "Always work in a well-ventilated area, such as an open garage with active airflow or an",
+  "words": [
+   {
+    "word": "work",
+    "start": 380.67596,
+    "end": 381.03598
+   },
+   {
+    "word": "in",
+    "start": 381.03598,
+    "end": 381.21597
+   },
+   {
+    "word": "a",
+    "start": 381.21597,
+    "end": 381.37598
+   },
+   {
+    "word": "well-ventilated",
+    "start": 381.37598,
+    "end": 382.076
+   },
+   {
+    "word": "area,",
+    "start": 382.076,
+    "end": 382.61597
+   },
+   {
+    "word": "such",
+    "start": 382.61597,
+    "end": 383.016
+   },
+   {
+    "word": "as",
+    "start": 383.016,
+    "end": 383.17596
+   },
+   {
+    "word": "an",
+    "start": 383.17596,
+    "end": 383.27597
+   },
+   {
+    "word": "open",
+    "start": 383.27597,
+    "end": 383.516
+   },
+   {
+    "word": "garage",
+    "start": 383.516,
+    "end": 383.95596
+   },
+   {
+    "word": "with",
+    "start": 383.95596,
+    "end": 384.15598
+   },
+   {
+    "word": "active",
+    "start": 384.15598,
+    "end": 384.516
+   },
+   {
+    "word": "airflow",
+    "start": 384.516,
+    "end": 384.95596
+   },
+   {
+    "word": "or",
+    "start": 384.95596,
+    "end": 385.43597
+   },
+   {
+    "word": "outdoor",
+    "start": 385.31598,
+    "end": 386.016
+   },
+   {
+    "word": "an",
+    "start": 385.43597,
+    "end": 385.69598
+   }
+  ]
+ },
+ {
+  "start": 385.61597,
+  "end": 387.076,
+  "text": "outdoor driveway.",
+  "words": [
+   {
+    "word": "driveway.",
+    "start": 386.016,
+    "end": 386.83597
+   },
+   {
+    "word": "Keep",
+    "start": 386.576,
+    "end": 387.15598
+   }
+  ]
+ },
+ {
+  "start": 387.076,
+  "end": 392.35596,
+  "text": "Keep all smoking materials, sparks, and open flames far away from the vehicle, as many",
+  "words": [
+   {
+    "word": "all",
+    "start": 387.15598,
+    "end": 387.43597
+   },
+   {
+    "word": "smoking",
+    "start": 387.43597,
+    "end": 387.856
+   },
+   {
+    "word": "materials,",
+    "start": 387.856,
+    "end": 388.67596
+   },
+   {
+    "word": "sparks,",
+    "start": 388.67596,
+    "end": 389.31598
+   },
+   {
+    "word": "and",
+    "start": 389.31598,
+    "end": 389.47598
+   },
+   {
+    "word": "open",
+    "start": 389.47598,
+    "end": 389.77597
+   },
+   {
+    "word": "flames",
+    "start": 389.77597,
+    "end": 390.17596
+   },
+   {
+    "word": "far",
+    "start": 390.17596,
+    "end": 390.636
+   },
+   {
+    "word": "away",
+    "start": 390.636,
+    "end": 390.916
+   },
+   {
+    "word": "from",
+    "start": 390.916,
+    "end": 391.136
+   },
+   {
+    "word": "the",
+    "start": 391.136,
+    "end": 391.23596
+   },
+   {
+    "word": "vehicle,",
+    "start": 391.23596,
+    "end": 391.73596
+   },
+   {
+    "word": "as",
+    "start": 391.73596,
+    "end": 392.076
+   },
+   {
+    "word": "many",
+    "start": 392.076,
+    "end": 392.416
+   },
+   {
+    "word": "underhood",
+    "start": 392.19598,
+    "end": 392.83597
+   }
+  ]
+ },
+ {
+  "start": 392.35596,
+  "end": 395.03598,
+  "text": "underhood chemicals are highly flammable.",
+  "words": [
+   {
+    "word": "chemicals",
+    "start": 392.83597,
+    "end": 393.31598
+   },
+   {
+    "word": "are",
+    "start": 393.31598,
+    "end": 393.55597
+   },
+   {
+    "word": "highly",
+    "start": 393.55597,
+    "end": 393.99597
+   },
+   {
+    "word": "flammable.",
+    "start": 393.99597,
+    "end": 394.856
+   },
+   {
+    "word": "Keep",
+    "start": 394.53598,
+    "end": 395.11597
+   }
+  ]
+ },
+ {
+  "start": 395.03598,
+  "end": 399.576,
+  "text": "Keep a class ABC fire extinguisher within arm's reach throughout the entire cleaning",
+  "words": [
+   {
+    "word": "a",
+    "start": 395.11597,
+    "end": 395.29596
+   },
+   {
+    "word": "class",
+    "start": 395.29596,
+    "end": 395.576
+   },
+   {
+    "word": "ABC",
+    "start": 395.576,
+    "end": 396.15598
+   },
+   {
+    "word": "fire",
+    "start": 396.15598,
+    "end": 396.55597
+   },
+   {
+    "word": "extinguisher",
+    "start": 396.55597,
+    "end": 397.11597
+   },
+   {
+    "word": "within",
+    "start": 397.11597,
+    "end": 397.43597
+   },
+   {
+    "word": "arm's",
+    "start": 397.43597,
+    "end": 397.83597
+   },
+   {
+    "word": "reach",
+    "start": 397.83597,
+    "end": 398.11597
+   },
+   {
+    "word": "throughout",
+    "start": 398.11597,
+    "end": 398.39597
+   },
+   {
+    "word": "the",
+    "start": 398.39597,
+    "end": 398.576
+   },
+   {
+    "word": "entire",
+    "start": 398.576,
+    "end": 399.076
+   },
+   {
+    "word": "cleaning",
+    "start": 399.076,
+    "end": 399.45596
+   }
+  ]
+ },
+ {
+  "start": 399.576,
+  "end": 401.17596,
+  "text": "process.",
+  "words": [
+   {
+    "word": "process.",
+    "start": 400.73596,
+    "end": 400.95596
+   },
+   {
+    "word": "Safety",
+    "start": 400.73596,
+    "end": 401.23596
+   }
+  ]
+ },
+ {
+  "start": 401.17596,
+  "end": 404.39597,
+  "text": "Safety Step 5 is Personal Protective Equipment.",
+  "words": [
+   {
+    "word": "Step",
+    "start": 401.23596,
+    "end": 401.47598
+   },
+   {
+    "word": "5",
+    "start": 401.47598,
+    "end": 401.95596
+   },
+   {
+    "word": "is",
+    "start": 401.95596,
+    "end": 402.29596
+   },
+   {
+    "word": "Personal",
+    "start": 402.29596,
+    "end": 402.75598
+   },
+   {
+    "word": "Protective",
+    "start": 402.75598,
+    "end": 403.25598
+   },
+   {
+    "word": "Equipment.",
+    "start": 403.25598,
+    "end": 404.19598
+   },
+   {
+    "word": "Vehicle",
+    "start": 404.39597,
+    "end": 404.45596
+   }
+  ]
+ },
+ {
+  "start": 404.39597,
+  "end": 408.95596,
+  "text": "Vehicle resistant gloves and safety glasses prevent skin contact and shield eyes from",
+  "words": [
+   {
+    "word": "Vehicle",
+    "start": 404.39597,
+    "end": 404.45596
+   },
+   {
+    "word": "resistant",
+    "start": 404.45596,
+    "end": 404.89597
+   },
+   {
+    "word": "gloves",
+    "start": 404.89597,
+    "end": 405.33597
+   },
+   {
+    "word": "and",
+    "start": 405.33597,
+    "end": 405.59598
+   },
+   {
+    "word": "safety",
+    "start": 405.59598,
+    "end": 405.99597
+   },
+   {
+    "word": "glasses",
+    "start": 405.99597,
+    "end": 406.45596
+   },
+   {
+    "word": "prevent",
+    "start": 406.45596,
+    "end": 406.916
+   },
+   {
+    "word": "skin",
+    "start": 406.916,
+    "end": 407.21597
+   },
+   {
+    "word": "contact",
+    "start": 407.21597,
+    "end": 407.856
+   },
+   {
+    "word": "and",
+    "start": 407.856,
+    "end": 408.076
+   },
+   {
+    "word": "shield",
+    "start": 408.076,
+    "end": 408.45596
+   },
+   {
+    "word": "eyes",
+    "start": 408.45596,
+    "end": 408.79596
+   },
+   {
+    "word": "caustic",
+    "start": 408.55597,
+    "end": 409.49597
+   },
+   {
+    "word": "from",
+    "start": 408.79596,
+    "end": 409.016
+   }
+  ]
+ },
+ {
+  "start": 408.95596,
+  "end": 410.55597,
+  "text": "caustic splashes.",
+  "words": [
+   {
+    "word": "splashes.",
+    "start": 409.49597,
+    "end": 410.31598
+   },
+   {
+    "word": "If",
+    "start": 410.05597,
+    "end": 410.61597
+   }
+  ]
+ },
+ {
+  "start": 410.55597,
+  "end": 415.49597,
+  "text": "If the product label or safety data sheet requires respiratory protection, use a respirator",
+  "words": [
+   {
+    "word": "the",
+    "start": 410.61597,
+    "end": 410.73596
+   },
+   {
+    "word": "product",
+    "start": 410.73596,
+    "end": 411.09598
+   },
+   {
+    "word": "label",
+    "start": 411.09598,
+    "end": 411.456
+   },
+   {
+    "word": "or",
+    "start": 411.456,
+    "end": 411.636
+   },
+   {
+    "word": "safety",
+    "start": 411.636,
+    "end": 412.09598
+   },
+   {
+    "word": "data",
+    "start": 412.09598,
+    "end": 412.43597
+   },
+   {
+    "word": "sheet",
+    "start": 412.43597,
+    "end": 412.65598
+   },
+   {
+    "word": "requires",
+    "start": 412.65598,
+    "end": 413.136
+   },
+   {
+    "word": "respiratory",
+    "start": 413.136,
+    "end": 413.69598
+   },
+   {
+    "word": "protection,",
+    "start": 413.69598,
+    "end": 414.71597
+   },
+   {
+    "word": "use",
+    "start": 414.71597,
+    "end": 414.87598
+   },
+   {
+    "word": "a",
+    "start": 414.87598,
+    "end": 415.016
+   },
+   {
+    "word": "respirator",
+    "start": 415.016,
+    "end": 415.53598
+   },
+   {
+    "word": "with",
+    "start": 415.19598,
+    "end": 415.77597
+   }
+  ]
+ },
+ {
+  "start": 415.49597,
+  "end": 417.87598,
+  "text": "with organic vapor cartridges.",
+  "words": [
+   {
+    "word": "organic",
+    "start": 415.77597,
+    "end": 416.35596
+   },
+   {
+    "word": "vapor",
+    "start": 416.35596,
+    "end": 416.69598
+   },
+   {
+    "word": "cartridges.",
+    "start": 416.69598,
+    "end": 417.71597
+   },
+   {
+    "word": "This",
+    "start": 417.37598,
+    "end": 417.956
+   }
+  ]
+ },
+ {
+  "start": 417.87598,
+  "end": 420.87598,
+  "text": "This final step is also the point of decision.",
+  "words": [
+   {
+    "word": "final",
+    "start": 417.956,
+    "end": 418.33597
+   },
+   {
+    "word": "step",
+    "start": 418.33597,
+    "end": 418.69598
+   },
+   {
+    "word": "is",
+    "start": 418.69598,
+    "end": 418.956
+   },
+   {
+    "word": "also",
+    "start": 418.956,
+    "end": 419.37598
+   },
+   {
+    "word": "the",
+    "start": 419.37598,
+    "end": 419.576
+   },
+   {
+    "word": "point",
+    "start": 419.576,
+    "end": 419.79596
+   },
+   {
+    "word": "of",
+    "start": 419.79596,
+    "end": 419.916
+   },
+   {
+    "word": "decision.",
+    "start": 419.916,
+    "end": 420.59598
+   },
+   {
+    "word": "If",
+    "start": 420.37598,
+    "end": 420.956
+   }
+  ]
+ },
+ {
+  "start": 420.87598,
+  "end": 425.516,
+  "text": "If a chosen cleaning method conflicts with vehicle service manuals, product instructions,",
+  "words": [
+   {
+    "word": "a",
+    "start": 420.956,
+    "end": 421.076
+   },
+   {
+    "word": "chosen",
+    "start": 421.076,
+    "end": 421.416
+   },
+   {
+    "word": "cleaning",
+    "start": 421.416,
+    "end": 421.75598
+   },
+   {
+    "word": "method",
+    "start": 421.75598,
+    "end": 422.11597
+   },
+   {
+    "word": "conflicts",
+    "start": 422.11597,
+    "end": 422.61597
+   },
+   {
+    "word": "with",
+    "start": 422.61597,
+    "end": 422.87598
+   },
+   {
+    "word": "vehicle",
+    "start": 422.87598,
+    "end": 423.19598
+   },
+   {
+    "word": "service",
+    "start": 423.19598,
+    "end": 423.61597
+   },
+   {
+    "word": "manuals,",
+    "start": 423.61597,
+    "end": 424.37598
+   },
+   {
+    "word": "product",
+    "start": 424.37598,
+    "end": 424.69598
+   },
+   {
+    "word": "instructions,",
+    "start": 424.69598,
+    "end": 425.456
+   },
+   {
+    "word": "or",
+    "start": 425.016,
+    "end": 425.75598
+   }
+  ]
+ },
+ {
+  "start": 425.516,
+  "end": 430.39597,
+  "text": "or your confidence in shielding sensitive electronics, stop immediately.",
+  "words": [
+   {
+    "word": "your",
+    "start": 425.75598,
+    "end": 425.916
+   },
+   {
+    "word": "confidence",
+    "start": 425.916,
+    "end": 426.516
+   },
+   {
+    "word": "in",
+    "start": 426.516,
+    "end": 426.75598
+   },
+   {
+    "word": "shielding",
+    "start": 426.75598,
+    "end": 427.15598
+   },
+   {
+    "word": "sensitive",
+    "start": 427.15598,
+    "end": 427.516
+   },
+   {
+    "word": "electronics,",
+    "start": 427.516,
+    "end": 428.49597
+   },
+   {
+    "word": "stop",
+    "start": 428.49597,
+    "end": 428.99597
+   },
+   {
+    "word": "immediately.",
+    "start": 428.99597,
+    "end": 430.076
+   },
+   {
+    "word": "Knowing",
+    "start": 430.39597,
+    "end": 430.59598
+   }
+  ]
+ },
+ {
+  "start": 430.39597,
+  "end": 434.61597,
+  "text": "Knowing when to walk away is a fundamental part of proper vehicle care.",
+  "words": [
+   {
+    "word": "Knowing",
+    "start": 430.39597,
+    "end": 430.59598
+   },
+   {
+    "word": "when",
+    "start": 430.59598,
+    "end": 430.73596
+   },
+   {
+    "word": "to",
+    "start": 430.73596,
+    "end": 430.916
+   },
+   {
+    "word": "walk",
+    "start": 430.916,
+    "end": 431.17596
+   },
+   {
+    "word": "away",
+    "start": 431.17596,
+    "end": 431.516
+   },
+   {
+    "word": "is",
+    "start": 431.516,
+    "end": 431.75598
+   },
+   {
+    "word": "a",
+    "start": 431.75598,
+    "end": 431.87598
+   },
+   {
+    "word": "fundamental",
+    "start": 431.87598,
+    "end": 432.59598
+   },
+   {
+    "word": "part",
+    "start": 432.59598,
+    "end": 432.93597
+   },
+   {
+    "word": "of",
+    "start": 432.93597,
+    "end": 433.11597
+   },
+   {
+    "word": "proper",
+    "start": 433.11597,
+    "end": 433.47598
+   },
+   {
+    "word": "vehicle",
+    "start": 433.47598,
+    "end": 433.83597
+   },
+   {
+    "word": "care.",
+    "start": 433.83597,
+    "end": 434.55597
+   },
+   {
+    "word": "Protecting",
+    "start": 434.11597,
+    "end": 435.076
+   }
+  ]
+ },
+ {
+  "start": 434.61597,
+  "end": 439.85596,
+  "text": "Protecting electronic control modules, wiring looms, and alternator components from catastrophic",
+  "words": [
+   {
+    "word": "electronic",
+    "start": 435.076,
+    "end": 435.53598
+   },
+   {
+    "word": "control",
+    "start": 435.53598,
+    "end": 435.956
+   },
+   {
+    "word": "modules,",
+    "start": 435.956,
+    "end": 436.75598
+   },
+   {
+    "word": "wiring",
+    "start": 436.75598,
+    "end": 437.136
+   },
+   {
+    "word": "looms,",
+    "start": 437.136,
+    "end": 437.65598
+   },
+   {
+    "word": "and",
+    "start": 437.65598,
+    "end": 437.85596
+   },
+   {
+    "word": "alternator",
+    "start": 437.85596,
+    "end": 438.37598
+   },
+   {
+    "word": "components",
+    "start": 438.37598,
+    "end": 438.87598
+   },
+   {
+    "word": "from",
+    "start": 438.87598,
+    "end": 439.09598
+   },
+   {
+    "word": "catastrophic",
+    "start": 439.09598,
+    "end": 439.79596
+   },
+   {
+    "word": "water",
+    "start": 439.71597,
+    "end": 440.19598
+   }
+  ]
+ },
+ {
+  "start": 439.85596,
+  "end": 444.77597,
+  "text": "water damage matters far more than achieving cosmetic perfection under the hood.",
+  "words": [
+   {
+    "word": "damage",
+    "start": 440.19598,
+    "end": 440.61597
+   },
+   {
+    "word": "matters",
+    "start": 440.61597,
+    "end": 441.136
+   },
+   {
+    "word": "far",
+    "start": 441.136,
+    "end": 441.636
+   },
+   {
+    "word": "more",
+    "start": 441.636,
+    "end": 441.97598
+   },
+   {
+    "word": "than",
+    "start": 441.97598,
+    "end": 442.15598
+   },
+   {
+    "word": "achieving",
+    "start": 442.15598,
+    "end": 442.516
+   },
+   {
+    "word": "cosmetic",
+    "start": 442.516,
+    "end": 443.076
+   },
+   {
+    "word": "perfection",
+    "start": 443.076,
+    "end": 443.576
+   },
+   {
+    "word": "under",
+    "start": 443.576,
+    "end": 443.81598
+   },
+   {
+    "word": "the",
+    "start": 443.81598,
+    "end": 443.97598
+   },
+   {
+    "word": "hood.",
+    "start": 443.97598,
+    "end": 444.576
+   },
+   {
+    "word": "When",
+    "start": 444.27597,
+    "end": 444.85596
+   }
+  ]
+ },
+ {
+  "start": 444.77597,
+  "end": 450.25598,
+  "text": "When doubts remain, choosing a safer, waterless alternative or seeking a professional detailer",
+  "words": [
+   {
+    "word": "doubts",
+    "start": 444.85596,
+    "end": 445.09598
+   },
+   {
+    "word": "remain,",
+    "start": 445.09598,
+    "end": 445.916
+   },
+   {
+    "word": "choosing",
+    "start": 445.916,
+    "end": 446.17596
+   },
+   {
+    "word": "a",
+    "start": 446.17596,
+    "end": 446.35596
+   },
+   {
+    "word": "safer,",
+    "start": 446.35596,
+    "end": 447.23596
+   },
+   {
+    "word": "waterless",
+    "start": 447.23596,
+    "end": 447.576
+   },
+   {
+    "word": "alternative",
+    "start": 447.576,
+    "end": 448.17596
+   },
+   {
+    "word": "or",
+    "start": 448.17596,
+    "end": 448.53598
+   },
+   {
+    "word": "seeking",
+    "start": 448.53598,
+    "end": 448.93597
+   },
+   {
+    "word": "a",
+    "start": 448.93597,
+    "end": 449.076
+   },
+   {
+    "word": "professional",
+    "start": 449.076,
+    "end": 449.55597
+   },
+   {
+    "word": "detailer",
+    "start": 449.55597,
+    "end": 450.17596
+   },
+   {
+    "word": "is",
+    "start": 449.79596,
+    "end": 450.43597
+   }
+  ]
+ },
+ {
+  "start": 450.25598,
+  "end": 452.31598,
+  "text": "is the correct decision.",
+  "words": [
+   {
+    "word": "the",
+    "start": 450.43597,
+    "end": 450.55597
+   },
+   {
+    "word": "correct",
+    "start": 450.55597,
+    "end": 451.016
+   },
+   {
+    "word": "decision.",
+    "start": 451.016,
+    "end": 451.97598
+   },
+   {
+    "word": "A",
+    "start": 452.11597,
+    "end": 452.49597
+   }
+  ]
+ },
+ {
+  "start": 452.31598,
+  "end": 458.03598,
+  "text": "A spotless engine bay is satisfying, but keeping it running is what actually matters.",
+  "words": [
+   {
+    "word": "spotless",
+    "start": 452.49597,
+    "end": 453.076
+   },
+   {
+    "word": "engine",
+    "start": 453.076,
+    "end": 453.43597
+   },
+   {
+    "word": "bay",
+    "start": 453.43597,
+    "end": 453.61597
+   },
+   {
+    "word": "is",
+    "start": 453.61597,
+    "end": 453.83597
+   },
+   {
+    "word": "satisfying,",
+    "start": 453.83597,
+    "end": 454.71597
+   },
+   {
+    "word": "but",
+    "start": 454.71597,
+    "end": 455.15598
+   },
+   {
+    "word": "keeping",
+    "start": 455.15598,
+    "end": 455.416
+   },
+   {
+    "word": "it",
+    "start": 455.416,
+    "end": 455.576
+   },
+   {
+    "word": "running",
+    "start": 455.576,
+    "end": 455.97598
+   },
+   {
+    "word": "is",
+    "start": 455.97598,
+    "end": 456.27597
+   },
+   {
+    "word": "what",
+    "start": 456.27597,
+    "end": 456.43597
+   },
+   {
+    "word": "actually",
+    "start": 456.43597,
+    "end": 456.99597
+   },
+   {
+    "word": "matters.",
+    "start": 456.99597,
+    "end": 457.89597
+   },
+   {
+    "word": "As",
+    "start": 458.03598,
+    "end": 458.21597
+   }
+  ]
+ },
+ {
+  "start": 458.03598,
+  "end": 463.45596,
+  "text": "As vehicle electronics grow more complex, caution remains your most valuable tool.",
+  "words": [
+   {
+    "word": "As",
+    "start": 458.03598,
+    "end": 458.21597
+   },
+   {
+    "word": "vehicle",
+    "start": 458.21597,
+    "end": 458.53598
+   },
+   {
+    "word": "electronics",
+    "start": 458.53598,
+    "end": 459.11597
+   },
+   {
+    "word": "grow",
+    "start": 459.11597,
+    "end": 459.35596
+   },
+   {
+    "word": "more",
+    "start": 459.35596,
+    "end": 459.61597
+   },
+   {
+    "word": "complex,",
+    "start": 459.61597,
+    "end": 460.636
+   },
+   {
+    "word": "caution",
+    "start": 460.636,
+    "end": 460.99597
+   },
+   {
+    "word": "remains",
+    "start": 460.99597,
+    "end": 461.456
+   },
+   {
+    "word": "your",
+    "start": 461.456,
+    "end": 461.636
+   },
+   {
+    "word": "most",
+    "start": 461.636,
+    "end": 462.03598
+   },
+   {
+    "word": "valuable",
+    "start": 462.03598,
+    "end": 462.53598
+   },
+   {
+    "word": "tool.",
+    "start": 462.53598,
+    "end": 463.39597
+   },
+   {
+    "word": "Protect",
+    "start": 462.956,
+    "end": 463.79596
+   }
+  ]
+ },
+ {
+  "start": 463.45596,
+  "end": 465.35596,
+  "text": "Protect your investment wisely.",
+  "words": [
+   {
+    "word": "your",
+    "start": 463.79596,
+    "end": 463.93597
+   },
+   {
+    "word": "investment",
+    "start": 463.93597,
+    "end": 464.39597
+   },
+   {
+    "word": "wisely.",
+    "start": 464.39597,
+    "end": 465.37598
+   },
+   {
+    "word": "Share",
+    "start": 464.85596,
+    "end": 465.61597
+   }
+  ]
+ },
+ {
+  "start": 465.35596,
+  "end": 466.69598,
+  "text": "Share your favorite tips below!",
+  "words": [
+   {
+    "word": "your",
+    "start": 465.61597,
+    "end": 465.75598
+   },
+   {
+    "word": "favorite",
+    "start": 465.75598,
+    "end": 466.03598
+   },
+   {
+    "word": "tips",
+    "start": 466.03598,
+    "end": 466.27597
+   },
+   {
+    "word": "below!",
+    "start": 466.27597,
+    "end": 466.65598
+   }
+  ]
+ }
+]

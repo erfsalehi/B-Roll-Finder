@@ -206,3 +206,38 @@ def test_review_shows_only_the_latest_actions_errors():
 def test_first_review_still_shows_all_errors():
     out = tb.format_review("p", {"shots": [], "qa": {}, "errors": ["a 1", "a 2"]})
     assert "2 issue(s) during processing" in out and "earlier" not in out
+
+
+# ── motion cards in the review ────────────────────────────────────────────────
+
+def _plan():
+    return [{"id": "b002", "slot_ids": [2], "enabled": True, "trigger": "step", "label": "CLEAN EXTERIOR",
+             "assets": {"left": {"kind": "google"}}},
+            {"id": "b004", "slot_ids": [4], "enabled": True, "trigger": "low_confidence", "label": "ENGINE BAY",
+             "assets": {"left": {"kind": "ai"}}}]
+
+
+def test_format_details_shows_confidence_and_the_planned_card():
+    shots = [
+        {"slot_id": 2, "priority": "high", "selected_results": [{"source": "youtube"}],
+         "confidence": {"score": 0.74, "tier": "high"}},
+        {"slot_id": 4, "priority": "low", "selected_results": [{"source": "pexels"}],
+         "confidence": {"score": 0.31, "tier": "low"}},
+        {"slot_id": 6, "priority": "low", "selected_results": [{"source": "pexels"}]},
+    ]
+    out = tb.format_details(shots, _plan())
+    assert "#2 [high] 1 clip(s) · youtube · conf 0.74 · 🃏 CLEAN EXTERIOR" in out
+    assert "#4 [low] 1 clip(s) · pexels · conf 0.31 · 🃏 ENGINE BAY" in out
+    assert "#6 [low] 1 clip(s) · pexels\n" in out + "\n"            # unscored shot: no tag
+    assert "🃏" not in tb.format_details(shots)                      # no plan, no cards
+
+
+def test_review_and_summary_mention_the_cards():
+    result = {"project_name": "p", "n_shots": 3, "n_selected": 3, "n_clips": 3, "shots": [],
+              "scene_plan": _plan(), "attempts": {"cards": {"ai_usd": 0.0147}}, "qa": {}, "errors": []}
+    review = tb.format_review("demo", result)
+    assert "🃏 Motion cards: 2 (1 list step(s) · 1 low-confidence) · 1 AI image(s) ≈ $0.01" in review
+    assert "🃏" not in tb.format_review("demo", dict(result, scene_plan=[]))
+    done = tb.format_summary("demo", dict(result, cards=[{"filepath": "a"}, {"filepath": "b"}],
+                                           download={"ok": 1}))
+    assert "🃏 2 motion card(s) rendered" in done and "V3" in done

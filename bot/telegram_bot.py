@@ -671,6 +671,16 @@ def format_assets_line(result: dict):
     return "  ·  ".join(parts) or None
 
 
+def format_cards_line(result: dict):
+    """What the motion-card planner decided, or None when it planned nothing."""
+    try:
+        from core import motion_cards
+        return motion_cards.format_line(result.get("scene_plan"),
+                                        (result.get("attempts") or {}).get("cards"))
+    except Exception:
+        return None
+
+
 def format_storyboard_line(result: dict):
     """What the optional storyboard footage check did, or None when it was off
     (or looked at nothing)."""
@@ -713,6 +723,9 @@ def format_review(proj: str, result: dict, errors_from: int = 0,
     sb_line = format_storyboard_line(result)
     if sb_line:
         lines.append(sb_line)
+    cards_line = format_cards_line(result)
+    if cards_line:
+        lines.append(cards_line)
     lines += format_qa_block(result.get("qa") or {})
     errs = result.get("errors") or []
     lines += format_errors_block(errs[errors_from:], action=action,
@@ -722,13 +735,20 @@ def format_review(proj: str, result: dict, errors_from: int = 0,
     return "\n".join(lines)
 
 
-def format_details(shots: list) -> str:
+def format_details(shots: list, plan: list = None) -> str:
+    """Per-shot selection. Each line carries the footage confidence (core.confidence)
+    and, when the shot has a motion card planned, the card's caption."""
     info = _shot_clip_info(shots)
     if not info:
         return "No shots have clips selected yet."
+    conf = {s.get("slot_id"): s.get("confidence") or {} for s in shots}
+    cards = {sid: b for b in plan or [] if b.get("enabled", True) for sid in b.get("slot_ids") or []}
     lines = ["🎞 Per-shot selection:"]
     for slot, prio, n, srcs in info[:60]:
-        lines.append(f"  #{slot} [{prio}] {n} clip(s) · {srcs}")
+        c = conf.get(slot) or {}
+        tag = f" · conf {c['score']:.2f}" if c.get("score") is not None else ""
+        card = f" · 🃏 {cards[slot].get('label', '')}" if slot in cards else ""
+        lines.append(f"  #{slot} [{prio}] {n} clip(s) · {srcs}{tag}{card}")
     return "\n".join(lines)
 
 
@@ -935,6 +955,10 @@ def format_summary(proj: str, result: dict) -> str:
     assets_line = format_assets_line(result)
     if assets_line:
         lines.append(assets_line)
+    if result.get("cards"):
+        lines.append(f"🃏 {len(result['cards'])} motion card(s) rendered — their own layer "
+                     "(V3) in the XML; disable it to see the footage underneath. "
+                     "Pictures and confidence are listed in cards.txt.")
     verdict = qa.get("overall") or "—"
     lines.append(f"QA: {verdict}" + (f"  ⚠️ {n_issues} flag(s)" if n_issues else ""))
     cost_line = format_cost_line(result)
@@ -1386,7 +1410,8 @@ def _run_download(chat_id, pend_chat=None) -> None:
                                    overlays=result.get("overlays"),
                                    sfx_list=result.get("sfx_list"),
                                    video_topic=pend.get("topic", ""),
-                                   errors=pend.get("errors"), status=_status)
+                                   errors=pend.get("errors"), status=_status,
+                                   scene_plan=result.get("scene_plan"), qa=pend.get("qa"))
     except PipelineCancelled:
         send_message(chat_id, f"⏹ Cancelled '{proj}'.")
         return
@@ -1395,6 +1420,8 @@ def _run_download(chat_id, pend_chat=None) -> None:
         return
     result["download"] = fin["download"]
     result["xml_path"] = fin["xml_path"]
+    result["scene_plan"] = fin.get("scene_plan", result.get("scene_plan"))
+    result["cards"] = fin.get("cards") or []
     # pend["shots"] is what was refined and downloaded; after a restart it is no
     # longer the same object as result["shots"], so hand delivery the real one.
     result["shots"] = pend["shots"]
@@ -1576,7 +1603,8 @@ def _run_download_project(chat_id, project_id: int) -> None:
                                                    f"⬇️ {p['title']}: downloaded {d}/{t} clip(s)…"),
                 overlays=overlays, sfx_list=sfx, video_topic=snap.get("topic", ""),
                 errors=errors, status=lambda label: edit_message(chat_id, msg_id,
-                                                                  f"⬇️ {p['title']}: {label}"))
+                                                                  f"⬇️ {p['title']}: {label}"),
+                scene_plan=snap.get("scene_plan"), qa=snap.get("qa"))
     except PipelineCancelled:
         send_message(chat_id, f"⏹ Cancelled '{p['title']}'.")
         return
@@ -1589,6 +1617,7 @@ def _run_download_project(chat_id, project_id: int) -> None:
     result = {k: snap.get(k) for k in ("topic", "qa", "n_shots", "n_selected", "n_clips")}
     result.update(project_id=project_id, shots=shots, quality=quality, overlays=overlays,
                   sfx_list=sfx, download=fin["download"], xml_path=fin["xml_path"],
+                  scene_plan=fin.get("scene_plan"), cards=fin.get("cards") or [],
                   errors=errors)
     _deliver_completed(chat_id, proj, result)
 
@@ -1606,7 +1635,7 @@ def _run_refine(chat_id, only_slots=None) -> None:
     if not pend:
         send_message(chat_id, "Nothing to /refine. Send a voice file first.")
         return
-    from core.pipeline import refine_and_review, write_fcpxml
+    from core.pipeline import refine_and_review, write_fcpxml, plan_motion_cards
     proj, settings, qa, shots = pend["project"], pend["settings"], pend["qa"], pend["shots"]
     if not only_slots and not qa.get("issues"):
         send_message(chat_id, "No QA-flagged shots to refine. Name shots to redo, "
@@ -1629,6 +1658,12 @@ def _run_refine(chat_id, only_slots=None) -> None:
                 shots, qa, groq_key=key, video_topic=pend["topic"], errors=pend["errors"],
                 only_slots=only_slots, severities=("high", "medium", "low"),
                 progress=lambda lbl: edit_message(chat_id, msg_id, f"🛠 {proj}: {lbl}"))
+            # The picks changed, so the footage confidence did too: a card whose
+            # footage got better goes, a newly weak shot gets one.
+            pend["result"]["scene_plan"] = plan_motion_cards(
+                shots, proj, pend["topic"], key, qa=new_qa, errors=pend["errors"],
+                existing=pend["result"].get("scene_plan"),
+                attempts=pend["result"].setdefault("attempts", {}))
             write_fcpxml(shots, proj)
     except Exception as e:
         send_message(chat_id, f"❌ Refine failed: {e}")
@@ -1654,7 +1689,7 @@ def _run_redo(chat_id) -> None:
     if not pend:
         send_message(chat_id, "Nothing to /redo. Send a voice file first.")
         return
-    from core.pipeline import fill_empty_shots, write_fcpxml
+    from core.pipeline import fill_empty_shots, write_fcpxml, plan_motion_cards
     from core.director_rank import review_timeline
     proj, settings, shots = pend["project"], pend["settings"], pend["shots"]
 
@@ -1681,6 +1716,10 @@ def _run_redo(chat_id) -> None:
             n = fill_empty_shots(shots, groq_key=key, video_topic=pend["topic"],
                                  errors=pend["errors"], progress=_p, passes=3)
             new_qa = review_timeline(shots, api_key=key, video_topic=pend["topic"]) if n else pend["qa"]
+            pend["result"]["scene_plan"] = plan_motion_cards(
+                shots, proj, pend["topic"], key, qa=new_qa, errors=pend["errors"],
+                existing=pend["result"].get("scene_plan"),
+                attempts=pend["result"].setdefault("attempts", {}))
             write_fcpxml(shots, proj)
     except Exception as e:
         send_message(chat_id, f"❌ Redo failed: {e}")
@@ -2390,7 +2429,15 @@ def handle_cleanup(chat_id, text: str) -> None:
     root = os.path.abspath("downloads")
 
     try:
-        from core.overlays_remotion import overlay_cache_size, clear_overlay_cache
+        from core import motion_cards as _mc
+        from core.overlays_remotion import overlay_cache_size as _ov_size, \
+            clear_overlay_cache as _ov_clear
+        overlay_cache_size = lambda: _ov_size() + _mc.card_cache_size()
+
+        def clear_overlay_cache():
+            a, b = _ov_clear()
+            c, d = _mc.clear_card_cache()
+            return a + c, b + d
     except Exception:
         overlay_cache_size = lambda: 0
         clear_overlay_cache = lambda: (0, 0)
@@ -2406,7 +2453,7 @@ def handle_cleanup(chat_id, text: str) -> None:
         for name, b in usage[:25]:
             lines.append(f"  • {name} — {_human_size(b)}")
         if ov_bytes:
-            lines.append(f"🅰️ Overlay render cache — {_human_size(ov_bytes)} "
+            lines.append(f"🅰️ Overlay + card render cache — {_human_size(ov_bytes)} "
                          "(shared across projects; clear with /cleanup overlays)")
         lines.append("\nDelete one: /cleanup <name>   ·   delete all: /cleanup all")
         lines.append(_library_kept_note())
@@ -2415,7 +2462,7 @@ def handle_cleanup(chat_id, text: str) -> None:
 
     if arg.lower() == "overlays":
         n, freed = clear_overlay_cache()
-        send_message(chat_id, f"🗑 Cleared overlay render cache "
+        send_message(chat_id, f"🗑 Cleared overlay + card render cache "
                               f"({n} clip(s), {_human_size(freed)} freed).")
         return
 
@@ -2971,7 +3018,8 @@ def main() -> None:
 
             if is_details_command(text):
                 pend = _PENDING.get(chat_id)
-                send_message(chat_id, format_details(pend["shots"]) if pend
+                send_message(chat_id, format_details(pend["shots"],
+                                                     (pend.get("result") or {}).get("scene_plan")) if pend
                              else "No project is waiting for review.")
                 continue
 

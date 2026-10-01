@@ -413,6 +413,23 @@ def _library_vision_check(tmp_dir):
     return any(ok for _n, ok, _d in res), " · ".join(parts)
 
 
+def _motion_cards_check():
+    """Can motion cards render here, and can a missing picture be generated? No image
+    is generated (that costs money): a funded key and a still-listed model are enough."""
+    from core import ai_images, overlays_remotion, scene_plan
+    if not scene_plan.enabled():
+        return None, "MOTION_CARDS_MODE=off — motion cards are off"
+    if not overlays_remotion.remotion_available():
+        return False, "Remotion isn't installed (npm ci in remotion/) — no cards would render"
+    parts = [f"mode {scene_plan.mode()}", "Remotion ok"]
+    if ai_images.enabled():
+        ok, msg = ai_images.health()
+        parts.append(f"AI images {'ok' if ok else 'NOT READY'}: {msg}")
+    else:
+        parts.append("AI images off (real photos only)")
+    return True, " · ".join(parts)
+
+
 def run_self_test(do_downloads: bool = True, quality: str = "360",
                   progress=None) -> dict:
     """Run the preflight checks and return a structured report (see module
@@ -446,6 +463,7 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
              critical=False)
         _run("Transcription (Whisper)", _transcription_check, critical=True)
         _run("Google images (Serper)", _serper_check, critical=False)
+        _run("Motion cards (Remotion + AI images)", _motion_cards_check, critical=False)
         _run("Pexels search", lambda: _pexels_search_check(state),
              critical=bool(os.getenv("PEXELS_API_KEY")))
         _run("yt-dlp version", _ytdlp_version_check, critical=False)
