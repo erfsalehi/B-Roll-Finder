@@ -800,9 +800,80 @@ def _shot_has_placeable_clip(shot: dict) -> bool:
     return any(c.get("url") for c in (shot.get("selected_results") or []))
 
 
+def _card_clip_xml(idx: int, card: dict, xml_out_dir: str, fps_exact: float,
+                   timebase: int, time_offset: float) -> tuple:
+    """The ``<clipitem>`` for one rendered motion card, as ``(lines, end_frame)``;
+    ``([], 0)`` when the file is missing or the card starts before the chunk. The
+    card's name and a short comment (why it is there, where its picture came from)
+    show in Premiere as the clip name and a marker."""
+    path = card.get("filepath")
+    if not path or not os.path.exists(path):
+        return [], 0
+    s_sec = float(card.get("start_sec", 0)) - time_offset
+    e_sec = float(card.get("end_sec", s_sec + time_offset + 3)) - time_offset
+    if e_sec <= s_sec:
+        e_sec = s_sec + 3
+    if s_sec < 0:
+        return [], 0
+    s_frame = sec_to_frames(s_sec, fps_exact)
+    d_frame = max(1, sec_to_frames(e_sec, fps_exact) - s_frame)
+    media_sec = _get_media_duration(path, fallback_duration=(e_sec - s_sec))
+    media_frames = max(1, sec_to_frames(media_sec, fps_exact))
+    d_frame = min(d_frame, media_frames)             # a movie can't run past its length
+    e_frame = s_frame + d_frame
+    name = _xml_attr(card.get("name") or os.path.basename(path))
+    file_id, clip_id = f"file-card-{idx}", f"clip-card-{idx}"
+    ln = [
+        f'              <clipitem id="{clip_id}">',
+        f'                <name>{name}</name>',
+        '                <enabled>TRUE</enabled>',
+        f'                <duration>{media_frames}</duration>',
+        '                <rate>',
+        f'                  <timebase>{timebase}</timebase>',
+        '                  <ntsc>TRUE</ntsc>',
+        '                </rate>',
+        f'                <start>{s_frame}</start>',
+        f'                <end>{e_frame}</end>',
+        '                <in>0</in>',
+        f'                <out>{d_frame}</out>',
+        f'                <masterclipid>{file_id}</masterclipid>',
+        f'                <file id="{file_id}">',
+        f'                  <name>{_xml_attr(os.path.basename(path))}</name>',
+        f'                  <pathurl>{_xml_attr(_relative_pathurl(path, xml_out_dir))}</pathurl>',
+        '                  <rate>',
+        f'                    <timebase>{timebase}</timebase>',
+        '                    <ntsc>TRUE</ntsc>',
+        '                  </rate>',
+        f'                  <duration>{media_frames}</duration>',
+        '                  <media>',
+        '                    <video>',
+        f'                      <duration>{media_frames}</duration>',
+        '                      <samplecharacteristics>',
+        '                        <width>1920</width>',
+        '                        <height>1080</height>',
+        '                        <anamorphic>FALSE</anamorphic>',
+        '                        <pixelaspectratio>square</pixelaspectratio>',
+        '                        <fielddominance>none</fielddominance>',
+        '                      </samplecharacteristics>',
+        '                    </video>',
+        '                  </media>',
+        '                </file>',
+    ]
+    comment = _xml_attr(card.get("comment") or "")
+    if comment:
+        ln += ['                <marker>',
+               '                  <name>Motion card</name>',
+               f'                  <comment>{comment}</comment>',
+               '                  <in>0</in>',
+               '                  <out>1</out>',
+               '                </marker>']
+    ln.append('              </clipitem>')
+    return ln, e_frame
+
+
 def generate_fcpxml(shots: list, project_name: str = "default", overlays: list = None,
                     sfx_list: list = None, time_offset: float = 0.0,
-                    xml_dir: str = None) -> str:
+                    xml_dir: str = None, cards: list = None) -> str:
     """
     Generates a bulletproof Legacy FCP 7 XML (<xmeml>) for Premiere Pro.
     Uses exact frame math and implicit gaps to guarantee compatibility.
@@ -817,6 +888,10 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     the exported bundle is portable across machines and Premiere never stalls
     relinking. Defaults to the project root (parent of the clip folder), which
     matches where :func:`core.pipeline.write_fcpxml` saves it.
+
+    ``cards`` (rendered motion cards, see :mod:`core.motion_cards`) go on their own
+    video track ABOVE the footage and the text overlays: opaque full-frame clips, so
+    disabling that track in Premiere restores the footage exactly as it was.
     """
     # Extra contextual clips are library-only: they're downloaded so they enrich
     # the searchable Clip Library, but they never belong on the narration timeline.
@@ -1088,14 +1163,16 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
     xml.append('            </track>')
 
     # ── Track 2: Overlays ──
-    if overlays:
+    # With cards but no text overlays the (empty) track is still written, so the cards
+    # sit on V3 either way and the layer order never changes.
+    if overlays or cards:
         # Premiere needs every video track to be explicitly enabled/unlocked,
         # otherwise the overlay track imports as a phantom and the clips don't
         # show on the timeline.
         xml.append('            <track>')
         xml.append('              <enabled>TRUE</enabled>')
         xml.append('              <locked>FALSE</locked>')
-        for idx, ov in enumerate(overlays):
+        for idx, ov in enumerate(overlays or []):
             ov_path = ov.get("filepath")
             if not ov_path or not os.path.exists(ov_path):
                 continue
@@ -1263,6 +1340,17 @@ def generate_fcpxml(shots: list, project_name: str = "default", overlays: list =
                 xml.append('                </filter>')
                 
             xml.append('              </clipitem>')
+        xml.append('            </track>')
+
+    # ── Track 3: Motion cards ──
+    if cards:
+        xml.append('            <track>')
+        xml.append('              <enabled>TRUE</enabled>')
+        xml.append('              <locked>FALSE</locked>')
+        for idx, card in enumerate(sorted(cards, key=lambda c: float(c.get("start_sec", 0)))):
+            lines, end_frame = _card_clip_xml(idx, card, xml_out_dir, fps_exact, timebase, time_offset)
+            xml.extend(lines)
+            max_end_frame = max(max_end_frame, end_frame)
         xml.append('            </track>')
     xml.append('          </video>')
 

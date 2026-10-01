@@ -44,6 +44,8 @@ class PipelineState:
     errors: list = field(default_factory=list)
     overlays: list = field(default_factory=list)
     sfx_list: list = field(default_factory=list)
+    scene_plan: list = field(default_factory=list)   # motion-card beats (core.scene_plan)
+    cards: list = field(default_factory=list)        # rendered cards, the XML card track
     attempts: dict = field(default_factory=dict)
     cost: dict = field(default_factory=dict)
     download: dict = None
@@ -82,6 +84,8 @@ class PipelineState:
             "cost": self.cost,
             "overlays": self.overlays,
             "sfx_list": self.sfx_list,
+            "scene_plan": self.scene_plan,
+            "cards": self.cards,
             "download": self.download,
             "xml_path": self.xml_path,
         }
@@ -1577,10 +1581,11 @@ def _evaluate_and_repair_xml(xml: str, xml_dir: str) -> str:
 
 
 def write_fcpxml(shots: list, project_name: str, overlays: list = None,
-                 sfx_list: list = None) -> str:
+                 sfx_list: list = None, cards: list = None) -> str:
     """Render the Premiere FCPXML for ``shots`` and write it to the project dir.
-    ``overlays`` (animated text clips) land on the overlay track and ``sfx_list``
-    (their sound effects) on the SFX audio track. Returns the absolute XML path.
+    ``overlays`` (animated text clips) land on the overlay track, ``sfx_list``
+    (their sound effects) on the SFX audio track and ``cards`` (rendered motion
+    cards) on their own video track above both. Returns the absolute XML path.
 
     Hard guarantee: any selected clip that fails the output boundaries is dropped
     here before rendering. :func:`enforce_timeline` (run earlier with an LLM key)
@@ -1613,7 +1618,7 @@ def write_fcpxml(shots: list, project_name: str, overlays: list = None,
     xml_path = os.path.join(os.path.abspath("downloads"), proj, f"{proj}.xml")
     xml = generate_fcpxml(shots, project_name=project_name,
                           overlays=overlays or None, sfx_list=sfx_list or None,
-                          xml_dir=os.path.dirname(xml_path))
+                          xml_dir=os.path.dirname(xml_path), cards=cards or None)
     # Evaluation round: structurally check the timeline before it ships. On a
     # hard failure (bad clip ends, same-track overlaps, wrong sequence duration,
     # orphan media refs) auto-repair once and re-verify; only a failure that
@@ -1645,18 +1650,74 @@ def _inject_segments(shots: list, video_topic: str = "", errors: list = None) ->
         return 0
 
 
+def plan_motion_cards(shots: list, project_name: str, video_topic: str = "",
+                      groq_key: str = None, qa: dict = None, existing: list = None,
+                      errors: list = None, attempts: dict = None, should_cancel=None) -> list:
+    """Plan the motion cards for the current selection (core.motion_cards): a card on
+    every list step and wherever the footage is low-confidence, each with its
+    picture. Redo it after anything that changes the picks — a card whose footage
+    got better is dropped, a shot that ended up empty gets one, and cards that are
+    unchanged keep their wording and pictures. Best-effort: on any failure the
+    previous plan is returned. ``attempts`` receives the tallies for the review."""
+    from core import motion_cards, scene_plan
+    if errors is None:
+        errors = []
+    if not scene_plan.enabled():
+        return []
+    diag: dict = {}
+    try:
+        beats = motion_cards.build_plan(shots, project_name, video_topic,
+                                        groq_key or os.getenv("GROQ_API_KEY"), qa=qa,
+                                        existing=existing, errors=errors, diag=diag,
+                                        should_cancel=should_cancel)
+    except PipelineCancelled:
+        raise
+    except Exception as e:
+        errors.append(f"cards: planning failed ({type(e).__name__}: {str(e)[:150]})")
+        return list(existing or [])
+    if attempts is not None:
+        attempts["cards"] = dict(diag, **scene_plan.summary(beats))
+    return beats
+
+
+def render_motion_cards(beats: list, shots: list, project_name: str, errors: list = None,
+                        should_cancel=None, progress=None) -> list:
+    """Render the planned cards and write ``cards.txt``. Returns the XML track entries
+    ([] when there are none or Remotion isn't available)."""
+    from core import motion_cards
+    if not beats:
+        return []
+    try:
+        entries = motion_cards.render_plan(beats, project_name, errors=errors,
+                                           should_cancel=should_cancel, progress=progress)
+        motion_cards.write_manifest(beats, shots, project_name)
+        return entries
+    except PipelineCancelled:
+        raise
+    except Exception as e:
+        if errors is not None:
+            errors.append(f"cards: rendering failed ({type(e).__name__}: {str(e)[:150]})")
+        return []
+
+
 def finalize_project(shots: list, project_name: str, quality: str = "1080",
                      should_cancel=None, progress=None,
                      overlays: list = None, sfx_list: list = None,
                      groq_key: str = None, video_topic: str = "",
-                     errors: list = None, status=None) -> dict:
+                     errors: list = None, status=None,
+                     scene_plan: list = None, qa: dict = None) -> dict:
     """Download the selected clips and (re)write the FCPXML — the back half of the
     pipeline, split out so the bot's review gate can run it after the user
     approves (or after a /refine). Re-runs boundary enforcement first, since a
     /refine may have changed the selection. ``status`` (optional) is a label sink
-    used to surface the proxy-validation phase, which is otherwise silent. Returns
-    ``{download, xml_path, validation}``."""
+    used to surface the proxy-validation phase, which is otherwise silent. The
+    motion cards are re-planned after the download (a shot whose downloads all failed
+    now has no footage, and one the repair loop fixed no longer needs its card) and
+    rendered before the XML is written. Returns
+    ``{download, xml_path, validation, scene_plan, cards}``."""
     key = groq_key or os.getenv("GROQ_API_KEY")
+    if errors is None:
+        errors = []
     # Make sure a pool of validated proxies is ready before downloading through it.
     # Time-boxed inside ensure_working so a mostly-dead free list can't stall here;
     # `status` surfaces live progress so /download doesn't look frozen meanwhile.
@@ -1674,9 +1735,24 @@ def finalize_project(shots: list, project_name: str, quality: str = "1080",
     dl = download_and_repair(shots, project_name, quality=cap_quality(quality),
                              groq_key=key, video_topic=video_topic, errors=errors,
                              progress=progress, should_cancel=should_cancel)
+    beats, cards = list(scene_plan or []), []
+    if beats or _cards_wanted():
+        if status:
+            status("planning motion cards…")
+        beats = plan_motion_cards(shots, project_name, video_topic, key, qa=qa,
+                                  existing=beats, errors=errors, should_cancel=should_cancel)
+        if status:
+            status("rendering motion cards…")
+        cards = render_motion_cards(beats, shots, project_name, errors=errors,
+                                    should_cancel=should_cancel)
     return {"download": dl,
-            "xml_path": write_fcpxml(shots, project_name, overlays, sfx_list),
-            "validation": validation}
+            "xml_path": write_fcpxml(shots, project_name, overlays, sfx_list, cards=cards),
+            "validation": validation, "scene_plan": beats, "cards": cards}
+
+
+def _cards_wanted() -> bool:
+    from core import scene_plan
+    return scene_plan.enabled()
 
 
 def _sfx_list_from_overlays(overlays: list) -> list:
@@ -1787,6 +1863,8 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     from core import usage as _usage
     _usage.reset()
     _reset_image_backends()
+    from core import ai_images as _ai_images
+    _ai_images.reset_run()
     from core import storyboard as _storyboard
     _storyboard.reset_run_stats()
 
@@ -2077,6 +2155,16 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
             errors.append(f"overlays: {ov_diag['failed_chunks']} of {ov_diag['chunks']} "
                           f"transcript part(s) failed ({ov_diag.get('error', '')})")
 
+    # 9e — Motion cards: a designed graphic on every list step and wherever the footage
+    # is low-confidence (core.confidence). Planned here so the review can show them;
+    # rendered once the clips are on disk (below, or finalize_project at /download).
+    # MOTION_CARDS_MODE = off | steps | auto.
+    if _cards_wanted():
+        _p(9, "Planning motion cards")
+        state.scene_plan = plan_motion_cards(
+            shots, project_name, topic, key, qa=state.qa, errors=errors,
+            attempts=state.attempts, should_cancel=should_cancel)
+
     # 10 — Download (optional) — capped at 1080p, with the repair loop so a
     # YouTube clip that 404s at download time is replaced by a live one.
     if download:
@@ -2096,9 +2184,21 @@ def run_pipeline_headless(audio_path: str, groq_key: str = None, project_name: s
     if _storyboard.enabled():
         state.attempts["storyboard"] = _storyboard.run_stats()
 
+    # Cards: against the settled, downloaded footage (a shot the downloads left empty
+    # gets one, a repaired one loses its card), then rendered. With the review gate this
+    # happens in finalize_project instead.
+    if download and _cards_wanted():
+        _p(total, "Rendering motion cards")
+        state.scene_plan = plan_motion_cards(
+            shots, project_name, topic, key, qa=state.qa, existing=state.scene_plan,
+            errors=errors, attempts=state.attempts, should_cancel=should_cancel)
+        state.cards = render_motion_cards(state.scene_plan, shots, project_name,
+                                          errors=errors, should_cancel=should_cancel)
+
     # Final — FCPXML
     _p(total, "Writing Premiere XML")
-    state.xml_path = write_fcpxml(shots, project_name, state.overlays, state.sfx_list)
+    state.xml_path = write_fcpxml(shots, project_name, state.overlays, state.sfx_list,
+                                  cards=state.cards)
     state.cost = _usage.summary()   # per-job API token/cost breakdown
     return state.to_result()
 

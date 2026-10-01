@@ -240,7 +240,7 @@ def find_projects(query: str = "", limit: int = 8) -> list:
 # Result fields worth keeping to rebuild a project later (/download of an old
 # project): the full selection plus what the XML and summary need.
 _SNAPSHOT_KEYS = ("shots", "overlays", "sfx_list", "topic", "qa", "n_shots",
-                  "n_selected", "n_clips")
+                  "n_selected", "n_clips", "scene_plan")
 
 
 def save_snapshot(project_id: int, result: dict, quality=None) -> None:
