@@ -543,8 +543,9 @@ def test_in_point_rule_ranks_below_human_rules_above_habit():
     assert both["in_rule"] == "verified"
 
     late = dict(c, storyboard_in_sec=599.0)               # no room left for the slot
-    assert output._preferred_in_frame("https://y/x", "x.mp4", slot, media, fps, late) == 0
-    assert late["in_rule"] == "default"
+    # ...so the clip starts past its channel intro instead (YT_MIN_IN_SEC = 8 s = 240 frames)
+    assert output._preferred_in_frame("https://y/x", "x.mp4", slot, media, fps, late) == 240
+    assert late["in_rule"] == "intro"
 
     seg = dict(c, library_segment_id=3)
     assert output._preferred_in_frame("https://y/x", "x.mp4", slot, media, fps, seg) == 0

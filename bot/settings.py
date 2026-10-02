@@ -30,6 +30,11 @@ OPTIONS = [
     {"key": "min_height",  "label": "Min height",    "type": "choice", "env": "AUTO_MIN_HEIGHT",   "choices": [0, 480, 720, 1080], "fmt": lambda v: "off" if not v else f"{v}p"},
     {"key": "quality",     "label": "Download quality","type": "choice","choices": [480, 720, 1080], "fmt": lambda v: f"{v}p"},
     {"key": "storyboard_check", "label": "Storyboard footage check", "type": "bool", "env": "ENABLE_STORYBOARD_CHECK"},
+    {"key": "clip_check", "label": "Clip quality check", "type": "bool", "env": "ENABLE_CLIP_INSPECT"},
+    {"key": "footage_density", "label": "Footage density", "type": "choice", "env": "FOOTAGE_DENSITY",
+     "choices": ["dense", "balanced", "lean"],
+     "fmt": lambda v: {"dense": "dense (a cut every ~2 s)", "balanced": "balanced (best + 1)",
+                       "lean": "lean (best match only)"}.get(v, v)},
     {"key": "qa",          "label": "QA review (5.5)","type": "bool",   "env": "ENABLE_QA_REVIEW"},
     {"key": "auto_refine", "label": "Auto-refine flagged", "type": "bool"},
     {"key": "auto_fill",   "label": "Auto-fill empty shots", "type": "bool"},
@@ -65,6 +70,14 @@ DEFAULTS = {
     # YouTube candidate's storyboard thumbnails (needs OPENROUTER_API_KEY or
     # GEMINI_API_KEY): rejects presenter-only videos, cuts from where the footage is.
     "storyboard_check": False,
+    # A vision model looks at frames of each downloaded clip and replaces ones with a channel
+    # logo / bumper, a watermark or footage unrelated to the line (core.clip_inspect). Needs
+    # OPENROUTER_API_KEY or GEMINI_API_KEY (silently does nothing without one).
+    "clip_check": True,
+    # dense = every shot gets its full per-shot quota (a cut every ~2 s). balanced / lean: a
+    # shot whose best clip is a high-confidence match that covers it keeps just that clip
+    # (balanced: plus one alternative), so the others are never downloaded.
+    "footage_density": "dense",
     "qa": True,
     "auto_refine": True,
     "auto_fill": True,

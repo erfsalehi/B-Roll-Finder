@@ -159,6 +159,15 @@ def test_format_summary_without_download_section():
     assert "Downloaded:" not in out and "Shots: 5" in out
 
 
+def test_format_summary_reports_the_clip_check_and_section_downloads():
+    base = {"n_shots": 5, "n_selected": 5, "n_clips": 9, "qa": {"overall": "ok", "issues": []}}
+    out = tb.format_summary("p", dict(base, download={"ok": 9, "failed": 0, "skipped": 0, "inspected": 9,
+                                                      "inspect_rejected": 2, "sections": 4}))
+    assert "Clip check: 9 looked at, 2 replaced" in out and "4 YouTube clip(s) downloaded as the used part" in out
+    quiet = tb.format_summary("p", dict(base, download={"ok": 9, "failed": 0, "skipped": 0}))
+    assert "Clip check" not in quiet and "used part" not in quiet          # nothing to say when off
+
+
 # ── health / status command ────────────────────────────────────────────────────
 
 def test_is_status_command_matches_variants():

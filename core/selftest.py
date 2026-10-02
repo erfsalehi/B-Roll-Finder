@@ -311,6 +311,52 @@ def _yt_download_check(state, out_dir, quality="360", attempts=3):
     return False, "no clip downloaded — " + ("; ".join(fails)[:300] or "unknown")
 
 
+def _yt_section_check(state, out_dir):
+    """Whether yt-dlp's partial download works on this host: cut 5 s out of a YouTube
+    video (YT_SECTION_DOWNLOAD uses this to fetch only the part of each video the timeline
+    plays). yt-dlp hands the cut to ffmpeg, which some networks refuse even when plain
+    downloads work, so this is checked separately. Informational while the feature is off."""
+    import threading
+    import time
+    from core import pipeline
+    from core.ffmpeg_utils import get_video_metadata
+    from core.youtube import download_video
+
+    on = pipeline.section_downloads_enabled()
+    if state.get("yt_download_failed"):
+        return None, "skipped (YouTube downloads failed)"
+    cands = [c for c in state.get("yt_results") or []
+             if (c.get("duration") or 0) and float(c["duration"]) >= 25]
+    url = cands[0]["url"] if cands else "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+    out = os.path.join(out_dir, "yt_section_test.mp4")
+    try:
+        timeout = int(os.getenv("SELFTEST_DOWNLOAD_TIMEOUT", "100") or 100)
+    except ValueError:
+        timeout = 100
+    ts: dict = {}
+    t0 = time.time()
+    th = threading.Thread(
+        target=lambda: download_video(url, out, "360", ts, no_audio=True, section=(3.0, 8.0)),
+        daemon=True)
+    th.start()
+    th.join(timeout)
+    secs = round(time.time() - t0)
+    if th.is_alive():
+        ts["status"] = "cancelled"
+        err = f"timed out after {timeout}s"
+    elif os.path.exists(out) and os.path.getsize(out) > _MIN_BYTES:
+        got = float(get_video_metadata(out).get("duration") or 0)
+        if 3.0 <= got <= 8.0:
+            hint = "in use" if on else "set YT_SECTION_DOWNLOAD=true to download only the part of each video that is used"
+            return True, f"ok — cut {got:.1f} s ({os.path.getsize(out) // 1024} KB, {secs}s); {hint}"
+        err = f"the cut came out {got:.0f} s long, not 5"
+    else:
+        err = str(ts.get("error_msg") or "no file produced")[:120]
+    if on:
+        return False, f"failed ({err}) — it is ON, so every clip falls back to the whole video"
+    return None, f"not available here ({err}); the feature is off, nothing to do"
+
+
 def _yt_client_probe_check(state):
     """When downloads fail, resolve formats under several cookie/player-client
     combos so the report shows whether ANY config works (→ force that client) or
@@ -480,6 +526,8 @@ def run_self_test(do_downloads: bool = True, quality: str = "360",
             _run("YouTube download (yt-dlp)",
                  lambda: _yt_download_check(state, tmp_dir, quality=quality),
                  critical=True)
+            _run("YouTube section download", lambda: _yt_section_check(state, tmp_dir),
+                 critical=False)
             # Only does work when the download failed — then it pinpoints whether
             # any client config works (vs. a systemic IP/PO-token block).
             _run("YouTube client probe", lambda: _yt_client_probe_check(state),

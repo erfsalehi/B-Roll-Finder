@@ -181,14 +181,15 @@ def _build_history() -> History:
         elif own:
             own["dropped"].append(a)
 
-    # Only clips we started by default (or by this same habit) say something
+    # Only clips we started by default (or by this same habit, or by skipping the channel
+    # intro, which is also our own guess) say something
     # about the habit; a trim or a verified in-point is about that footage.
     # Older deliveries have no rule recorded: count them if we started at 0.
     for u in usages:
         if u["in_sec"] is None:
             continue
         rule = u["in_rule"] or ""
-        if rule in ("default", "habit") or (not rule and (u["exported_in_sec"] or 0) < 0.05):
+        if rule in ("default", "habit", "intro") or (not rule and (u["exported_in_sec"] or 0) < 0.05):
             h.in_starts[(u["source"] or "").lower()].append(u["in_sec"])
 
     _add_ratings(h, labels, by_line)

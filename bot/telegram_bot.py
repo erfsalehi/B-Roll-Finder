@@ -952,6 +952,11 @@ def format_summary(proj: str, result: dict) -> str:
             extra += f", {dl['dropped']} dropped"
         lines.append(f"Downloaded: {dl.get('ok', 0)} ok, {dl.get('failed', 0)} failed, "
                      f"{dl.get('skipped', 0)} cached{extra}")
+        if dl.get("inspected"):
+            lines.append(f"🔍 Clip check: {dl['inspected']} looked at, {dl.get('inspect_rejected', 0)} "
+                         "replaced (logo / watermark / off-topic)")
+        if dl.get("sections"):
+            lines.append(f"✂️ {dl['sections']} YouTube clip(s) downloaded as the used part only")
     assets_line = format_assets_line(result)
     if assets_line:
         lines.append(assets_line)

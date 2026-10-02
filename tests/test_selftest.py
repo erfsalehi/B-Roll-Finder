@@ -59,6 +59,8 @@ def _patch_all(monkeypatch, *, yt_dl_ok=True, ffmpeg=True, pexels_key=True):
     monkeypatch.setattr(st, "_storyboard_check", lambda state: (None, "not tested here"))
     # The motion-card check asks OpenRouter about credits.
     monkeypatch.setattr(st, "_motion_cards_check", lambda: (None, "not tested here"))
+    # The section-download check cuts a real video (tested on its own below).
+    monkeypatch.setattr(st, "_yt_section_check", lambda state, d: (None, "not tested here"))
     # The free-list health check is skipped unless YT_DLP_PROXY_URL is set; keep
     # the generic-path tests deterministic regardless of the dev's shell env.
     monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
@@ -291,3 +293,59 @@ def test_is_test_command_and_format(monkeypatch):
          "detail": "all failed", "secs": 5.0},
     ], "errors": ["YouTube download (yt-dlp): all failed"]})
     assert "❌" in failed
+
+
+# ── YouTube section download (partial downloads) ─────────────────────────────
+
+def _section_net(monkeypatch, tmp_path, *, works=True, seconds=5.0):
+    import shutil, subprocess
+    import core.youtube
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        import pytest
+        pytest.skip("ffmpeg/ffprobe not installed")
+    seen = {}
+
+    def _dl(url, out, quality, ts, no_audio=True, section=None, **k):
+        seen["section"] = section
+        if not works:
+            ts["status"] = "error"
+            ts["error_msg"] = "ffmpeg exited with code 3436169992"
+            return
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"testsrc2=s=160x90:r=10:d={seconds}", "-c:v", "libx264", "-preset",
+                        "ultrafast", "-pix_fmt", "yuv420p", out], check=True)
+        ts["status"] = "completed"
+    monkeypatch.setattr(core.youtube, "download_video", _dl)
+    monkeypatch.delenv("YT_SECTION_DOWNLOAD", raising=False)
+    return seen
+
+
+def test_section_check_reports_a_working_cut_and_how_to_use_it(monkeypatch, tmp_path):
+    seen = _section_net(monkeypatch, tmp_path)
+    ok, detail = st._yt_section_check({"yt_results": [{"url": "https://y/1", "duration": 80}]}, str(tmp_path))
+    assert ok is True and "ok" in detail and "YT_SECTION_DOWNLOAD=true" in detail
+    assert seen["section"] == (3.0, 8.0)
+    monkeypatch.setenv("YT_SECTION_DOWNLOAD", "true")
+    ok, detail = st._yt_section_check({"yt_results": [{"url": "https://y/1", "duration": 80}]}, str(tmp_path))
+    assert ok is True and "in use" in detail
+
+
+def test_section_check_failure_is_informational_until_the_feature_is_on(monkeypatch, tmp_path):
+    _section_net(monkeypatch, tmp_path, works=False)
+    ok, detail = st._yt_section_check({}, str(tmp_path))
+    assert ok is None and "feature is off" in detail                  # nothing to fix, not a failure
+    monkeypatch.setenv("YT_SECTION_DOWNLOAD", "true")
+    ok, detail = st._yt_section_check({}, str(tmp_path))
+    assert ok is False and "falls back to the whole video" in detail  # on + broken: say so
+
+
+def test_section_check_rejects_a_cut_of_the_wrong_length(monkeypatch, tmp_path):
+    _section_net(monkeypatch, tmp_path, seconds=20.0)
+    ok, detail = st._yt_section_check({}, str(tmp_path))
+    assert ok is None and "20 s long" in detail
+
+
+def test_section_check_is_skipped_when_downloads_failed(monkeypatch, tmp_path):
+    _section_net(monkeypatch, tmp_path)
+    ok, detail = st._yt_section_check({"yt_download_failed": True}, str(tmp_path))
+    assert ok is None and "skipped" in detail

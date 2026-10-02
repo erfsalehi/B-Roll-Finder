@@ -20,6 +20,7 @@ def _accept_fake_clip_files(monkeypatch):
     playability check for them (tests of the check itself call it directly)."""
     import core.pipeline as pl
     monkeypatch.setattr(pl, "_verify_clip_file", lambda path: (True, ""))
+    monkeypatch.setenv("ENABLE_BAR_CHECK", "false")      # placeholder bytes have no picture to measure
 
 
 @pytest.fixture(autouse=True)

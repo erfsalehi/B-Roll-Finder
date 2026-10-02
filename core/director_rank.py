@@ -504,6 +504,47 @@ def shot_source_quota(shot: dict) -> tuple:
     return max(0, _env_int("AUTO_SELECT_MIN_PEXELS", 2)), want_yt
 
 
+def footage_density() -> str:
+    """``dense`` (the default: every shot gets its full per-shot quota, a cut every ~2 s),
+    ``balanced`` (a confident shot keeps its best clip + one alternative) or ``lean`` (a
+    confident shot keeps only its best clip). Env ``FOOTAGE_DENSITY``; bot: /settings."""
+    v = os.getenv("FOOTAGE_DENSITY", "").strip().lower()
+    return v if v in ("dense", "balanced", "lean") else "dense"
+
+
+def lean_trim(shot: dict, chosen: list) -> list:
+    """The clips of ``chosen`` worth keeping under the footage density setting.
+
+    Only when the best clip (core.confidence.clip_fit: the ranker's position, source,
+    storyboard verdict, editor record) scores at least ``LEAN_CLIP_FIT`` (0.70, in practice the
+    ranker's #1 pick or a trusted library clip) AND its source is known to be longer than the
+    shot's slot (the timeline cannot stretch a clip past its length) is the rest dropped, so
+    the other clips are never downloaded. ``balanced`` also keeps the best remaining clip
+    scoring at least ``LEAN_SECOND_FIT`` (0.55). Anything less certain keeps the whole
+    quota. Order is preserved; never returns an empty list."""
+    mode = footage_density()
+    if mode == "dense" or len(chosen) <= 1:
+        return chosen
+    try:
+        from core import confidence
+        slot = float(shot.get("duration_needed_sec") or 0)
+        scored = sorted(((confidence.clip_fit(shot, c)[0], -i, c) for i, c in enumerate(chosen)),
+                        key=lambda t: (t[0], t[1]), reverse=True)
+    except Exception:
+        return chosen
+    best_fit, _, best = scored[0]
+    dur = best.get("duration")
+    if (best_fit < _env_float("LEAN_CLIP_FIT", 0.70) or not isinstance(dur, (int, float))
+            or isinstance(dur, bool) or dur < slot + 1.0):
+        return chosen
+    keep = [best]
+    if mode == "balanced":
+        second = next((c for f, _, c in scored[1:] if f >= _env_float("LEAN_SECOND_FIT", 0.55)), None)
+        if second is not None:
+            keep.append(second)
+    return [c for c in chosen if any(c is k for k in keep)]
+
+
 def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
                                seconds_per_clip=None, min_clips=None,
                                max_clips=None, allow_irrelevant_slots=None) -> list:
@@ -672,6 +713,15 @@ def auto_select_top_candidates(shots: list, start_slot_id=None, lookback=None,
             if _is_pexels(first):
                 used_pexels.add(_pexels_ident(first))
 
+        trimmed = lean_trim(shot, chosen)         # footage density: fewer clips when confident
+        if len(trimmed) < len(chosen):
+            for c in chosen:
+                if not any(c is k for k in trimmed):
+                    chosen_ids.discard(_asset_ident(c))
+                    if _is_pexels(c):
+                        used_pexels.discard(_pexels_ident(c))    # still free for a later shot
+            shot["footage_density"] = f"{footage_density()}: kept {len(trimmed)} of {len(chosen)}"
+            chosen = trimmed
         shot["selected_results"] = chosen
         shot["auto_selected"] = True
         recent_shots.append(chosen_ids)

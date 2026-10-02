@@ -477,6 +477,41 @@ def _unused_in_frame(in_frame: int, duration_frames: int, media_dur_frames: int,
     return None
 
 
+def _intro_skip_frames(candidate: dict, duration_frames: int, media_dur_frames: int,
+                       fps: float) -> int:
+    """Frames to skip at the head of a YouTube clip nothing else has placed.
+
+    A source video opens with its own channel logo / bumper / title card (the first real
+    output had two of them on the timeline) and nobody has said where the good part is, so
+    the start is moved ``YT_MIN_IN_SEC`` (default 8 s) in: capped at 20% of the video (a short
+    upload has a short intro) and at what still leaves room for the timeline slot. 0 for
+    every other source, for a skip under a second, and when ``YT_MIN_IN_SEC`` is 0."""
+    c = candidate or {}
+    if (c.get("source") or c.get("original_source") or "").lower() != "youtube":
+        return 0
+    try:
+        sec = float(os.getenv("YT_MIN_IN_SEC", "").strip() or 8.0)
+    except ValueError:
+        sec = 8.0
+    if sec <= 0 or fps <= 0:
+        return 0
+    skip = min(sec, 0.2 * media_dur_frames / fps)
+    frames = min(sec_to_frames(skip, fps), media_dur_frames - duration_frames)
+    return frames if frames >= sec_to_frames(1.0, fps) else 0
+
+
+def plan_in_point(candidate: dict, slot_sec: float, source_dur_sec: float,
+                  fps: float = 24.0) -> tuple:
+    """``(rule, in_sec)``: where the XML would start this clip inside a full-length file of
+    ``source_dur_sec`` for a ``slot_sec`` slot. Used before downloading, to know which part of
+    a YouTube video is worth fetching."""
+    cand = {k: v for k, v in (candidate or {}).items()
+            if k not in ("section_start", "section_in_sec", "section_end")}
+    rule, frame = _pick_in_frame(cand.get("url"), "", sec_to_frames(max(0.1, slot_sec), fps),
+                                 sec_to_frames(max(0.1, source_dur_sec), fps), fps, cand)
+    return rule, frame / fps
+
+
 def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
                         media_dur_frames: int, fps: float,
                         candidate: dict = None) -> int:
@@ -494,6 +529,9 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
     3. The editor's habit for this source, learned from edited XMLs (e.g. they
        start YouTube clips ~6s in, past the intro) — see
        :func:`core.edit_feedback.learned_in_offset`.
+
+    4. Otherwise a YouTube clip starts ``YT_MIN_IN_SEC`` in (rule ``intro``), past its
+       channel intro (:func:`_intro_skip_frames`).
 
     Records the rule used as ``candidate["in_rule"]``.
 
@@ -513,11 +551,18 @@ def _preferred_in_frame(clip_url: str, filename: str, duration_frames: int,
 def _pick_in_frame(clip_url, filename, duration_frames, media_dur_frames, fps,
                    candidate) -> tuple:
     """``(rule, in_frame)`` for :func:`_preferred_in_frame`; rule is one of
-    segment / trim / rated / verified / storyboard / habit / default."""
+    segment / trim / rated / verified / storyboard / habit / intro / default."""
     if not clip_url and not filename and not candidate:
         return "default", 0
     if (candidate or {}).get("library_segment_id"):
         return "segment", 0          # the stored segment is already the good part
+    sec_in = (candidate or {}).get("section_in_sec")
+    if sec_in is not None and (candidate or {}).get("section_start") is not None:
+        # Only a window of the source was downloaded (YT_SECTION_DOWNLOAD): the file starts
+        # at section_start of the video, and the in-point was chosen when it was cut.
+        in_frame = min(max(0, sec_to_frames(float(sec_in), fps)),
+                       max(0, media_dur_frames - duration_frames))
+        return "section", in_frame
     try:
         from core import clip_library
         row = clip_library.find_clip_by_path_or_url(clip_url=clip_url, filename=filename)
@@ -565,6 +610,12 @@ def _pick_in_frame(clip_url, filename, duration_frames, media_dur_frames, fps,
             in_frame = sec_to_frames(float(habit), fps)
             if _fits(in_frame, duration_frames, media_dur_frames):
                 return "habit", in_frame
+    except Exception:
+        pass
+    try:
+        skip = _intro_skip_frames(candidate, duration_frames, media_dur_frames, fps)
+        if skip:
+            return "intro", skip
     except Exception:
         pass
     return "default", 0

@@ -108,6 +108,13 @@ def clip_fit(shot: dict, clip: dict) -> tuple:
         if _STORYBOARD[verdict] < 0:
             reasons.append(f"footage check: {verdict}")
 
+    rel = (clip.get("inspect") or {}).get("relevance")        # core.clip_inspect: frames looked at
+    if isinstance(rel, (int, float)):
+        adj = max(-0.20, min(0.10, (rel - 0.6) * 0.5))
+        fit += adj
+        if adj <= -0.04:
+            reasons.append(f"frames only loosely match the line (relevance {rel:.2f})")
+
     m = re.search(r"this clip kept (\d+)/(\d+)", clip.get("edit_record") or "")
     if m and int(m.group(2)) >= 2:
         kept = int(m.group(1)) / int(m.group(2))

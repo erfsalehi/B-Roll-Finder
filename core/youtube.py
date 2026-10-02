@@ -1027,10 +1027,14 @@ _YT_NO_COOKIE_RETRY_MARKERS = (
 )
 
 
-def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True, disable_cookies: bool = False, force_clients=_DOWNLOAD_PLAYER_CLIENTS, proxy=None):
+def download_video(url: str, output_path: str, quality: str, task_state: dict, max_size_mb: float = None, strict_quality: bool = False, normalize: bool = False, no_audio: bool = True, disable_cookies: bool = False, force_clients=_DOWNLOAD_PLAYER_CLIENTS, proxy=None, section=None):
     """
     Downloads a video using yt-dlp with progress tracking and interruption support.
     Supports Premiere Pro compatibility, strict quality, and size limits.
+
+    ``section`` = ``(start_sec, end_sec)`` downloads only that part of the video (yt-dlp's
+    ``download_ranges``, cut on keyframes with ``force_keyframes_at_cuts``): the file then
+    starts at ``start_sec`` of the source. Default None = the whole video.
 
     ``disable_cookies`` skips the cookie source for THIS call only — used by the
     no-cookie retry below. (It must not flip the module-global ``_cookies_broken``:
@@ -1186,6 +1190,11 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         # real fix when the host's datacenter IP is blocked by YouTube.
         **_youtube_proxy_opts(chosen_proxy),
     }
+    if section:
+        from yt_dlp.utils import download_range_func
+        ydl_opts['download_ranges'] = download_range_func(
+            None, [(max(0.0, float(section[0])), float(section[1]))])
+        ydl_opts['force_keyframes_at_cuts'] = True    # exact cut, re-encoded around it only
 
     try:
         task_state['status'] = 'downloading'
@@ -1234,7 +1243,7 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             _mark_cookies_broken()
             download_video(url, output_path, quality, task_state,
                            max_size_mb=max_size_mb, strict_quality=strict_quality,
-                           normalize=normalize, no_audio=no_audio)
+                           normalize=normalize, no_audio=no_audio, section=section)
             return
 
         err_str = str(e)
@@ -1278,7 +1287,7 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                                max_size_mb=max_size_mb, strict_quality=strict_quality,
                                normalize=normalize, no_audio=no_audio,
                                disable_cookies=disable_cookies,
-                               force_clients=force_clients, proxy=nxt)
+                               force_clients=force_clients, proxy=nxt, section=section)
                 return
 
         # With cookies configured, two failure classes almost always clear when
@@ -1305,7 +1314,7 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
             download_video(url, output_path, quality, task_state,
                            max_size_mb=max_size_mb, strict_quality=strict_quality,
                            normalize=normalize, no_audio=no_audio,
-                           disable_cookies=True, force_clients=None)
+                           disable_cookies=True, force_clients=None, section=section)
             return
 
         task_state['status'] = 'error'

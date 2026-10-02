@@ -397,7 +397,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
         groups[url].append(job)
 
     total = len(jobs)
-    counts = {"ok": 0, "failed": 0, "skipped": 0, "done": 0}
+    counts = {"ok": 0, "failed": 0, "skipped": 0, "done": 0, "sections": 0}
     errors: list = []
     lock = threading.Lock()
     cancelled = threading.Event()
@@ -450,6 +450,35 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
             except OSError:
                 pass
 
+    section_failed = threading.Event()      # one failed section download ends the attempts
+
+    def _fetch_youtube(url, out_path, res, group_jobs, task_state):
+        """Download a YouTube clip: only the part we'll play when YT_SECTION_DOWNLOAD is on,
+        the whole video otherwise or when that fails. Returns the section plan used or None."""
+        plan = None
+        if (section_downloads_enabled() and not section_failed.is_set()
+                and not res.get("library_segment_id")):
+            plan = plan_youtube_section(
+                res, [float(j[0].get("duration_needed_sec") or 0) for j in group_jobs])
+        if plan:
+            download_video(url, out_path, quality, task_state, no_audio=True,
+                           section=(plan["start"], plan["end"]))
+            if task_state.get("status") == "cancelled":
+                return None
+            if task_state.get("status") == "completed" and _section_file_ok(out_path, plan):
+                return plan
+            why = task_state.get("error_msg") or "the clip came out too short"
+            first = not section_failed.is_set()
+            section_failed.set()
+            if first:
+                with lock:
+                    errors.append(f"section download unavailable ({str(why)[:90]}) — "
+                                  "fetching whole videos instead")
+            _discard(out_path)
+            task_state.clear()
+        download_video(url, out_path, quality, task_state, no_audio=True)
+        return None
+
     def _run_group(url):
         if cancelled.is_set() or (should_cancel and should_cancel()):
             cancelled.set()
@@ -459,11 +488,16 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
         out_path = os.path.join(base_dir, fn)
 
         have_file = False
+        geo_bad = ""          # why a file we already had was refused (black bars)
         if (_has_data(out_path) and _holds_clip(res, url, out_path)
                 and _verify_clip_file(out_path)[0]):
-            have_file = True
-            _mark_ok(res, out_path)
-            _tick("skipped")
+            geo_bad = _geometry_problem(out_path, res)
+            if geo_bad:
+                _discard(out_path)
+            else:
+                have_file = True
+                _mark_ok(res, out_path)
+                _tick("skipped")
         else:
             _discard(out_path)
             # A library segment (already trimmed and stored on the server), else
@@ -477,18 +511,31 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                         if src == cached:
                             download_cache.forget(url)
                         continue
+                    geo_bad = _geometry_problem(out_path, res)
+                    if geo_bad:
+                        # Black bars: refuse it here, and don't fetch the same video
+                        # again just to refuse it a second time.
+                        _discard(out_path)
+                        break
                     have_file = True
                     _mark_ok(res, out_path)
+                    _set_section(res, None)          # a cached copy is the whole video
                     _tick("skipped")
                     break
 
-        if not have_file:
+        if geo_bad:
+            _mark_failed(res, geo_bad)
+            with lock:
+                errors.append(f"{fn}: {geo_bad}")
+            _tick("failed")
+        elif not have_file:
             task_state: dict = {}
             with lock:
                 live_states.append(task_state)
+            section = None
             try:
                 if _is_youtube_clip(res):
-                    download_video(url, out_path, quality, task_state, no_audio=True)
+                    section = _fetch_youtube(url, out_path, res, groups[url], task_state)
                 else:
                     download_direct_video(url, out_path, task_state)
                 if task_state.get("status") == "cancelled":
@@ -503,14 +550,23 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                         # the shot, and nothing broken is cached or zipped.
                         bad = f"downloaded file is not a playable video ({why})"
                         _discard(out_path)
+                    else:
+                        bad = _geometry_problem(out_path, res)   # same treatment
+                        if bad:
+                            _discard(out_path)
                 if got and not bad:
                     have_file = True
                     _mark_ok(res, out_path)
+                    _set_section(res, section)
+                    if section:
+                        with lock:
+                            counts["sections"] += 1
                     _tick("ok")
-                    try:
-                        download_cache.register(url, out_path)
-                    except Exception:
-                        pass
+                    if not section:               # a window of a video is not the video
+                        try:
+                            download_cache.register(url, out_path)
+                        except Exception:
+                            pass
                     # Record the downloaded clip in the Clip Library so the server
                     # accumulates reusable, semantically-searchable footage over
                     # time. Dedupes by URL; best-effort so it can't fail a download.
@@ -554,6 +610,11 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
                 _discard(mpath)
             if have_file and link_or_copy(out_path, mpath):
                 _mark_ok(_mres, mpath)
+                for _k in _SECTION_KEYS:             # same file, same part of the video
+                    if res.get(_k) is None:
+                        _mres.pop(_k, None)
+                    else:
+                        _mres[_k] = res[_k]
                 _tick("ok")
             else:
                 _mark_failed(_mres, "shared-URL source unavailable")
@@ -590,7 +651,7 @@ def download_selected_clips(shots: list, project_name: str, quality: str = "1080
     _check_cancel(should_cancel)
 
     return {"ok": counts["ok"], "failed": counts["failed"], "skipped": counts["skipped"],
-            "dir": base_dir, "errors": errors}
+            "sections": counts["sections"], "dir": base_dir, "errors": errors}
 
 
 def _verify_clip_file(path: str) -> tuple:
@@ -621,6 +682,85 @@ def _verify_clip_file(path: str) -> tuple:
     except ValueError:
         streams = []
     return (True, "") if streams else (False, "no video stream")
+
+
+_SECTION_KEYS = ("section_start", "section_in_sec", "section_end")
+
+
+def section_downloads_enabled() -> bool:
+    """YT_SECTION_DOWNLOAD=true: fetch only the window of a YouTube video the timeline will
+    play instead of the whole upload (off by default until /test shows it works on the
+    host: yt-dlp hands the cut to ffmpeg, which some networks refuse)."""
+    return os.getenv("YT_SECTION_DOWNLOAD", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def plan_youtube_section(res: dict, needs: list) -> dict | None:
+    """The part of a YouTube video worth downloading, or None for "the whole video".
+
+    ``needs`` = the slot length of every shot that selected this video (each may play up to
+    its whole slot from it). The window starts at the in-point the XML will choose
+    (:func:`core.output.plan_in_point`: a human trim, the storyboard, the intro skip ...)
+    minus ``YT_SECTION_HANDLE_SEC`` (default 4 s, room to re-trim in Premiere) and runs for
+    the slots plus the same handle again. Nothing is planned when the video's length isn't
+    known, it is short anyway (``YT_SECTION_MIN_VIDEO_SEC``, default 45) or the window would
+    be most of it (``YT_SECTION_MAX_SHARE``, default 0.6)."""
+    try:
+        src = float(res.get("duration") or 0)
+    except (TypeError, ValueError):
+        return None
+    if src < _env_float("YT_SECTION_MIN_VIDEO_SEC", 45.0):
+        return None
+    from core.output import plan_in_point
+    needs = [n for n in needs if n and n > 0] or [6.0]
+    handle = max(0.0, _env_float("YT_SECTION_HANDLE_SEC", 4.0))
+    rule, in_sec = plan_in_point(res, max(needs), src)
+    start = max(0.0, in_sec - handle)
+    end = min(src, in_sec + sum(needs) + handle + 1.0)
+    if end - start <= 1.0 or end - start >= _env_float("YT_SECTION_MAX_SHARE", 0.6) * src:
+        return None
+    return {"start": round(start, 2), "end": round(end, 2), "in_sec": round(in_sec, 3),
+            "rule": rule}
+
+
+def _section_file_ok(path: str, plan: dict) -> bool:
+    """A section download that came out far shorter than asked (or unreadable) is no good."""
+    try:
+        from core.ffmpeg_utils import get_video_metadata
+        dur = float(get_video_metadata(path).get("duration") or 0)
+    except Exception:
+        return False
+    want = plan["end"] - plan["start"]
+    return 0 < dur < 3600.0 and dur >= min(want * 0.6, want - 3.0)
+
+
+def _set_section(res: dict, plan: dict | None) -> None:
+    """Record on a selected clip which part of its source the file holds (None = all of it)."""
+    for k in _SECTION_KEYS:
+        res.pop(k, None)
+    if plan:
+        res["section_start"] = plan["start"]
+        res["section_in_sec"] = round(plan["in_sec"] - plan["start"], 3)
+        res["section_end"] = plan["end"]
+
+
+def _geometry_problem(path: str, res: dict) -> str:
+    """Why a downloaded clip can't be used as is ('' when it can): its picture sits inside
+    black bars or is portrait (core.clip_geometry). Treated like a failed download so the
+    repair loop re-picks the shot. A library segment is exempt: a human cut it."""
+    if res.get("library_segment_id") or res.get("segment_path"):
+        return ""
+    try:
+        from core import clip_geometry
+        return clip_geometry.problem(path) or ""
+    except Exception:
+        return ""
 
 
 def _clip_has_file(c: dict) -> bool:
@@ -802,7 +942,8 @@ def repick_failed_shots(shots: list, slot_ids, groq_key: str = None,
                 sel_ids.add(ident)
 
         if sel:
-            s["selected_results"] = sel
+            from core.director_rank import lean_trim
+            s["selected_results"] = lean_trim(s, sel)     # footage density, as at first selection
             s["auto_selected"] = True
         if len(sel) > before:
             repaired += 1
@@ -947,6 +1088,19 @@ def download_and_repair(shots: list, project_name: str, quality: str = "1080",
     total_skipped = report.get("skipped", 0)
     dl_errors = list(report.get("errors") or [])
     repaired_total = 0
+    sections_total = report.get("sections", 0)
+    inspected = {"checked": 0, "rejected": 0}
+
+    def _inspect():
+        # A vision look at the frames each new clip will play (core.clip_inspect): a logo
+        # bumper, a watermark or unrelated footage is deleted and marked failed, so the
+        # repair loop below re-picks that shot exactly as for a dead download.
+        from core import clip_inspect
+        st = clip_inspect.inspect_clips(shots, video_topic, dl_errors, should_cancel)
+        inspected["checked"] += st["checked"]
+        inspected["rejected"] += st["rejected"]
+
+    _inspect()
 
     for rnd in range(max(0, rounds)):
         _check_cancel(should_cancel)
@@ -972,7 +1126,9 @@ def download_and_repair(shots: list, project_name: str, quality: str = "1080",
                                       progress=progress, should_cancel=should_cancel,
                                       max_workers=max_workers)
         total_skipped += rep.get("skipped", 0)
+        sections_total += rep.get("sections", 0)
         dl_errors.extend(rep.get("errors") or [])
+        _inspect()
 
     # Final accounting + safety net: anything still missing is dropped so the XML
     # is always clean.
@@ -983,7 +1139,9 @@ def download_and_repair(shots: list, project_name: str, quality: str = "1080",
              if _clip_has_file(c))
     return {"ok": ok, "failed": still_failed, "skipped": total_skipped,
             "dir": base_dir, "errors": dl_errors,
-            "repaired": repaired_total, "dropped": dropped}
+            "repaired": repaired_total, "dropped": dropped,
+            "inspected": inspected["checked"], "inspect_rejected": inspected["rejected"],
+            "sections": sections_total}
 
 
 def _regenerate_queries(shots: list, targets: list, key: str, video_topic: str,

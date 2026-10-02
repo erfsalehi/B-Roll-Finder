@@ -179,6 +179,20 @@ def store_clip(
         return False
 
 
+def forget_clip(clip_url: str) -> bool:
+    """Drop a clip from the library (the clip check found a logo bumper / watermark / an
+    unusable picture in it), so later projects aren't offered it again. True if a row went."""
+    if not clip_url:
+        return False
+    try:
+        init_db()
+        with _conn() as c:
+            return c.execute("DELETE FROM clips WHERE clip_url = ?", (clip_url,)).rowcount > 0
+    except Exception as e:
+        print(f"[ClipLibrary] forget_clip error: {e}")
+        return False
+
+
 def _row_get(r, key, default=None):
     """Safe column access for an sqlite3.Row from a possibly-older schema."""
     return r[key] if key in r.keys() else default
