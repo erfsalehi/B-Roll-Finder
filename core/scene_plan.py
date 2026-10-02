@@ -215,7 +215,8 @@ _DANGLING = {"AND", "OR", "OF", "THE", "A", "AN", "TO", "IN", "ON", "FOR", "WITH
 
 
 def _clean_label(text: str, fallback: str = "") -> str:
-    t = re.sub(r"[^\w&%$°'+/\- ]+", " ", str(text or ""), flags=re.UNICODE)
+    t = re.sub(r"[^\w&%$°'+/\-,. ]+", " ", str(text or ""), flags=re.UNICODE)
+    t = re.sub(r"(?<!\d)[,.]|[,.](?!\d)", " ", t)          # keep only the ones inside a number ($2,000, 4.5)
     t = " ".join(t.split()).upper().strip(" -")
     if len(t) > 24:
         cut = t[:24].rsplit(" ", 1)[0]

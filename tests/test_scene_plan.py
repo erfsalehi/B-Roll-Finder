@@ -176,6 +176,8 @@ def test_a_label_never_ends_on_a_dangling_word():
     assert sp._clean_label("Waterless spray and wipe") == "WATERLESS SPRAY AND WIPE"    # fits whole: untouched
     assert sp._clean_label("Use respirator if") == "USE RESPIRATOR"
     assert sp._clean_label("Save $300") == "SAVE $300" and sp._clean_label("Under 90°C!") == "UNDER 90°C"
+    assert sp._clean_label("Save $2,000 on AC") == "SAVE $2,000 ON AC"                   # the bot's output had "$2 000"
+    assert sp._clean_label("Rated 4.5 stars, wow.") == "RATED 4.5 STARS WOW"
     assert sp._clean_label("The") == "THE"                                              # a lone word is kept
     assert sp._clean_label("", "FALLBACK") == "FALLBACK"
 
