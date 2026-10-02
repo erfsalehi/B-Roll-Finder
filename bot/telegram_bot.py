@@ -695,7 +695,13 @@ def format_storyboard_line(result: dict):
     if st.get("retimed"):
         parts.append(f"{st['retimed']} cut where the footage starts")
     if st.get("no_storyboard"):
-        parts.append(f"{st['no_storyboard']} without a storyboard")
+        why = []
+        if st.get("blocked"):
+            why.append(f"{st['blocked']} blocked by YouTube")
+        if st.get("sheet_failed"):
+            why.append(f"{st['sheet_failed']} images not downloadable")
+        parts.append(f"{st['no_storyboard']} without a storyboard"
+                     + (f" ({', '.join(why)})" if why else ""))
     if st.get("failed"):
         parts.append(f"{st['failed']} not checked (vision error)")
     return "🎬 Storyboard check: " + " · ".join(parts)
@@ -2070,19 +2076,48 @@ def handle_selftest(chat_id, text: str) -> None:
     status = send_message(chat_id, head)
     msg_id = status.get("message_id")
 
+    current = {"label": "starting"}
+
     def _p(label):
+        current["label"] = label
         try:
             edit_message(chat_id, msg_id, f"{head}\n⏳ checking: {label}")
         except Exception:
             pass
 
+    # The checks time-box themselves, but a hang nobody foresaw must not leave the chat
+    # (and the bot's busy flag) waiting forever: run in a worker, stop waiting after
+    # SELFTEST_TOTAL_TIMEOUT seconds and report what finished and where it was stuck.
     try:
-        report = run_self_test(do_downloads=not quick, quality="360", progress=_p)
-    except Exception as e:
-        send_message(chat_id, f"❌ Preflight itself errored: {e}")
+        budget = int(os.getenv("SELFTEST_TOTAL_TIMEOUT", "900") or 900)
+    except ValueError:
+        budget = 900
+    done: list = []
+    box: dict = {}
+
+    def _work():
+        try:
+            box["report"] = run_self_test(do_downloads=not quick, quality="360",
+                                          progress=_p, sink=done)
+        except Exception as e:
+            box["error"] = e
+
+    worker = threading.Thread(target=_work, daemon=True)
+    worker.start()
+    worker.join(budget)
+    if worker.is_alive():
+        edit_message(chat_id, msg_id, "🧪 Preflight stopped waiting.")
+        partial = format_selftest({"ok": False, "results": list(done)})
+        waited = f"{budget // 60} min" if budget >= 120 else f"{budget} s"
+        send_message(chat_id, f"⏱ The preflight was still running after {waited} — "
+                              f"stuck on: {current['label']}. Stopped waiting (the bot is free "
+                              f"again). What finished:\n{partial}")
+        return
+    if "error" in box:
+        send_message(chat_id, f"❌ Preflight itself errored: {box['error']}")
         return
     edit_message(chat_id, msg_id, "🧪 Preflight complete.")
-    send_message(chat_id, format_selftest(report))
+    send_message(chat_id, format_selftest(box["report"]))
 
 
 # (command, description) pairs registered with Telegram so typing '/' shows a menu.

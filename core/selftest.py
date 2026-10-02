@@ -243,8 +243,16 @@ def _storyboard_check(state):
     if not results:
         return None, "no YouTube search result to test on"
     t0 = time.time()
+    storyboard.reset_run_stats()
     p = storyboard.prepare_video(results[0]["url"])
     if not p:
+        st = storyboard.run_stats()
+        if st.get("blocked"):
+            return False, ("YouTube returned no formats for the storyboard lookup — it may be "
+                           "blocking this server, or the cookies are stale (see /cookies; "
+                           "YT_DOWNLOAD_NO_COOKIES=1 if downloads only work without them)")
+        if st.get("sheet_failed"):
+            return False, "the storyboard lookup worked but its images couldn't be downloaded"
         return False, "no storyboard for the test video (yt-dlp fetch failed, or it has none)"
     shot = {"text": "city street traffic", "shot_intent": "busy city street with cars"}
     batch = [(0, results[0])]
@@ -477,12 +485,14 @@ def _motion_cards_check():
 
 
 def run_self_test(do_downloads: bool = True, quality: str = "360",
-                  progress=None) -> dict:
+                  progress=None, sink: list = None) -> dict:
     """Run the preflight checks and return a structured report (see module
     docstring). ``progress(label)`` is called before each check so the caller can
     show a live status. ``do_downloads=False`` runs the cheap checks only (no
-    actual clip downloads)."""
-    results: list = []
+    actual clip downloads). ``sink``, when given, is the list each finished check's
+    result is appended to as it completes, so a caller that gives up waiting still
+    has the partial report."""
+    results: list = sink if sink is not None else []
     state: dict = {}
     tmp_dir = tempfile.mkdtemp(prefix="brollselftest_")
 

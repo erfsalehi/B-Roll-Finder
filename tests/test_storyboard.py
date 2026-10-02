@@ -654,3 +654,123 @@ def test_check_selected_off_does_nothing(monkeypatch):
     s = _shot(1, [_yt("a")])
     s.update(selected_results=list(s["video_results"]), auto_selected=True)
     assert sb.check_selected([s]) == 0
+
+
+# ── the lookup must not stop at an EMPTY answer (the first server run: 32 of 32 "no storyboard") ──
+
+def _sb_level(n=3):
+    return [{"format_id": f"sb{i}", "fragments": [{"url": "u", "duration": 10}], "width": 160 + i * 80,
+             "height": 90, "rows": 5, "columns": 5, "fps": 0.2} for i in range(n)]
+
+
+class _Lookup:
+    """core.youtube._extract_info_with_backoff stand-in: answers per configuration."""
+
+    def __init__(self, answers):
+        self.answers, self.calls = answers, []
+
+    def __call__(self, opts, url, **k):
+        label = ("cookies" if opts.get("cookiefile") else
+                 "web clients" if opts.get("extractor_args") else "no cookies")
+        self.calls.append(label)
+        a = self.answers[label]
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+
+def _patch_lookup(monkeypatch, answers, cookies=True):
+    import core.youtube as yt
+    look = _Lookup(answers)
+    monkeypatch.setattr(yt, "_extract_info_with_backoff", look)
+    monkeypatch.setattr(yt, "_get_cookie_opts", lambda: {"cookiefile": "c.txt"} if cookies else {})
+    monkeypatch.delenv("YT_DOWNLOAD_NO_COOKIES", raising=False)
+    sb.reset_run_stats()
+    return look
+
+
+EMPTY = {"formats": []}                                  # what a flagged IP gets back
+WITH_SB = {"formats": _sb_level(), "duration": 300}
+NO_SB = {"formats": [{"format_id": "18", "url": "x"}], "duration": 19}      # answered, but no storyboard
+
+
+def test_an_empty_cookie_lookup_falls_through_to_the_next_configuration(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": WITH_SB, "web clients": EMPTY})
+    spec = sb._fetch_spec("https://www.youtube.com/watch?v=" + "a" * 11)
+    assert spec["level"]["format_id"] == "sb2" and spec["duration"] == 300      # 320 px wide is the closest
+    assert look.calls == ["cookies", "no cookies"]
+
+
+def test_a_config_that_was_empty_while_a_later_one_worked_is_skipped_afterwards(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": WITH_SB, "web clients": EMPTY})
+    sb._fetch_spec("https://www.youtube.com/watch?v=" + "a" * 11)
+    sb._fetch_spec("https://www.youtube.com/watch?v=" + "b" * 11)
+    assert look.calls == ["cookies", "no cookies", "no cookies"]                # second video: straight to the one that works
+
+
+def test_a_video_that_really_has_no_storyboard_stops_at_the_first_answer(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": NO_SB, "no cookies": WITH_SB, "web clients": WITH_SB})
+    assert sb._fetch_spec("https://www.youtube.com/watch?v=" + "z" * 11) == {}   # YouTube answered: it has none
+    assert look.calls == ["cookies"]
+
+
+def test_when_nothing_answers_the_result_says_blocked(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": EMPTY, "web clients": EMPTY})
+    spec = sb._fetch_spec("https://www.youtube.com/watch?v=" + "a" * 11)
+    assert spec == {"blocked": True, "tried": ["cookies", "no cookies", "web clients"]}
+    assert look.calls == ["cookies", "no cookies", "web clients"]
+
+
+def test_it_raises_only_when_every_lookup_raised(monkeypatch):
+    boom = RuntimeError("Sign in to confirm you're not a bot")
+    _patch_lookup(monkeypatch, {"cookies": boom, "no cookies": boom, "web clients": boom})
+    with pytest.raises(RuntimeError, match="not a bot"):
+        sb._fetch_spec("https://www.youtube.com/watch?v=" + "a" * 11)
+    _patch_lookup(monkeypatch, {"cookies": boom, "no cookies": EMPTY, "web clients": boom})
+    assert sb._fetch_spec("https://www.youtube.com/watch?v=" + "a" * 11)["blocked"]   # a mix is "blocked"
+
+
+def test_downloads_told_to_skip_cookies_make_the_lookup_skip_them_too(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": WITH_SB, "web clients": EMPTY})
+    monkeypatch.setenv("YT_DOWNLOAD_NO_COOKIES", "1")
+    assert sb._fetch_spec("https://www.youtube.com/watch?v=" + "a" * 11)["level"]
+    assert look.calls == ["no cookies"]
+    look = _patch_lookup(monkeypatch, {"no cookies": WITH_SB, "web clients": EMPTY}, cookies=False)
+    sb._fetch_spec("https://www.youtube.com/watch?v=" + "a" * 11)
+    assert look.calls == ["no cookies"]                                          # nothing configured: no cookie try
+
+
+def test_blocked_lookups_are_counted_and_explained(monkeypatch):
+    sb.reset_run_stats()
+    monkeypatch.setattr(sb, "_fetch_spec", lambda url: {"blocked": True, "tried": ["cookies", "no cookies"]})
+    assert sb.prepare_video("https://www.youtube.com/watch?v=" + "c" * 11) is None
+    assert sb.run_stats()["blocked"] == 1
+
+
+def test_undownloadable_storyboard_images_are_counted(monkeypatch):
+    sb.reset_run_stats()
+    level = dict(_sb_level(1)[0], fragments=[{"url": f"u{i}", "duration": 10} for i in range(3)])
+    monkeypatch.setattr(sb, "_download_sheet", lambda url: (_ for _ in ()).throw(OSError("403 Forbidden")))
+    assert sb.build_contact_sheet(level) is None
+    assert sb.run_stats()["sheet_failed"] == 1
+
+
+def test_the_review_line_says_why_nothing_was_checked():
+    import bot.telegram_bot as tb
+    line = tb.format_storyboard_line({"attempts": {"storyboard": {
+        "checked": 0, "no_storyboard": 32, "blocked": 32, "sheet_failed": 0}}})
+    assert "32 without a storyboard (32 blocked by YouTube)" in line
+    plain = tb.format_storyboard_line({"attempts": {"storyboard": {"checked": 3, "no_storyboard": 2}}})
+    assert "2 without a storyboard" in plain and "blocked" not in plain
+
+
+def test_the_checker_reports_the_block_in_the_runs_errors(monkeypatch):
+    sb.reset_run_stats()
+    monkeypatch.setenv("ENABLE_STORYBOARD_CHECK", "true")
+    monkeypatch.setattr(sb, "_fetch_spec", lambda url: {"blocked": True, "tried": ["no cookies"]})
+    monkeypatch.setattr(sb, "vision_configured", lambda: True)
+    shots = [{"slot_id": 1, "priority": "medium", "text": "x", "video_results": [
+        {"url": "https://www.youtube.com/watch?v=" + "d" * 11, "source": "youtube", "title": "t"}]}]
+    errors = []
+    sb.check_shots(shots, "topic", errors)
+    assert any("returned no storyboard data" in e and "cookies" in e for e in errors)

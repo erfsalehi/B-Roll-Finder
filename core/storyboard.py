@@ -81,11 +81,27 @@ _tally_lock = threading.Lock()
 _tally: dict = {}
 
 
+# Per run: lookup configurations that came back empty while a later one worked (not retried
+# for the next videos), and the reasons already printed once.
+_state: dict = {"skip": set(), "noted": set()}
+
+
 def reset_run_stats() -> None:
     with _tally_lock:
         _tally.clear()
+        # blocked / sheet_failed are SUBSETS of no_storyboard: why a video had none.
         _tally.update(videos=0, checked=0, good=0, weak=0, bad=0, no_storyboard=0,
-                      failed=0, retimed=0, replaced=0)
+                      failed=0, retimed=0, replaced=0, blocked=0, sheet_failed=0)
+        _state["skip"] = set()
+        _state["noted"] = set()
+
+
+def _note_once(key: str, msg: str) -> None:
+    with _tally_lock:
+        if key in _state["noted"]:
+            return
+        _state["noted"].add(key)
+    print(f"[storyboard] {msg}")
 
 
 def run_stats() -> dict:
@@ -115,10 +131,29 @@ def _pick_level(formats: list):
     return min(sbs, key=lambda f: (abs(f["width"] - want), -f["width"]))
 
 
+def _lookup_configs() -> list:
+    """``[(label, extra yt-dlp options)]``, most trusted first: the session cookies (left out
+    when downloads are told to go cookie-less, YT_DOWNLOAD_NO_COOKIES, because on a flagged
+    server IP they come back empty), then yt-dlp's anonymous clients, then the web clients."""
+    from core import youtube as yt
+    out = []
+    cookies = yt._get_cookie_opts()
+    no_cookies = os.getenv("YT_DOWNLOAD_NO_COOKIES", "").strip().lower() in ("1", "true", "yes", "on")
+    if cookies and not no_cookies:
+        out.append(("cookies", cookies))
+    out.append(("no cookies", {}))
+    out.append(("web clients", {"extractor_args": {"youtube": {"player_client": ["web_safari", "mweb"]}}}))
+    return out
+
+
 def _fetch_spec(url: str) -> dict:
-    """The video's storyboard level (yt-dlp, metadata only — no download). Tries
-    the configured cookies first (a datacenter IP is often bot-checked without
-    them), then none. ``{}`` when the video has no storyboard."""
+    """The video's storyboard level (yt-dlp, metadata only — no download).
+
+    ``{"level", "duration"}`` on success; ``{}`` when YouTube answered (it listed formats) but
+    the video has no storyboard; ``{"blocked": True}`` when no configuration got an answer with
+    any formats at all (YouTube is refusing this host). A lookup that comes back EMPTY is not
+    final: the next configuration is tried, and one that was empty while a later one worked is
+    skipped for the rest of the run. Raises only when every lookup raised."""
     from core import youtube as yt
     base = {
         "logger": yt._QuietLogger(), "quiet": True, "no_warnings": True,
@@ -126,23 +161,34 @@ def _fetch_spec(url: str) -> dict:
         "ignore_no_formats_error": True,
         **yt._search_proxy_opts(),   # metadata goes direct, like search
     }
-    tries = [yt._get_cookie_opts(), {}]
-    if not tries[0]:
-        tries = [{}]
+    cfgs = _lookup_configs()
+    with _tally_lock:
+        skip = set(_state["skip"])
+    live = [c for c in cfgs if c[0] not in skip] or cfgs[-1:]
+    empty, errors = [], 0
     last = None
-    for ck in tries:
+    for label, extra in live:
         try:
-            info = yt._extract_info_with_backoff({**base, **ck}, url, process=False) or {}
+            info = yt._extract_info_with_backoff({**base, **extra}, url, process=False) or {}
         except Exception as e:
-            last = e
+            last, errors = e, errors + 1
+            empty.append(label)
             continue
-        level = _pick_level(info.get("formats"))
+        formats = info.get("formats") or []
+        level = _pick_level(formats)
         if level:
+            if empty:
+                with _tally_lock:
+                    _state["skip"].update(empty)
+                _note_once("fallback", f"lookups with {', '.join(empty)} came back empty; using "
+                                       f"'{label}' for the rest of this run")
             return {"level": level, "duration": info.get("duration")}
-        return {}
-    if last:
+        if formats:
+            return {}                          # YouTube answered; this video has no storyboard
+        empty.append(label)
+    if last is not None and errors == len(live):
         raise last
-    return {}
+    return {"blocked": True, "tried": empty}
 
 
 def frame_layout(level: dict) -> list:
@@ -204,10 +250,14 @@ def build_contact_sheet(level: dict, n_frames: int = None, cols: int = None) -> 
     workers = max(1, _env_int("STORYBOARD_SHEET_WORKERS", 4))
     sheets: dict = {}
 
+    first_error: list = []
+
     def _get(fi):
         try:
             return fi, Image.open(io.BytesIO(_download_sheet(urls[fi]["url"]))).convert("RGB")
-        except Exception:
+        except Exception as e:
+            if not first_error:
+                first_error.append(f"{type(e).__name__}: {str(e)[:100]}")
             return fi, None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(need))) as ex:
@@ -224,6 +274,9 @@ def build_contact_sheet(level: dict, n_frames: int = None, cols: int = None) -> 
         frames.append(im.crop((c * w, r * h, (c + 1) * w, (r + 1) * h)))
         times.append(t)
     if len(frames) < 4:
+        if first_error:
+            _bump("sheet_failed")
+            _note_once("sheets", f"storyboard images couldn't be downloaded ({first_error[0]})")
         return None
 
     cell_w = max(160, min(400, _env_int("STORYBOARD_CELL_WIDTH", 256)))
@@ -290,6 +343,12 @@ def prepare_video(url: str):
         pass
     spec = _fetch_spec(url)
     if not spec:
+        return None
+    if spec.get("blocked"):
+        _bump("blocked")
+        _note_once("blocked", "YouTube returned no formats for the storyboard lookup "
+                              f"(tried: {', '.join(spec.get('tried') or [])}) — it may be blocking "
+                              "this server, or the cookies are stale")
         return None
     built = build_contact_sheet(spec["level"])
     if not built:
@@ -601,6 +660,15 @@ class _Checker:
                     self.prepared[v] = p
                     _bump("videos" if p else "no_storyboard")
                     self._tick()
+        st = run_stats()
+        if st.get("blocked") and not any("returned no storyboard data" in e for e in self.errors):
+            self.errors.append(f"storyboard check: YouTube returned no storyboard data for "
+                               f"{st['blocked']} video(s) — it may be blocking this server or the "
+                               "cookies are stale (/cookies, YT_DOWNLOAD_NO_COOKIES); those clips "
+                               "kept as ranked")
+        if st.get("sheet_failed") and not any("images couldn't be downloaded" in e for e in self.errors):
+            self.errors.append(f"storyboard check: the storyboard images couldn't be downloaded for "
+                               f"{st['sheet_failed']} video(s); those clips kept as ranked")
         if self.cancelled():
             return
 
@@ -674,7 +742,10 @@ def _print_stats() -> dict:
         print(f"[storyboard] {st.get('checked', 0)} clip(s) checked — {st.get('good', 0)} good, "
               f"{st.get('weak', 0)} weak, {st.get('bad', 0)} rejected, "
               f"{st.get('replaced', 0)} pick(s) swapped; "
-              f"{st.get('no_storyboard', 0)} without storyboard, {st.get('failed', 0)} failed")
+              f"{st.get('no_storyboard', 0)} without storyboard"
+              + (f" ({st.get('blocked', 0)} blocked, {st.get('sheet_failed', 0)} images not downloadable)"
+                 if st.get("blocked") or st.get("sheet_failed") else "")
+              + f", {st.get('failed', 0)} failed")
     return st
 
 

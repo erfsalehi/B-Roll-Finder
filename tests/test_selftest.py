@@ -349,3 +349,66 @@ def test_section_check_is_skipped_when_downloads_failed(monkeypatch, tmp_path):
     _section_net(monkeypatch, tmp_path)
     ok, detail = st._yt_section_check({"yt_download_failed": True}, str(tmp_path))
     assert ok is None and "skipped" in detail
+
+
+# ── the bot's /test must never wait forever ──────────────────────────────────
+
+def test_run_self_test_fills_a_sink_as_checks_finish(monkeypatch):
+    _patch_all(monkeypatch)
+    sink = []
+    report = st.run_self_test(do_downloads=False, sink=sink)
+    assert sink and report["results"] is sink              # the report is built in the caller's list
+
+
+def _bot_selftest(monkeypatch, fake_run, budget):
+    import time as _t
+    import bot.telegram_bot as tb
+    sent, edits = [], []
+    monkeypatch.setattr(tb, "send_message", lambda chat, text, reply_markup=None: sent.append(text) or {"message_id": 7})
+    monkeypatch.setattr(tb, "edit_message", lambda chat, mid, text, reply_markup=None: edits.append(text))
+    monkeypatch.setattr(st, "run_self_test", fake_run)
+    monkeypatch.setenv("SELFTEST_TOTAL_TIMEOUT", str(budget))
+    t0 = _t.time()
+    tb.handle_selftest(1, "/test")
+    return sent, edits, _t.time() - t0
+
+
+def test_a_hung_preflight_gives_up_and_names_the_check_it_is_stuck_on(monkeypatch):
+    import threading
+    gate = threading.Event()
+
+    def hung(do_downloads=True, quality="360", progress=None, sink=None):
+        progress("ffmpeg")
+        sink.append({"name": "ffmpeg", "ok": True, "critical": True, "detail": "fine", "secs": 0.1})
+        progress("YouTube download (yt-dlp)")
+        gate.wait(30)                                    # a check that never comes back
+        return {"ok": True, "results": sink, "errors": []}
+
+    try:
+        sent, edits, took = _bot_selftest(monkeypatch, hung, budget=1)
+    finally:
+        gate.set()
+    assert took < 5                                      # the bot was released, not left waiting
+    final = sent[-1]
+    assert "still running after 1 s" in final and "stuck on: YouTube download (yt-dlp)" in final
+    assert "ffmpeg: fine" in final                       # what had finished is reported
+    assert edits[-1] == "🧪 Preflight stopped waiting."
+
+
+def test_a_normal_preflight_is_reported_as_before(monkeypatch):
+    def fine(do_downloads=True, quality="360", progress=None, sink=None):
+        progress("ffmpeg")
+        res = [{"name": "ffmpeg", "ok": True, "critical": True, "detail": "ok", "secs": 0.1}]
+        sink.extend(res)
+        return {"ok": True, "results": res, "errors": []}
+
+    sent, edits, _ = _bot_selftest(monkeypatch, fine, budget=30)
+    assert "Preflight passed" in sent[-1] and edits[-1] == "🧪 Preflight complete."
+
+
+def test_a_crashing_preflight_still_says_so(monkeypatch):
+    def boom(do_downloads=True, quality="360", progress=None, sink=None):
+        raise RuntimeError("kaput")
+
+    sent, _, _ = _bot_selftest(monkeypatch, boom, budget=30)
+    assert "Preflight itself errored: kaput" in sent[-1]
