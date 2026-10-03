@@ -1,6 +1,9 @@
 """YouTube proxy pool: parsing, round-robin rotation, and download failover."""
 
 import os
+
+import pytest
+
 import core.youtube as yt
 
 
@@ -249,3 +252,115 @@ def test_download_video_proxy_failover_capped(monkeypatch, tmp_path):
 
     assert ts["status"] == "error"
     assert len(_FakeYDL._used) == 2          # initial + one failover (capped)
+
+
+# ── stall watchdog ────────────────────────────────────────────────────────────
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _watch(monkeypatch, **env):
+    for k in ("YT_STALL_SECONDS", "YT_STALL_MIN_KBPS"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, str(v))
+    clock = _Clock()
+    monkeypatch.setattr(yt, "_stall_clock", clock)
+    return yt._StallWatch(), clock
+
+
+def test_stall_watch_raises_when_a_window_moved_too_few_bytes(monkeypatch):
+    w, clock = _watch(monkeypatch)                     # 25 s window, 40 KB/s floor
+    w.feed(0)
+    clock.t += 24
+    w.feed(100_000)                                    # window not over yet
+    clock.t += 2
+    with pytest.raises(yt.ProxyStall, match="proxy stalled"):
+        w.feed(150_000)                                # 150 KB in 26 s = ~5.6 KB/s
+
+
+def test_stall_watch_lets_a_healthy_download_through_across_windows(monkeypatch):
+    w, clock = _watch(monkeypatch)
+    got = 0
+    for _ in range(10):                                # 250 s at ~200 KB/s
+        clock.t += 5
+        got += 1_000_000
+        w.feed(got)
+
+
+def test_stall_watch_restarts_its_window_on_a_new_stream(monkeypatch):
+    w, clock = _watch(monkeypatch)
+    w.feed(0)
+    clock.t += 20
+    w.feed(5_000_000)                                  # the video stream was fast
+    clock.t += 10
+    w.feed(100)                                        # audio stream begins: counter went back
+    clock.t += 20
+    w.feed(2_000_000)                                  # fast again — no false stall
+
+
+def test_stall_watch_can_be_switched_off(monkeypatch):
+    w, clock = _watch(monkeypatch, YT_STALL_SECONDS=0)
+    w.feed(0)
+    clock.t += 500
+    w.feed(1)
+
+
+def test_a_stalled_proxy_hands_the_clip_to_the_next_proxy(monkeypatch, tmp_path):
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
+    monkeypatch.setenv("YT_DLP_PROXY", "http://A:1, http://B:1")
+    monkeypatch.setattr(yt, "_proxy_rr_index", 0)
+    _w, clock = _watch(monkeypatch)
+    seen = {}
+
+    class _SlowYDL(_FakeYDL):
+        def download(self, urls):
+            proxy = self.opts.get("proxy")
+            _FakeYDL._used.append(proxy)
+            seen[proxy] = (self.opts["socket_timeout"], self.opts["retries"])
+            hook = self.opts["progress_hooks"][0]
+            if proxy == "http://A:1":                  # trickles: 1 KB every 5 s
+                for i in range(10):
+                    clock.t += 5
+                    hook({"status": "downloading", "downloaded_bytes": 1024 * (i + 1),
+                          "total_bytes": 10_000_000})
+            with open(self.opts["outtmpl"], "wb") as f:
+                f.write(b"ok")
+    _FakeYDL._dead, _FakeYDL._used = set(), []
+    monkeypatch.setattr(yt.yt_dlp, "YoutubeDL", _SlowYDL)
+
+    ts: dict = {}
+    yt.download_video("https://y/1", str(tmp_path / "v.mp4"), "360", ts, no_audio=True)
+    assert ts["status"] == "completed"
+    assert _FakeYDL._used == ["http://A:1", "http://B:1"]
+    assert seen["http://A:1"] == (20, 5)               # fail-fast settings with a failover available
+
+
+def test_a_lone_proxy_keeps_the_generous_retries_and_is_never_stall_aborted(monkeypatch, tmp_path):
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.delenv("YT_DLP_PROXY_URL", raising=False)
+    monkeypatch.setenv("YT_DLP_PROXY", "http://A:1")
+    _w, clock = _watch(monkeypatch)
+    seen = {}
+
+    class _SlowYDL(_FakeYDL):
+        def download(self, urls):
+            seen["opts"] = (self.opts["socket_timeout"], self.opts["retries"])
+            hook = self.opts["progress_hooks"][0]
+            for i in range(10):
+                clock.t += 5
+                hook({"status": "downloading", "downloaded_bytes": 1024 * (i + 1),
+                      "total_bytes": 10_000_000})
+            with open(self.opts["outtmpl"], "wb") as f:
+                f.write(b"ok")
+    monkeypatch.setattr(yt.yt_dlp, "YoutubeDL", _SlowYDL)
+
+    ts: dict = {}
+    yt.download_video("https://y/1", str(tmp_path / "v.mp4"), "360", ts, no_audio=True)
+    assert ts["status"] == "completed" and seen["opts"] == (60, 30)

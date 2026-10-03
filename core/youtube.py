@@ -249,6 +249,50 @@ def _is_proxy_failover_error(low: str) -> bool:
     return any(m in low for m in _YT_PROXY_FAILOVER_MARKERS)
 
 
+def _env_num(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _stall_clock() -> float:
+    return time.monotonic()
+
+
+class ProxyStall(Exception):
+    """A proxied download that is crawling or has stopped. The message says "proxy" so the
+    download's proxy failover (``_YT_PROXY_FAILOVER_MARKERS``) treats it like a dead proxy."""
+
+
+class _StallWatch:
+    """Catches a proxy that accepts the connection but trickles bytes: yt-dlp keeps retrying
+    such a download on the same proxy for minutes, because nothing ever errors. Fed from the
+    progress hook; raises ``ProxyStall`` when a window of ``YT_STALL_SECONDS`` (default 25)
+    moved fewer than ``YT_STALL_MIN_KBPS`` (default 40) KB/s on average. A new stream
+    (the byte count went backwards, e.g. the audio after the video) restarts the window."""
+
+    def __init__(self):
+        self.window = _env_num("YT_STALL_SECONDS", 25.0)
+        self.floor = _env_num("YT_STALL_MIN_KBPS", 40.0) * 1024
+        self.t0 = self.b0 = self.last = None
+
+    def feed(self, downloaded: int) -> None:
+        if self.window <= 0 or self.floor <= 0:
+            return                                    # disabled
+        now = _stall_clock()
+        if self.t0 is None or downloaded < self.last:
+            self.t0, self.b0 = now, downloaded
+        self.last = downloaded
+        elapsed = now - self.t0
+        if elapsed < self.window:
+            return
+        rate = (downloaded - self.b0) / elapsed
+        if rate < self.floor:
+            raise ProxyStall(f"proxy stalled: {rate / 1024:.0f} KB/s over the last {elapsed:.0f}s")
+        self.t0, self.b0 = now, downloaded
+
+
 # A YouTube playback block ("This content isn't available" / "Video unavailable").
 # When there's a POOL of proxies we also fail over on these — a blocked proxy IP
 # should be skipped for the next one. With a single proxy we don't (rotation + the
@@ -1115,6 +1159,12 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
                 '/bv*+ba*/best'
             )
 
+    # Failover only exists with a pool / several proxies; only then is it worth abandoning a
+    # slow proxy (a lone proxy keeps the generous retries — there is nothing to switch to).
+    from core import proxy_pool as _pp
+    can_failover = bool(chosen_proxy and (_pp.pool_active() or len(youtube_proxies()) > 1))
+    stall = _StallWatch() if can_failover else None
+
     def my_hook(d):
         if task_state.get('status') == 'cancelled':
             raise DownloadInterrupt("Download cancelled by user")
@@ -1124,6 +1174,9 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         # Re-check cancel after unpausing (user may have cancelled while paused)
         if task_state.get('status') == 'cancelled':
             raise DownloadInterrupt("Download cancelled by user")
+
+        if stall and d['status'] == 'downloading':
+            stall.feed(d.get('downloaded_bytes') or 0)
 
         if d['status'] == 'downloading':
             total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
@@ -1159,12 +1212,15 @@ def download_video(url: str, output_path: str, quality: str, task_state: dict, m
         # (large 4K clips, slow proxy, weak Wi-Fi) often need many internal
         # retries before yt-dlp gives up. Each retry costs nothing if the
         # next chunk arrives, so being generous is safe.
-        'retries': 30,
-        'fragment_retries': 30,
+        # When a failover proxy exists, a silent connection is cut after ~20s x 5 and the
+        # clip moves to the next proxy instead (the progress hook only sees bytes that
+        # arrive, so a connection that goes fully quiet can't be caught there).
+        'retries': 30 if not can_failover else int(_env_num("YT_PROXY_RETRIES", 5)),
+        'fragment_retries': 30 if not can_failover else int(_env_num("YT_PROXY_RETRIES", 5)),
         'extractor_retries': 5,
         'file_access_retries': 5,
         'http_chunk_size': 10485760,  # 10 MB
-        'socket_timeout': 60,
+        'socket_timeout': 60 if not can_failover else int(_env_num("YT_PROXY_SOCKET_TIMEOUT", 20)),
         'nocheckcertificate': True,
         'geo_bypass': True,
         'http_headers': {
