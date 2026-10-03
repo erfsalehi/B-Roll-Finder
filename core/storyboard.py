@@ -83,7 +83,7 @@ _tally: dict = {}
 
 # Per run: lookup configurations that came back empty while a later one worked (not retried
 # for the next videos), and the reasons already printed once.
-_state: dict = {"skip": set(), "noted": set()}
+_state: dict = {"skip": set(), "noted": set(), "via": ""}
 
 
 def reset_run_stats() -> None:
@@ -94,6 +94,13 @@ def reset_run_stats() -> None:
                       failed=0, retimed=0, replaced=0, blocked=0, sheet_failed=0)
         _state["skip"] = set()
         _state["noted"] = set()
+        _state["via"] = ""
+
+
+def lookup_route() -> str:
+    """Which lookup configuration last got a storyboard ('' if none has this run)."""
+    with _tally_lock:
+        return _state["via"]
 
 
 def _note_once(key: str, msg: str) -> None:
@@ -143,7 +150,48 @@ def _lookup_configs() -> list:
         out.append(("cookies", cookies))
     out.append(("no cookies", {}))
     out.append(("web clients", {"extractor_args": {"youtube": {"player_client": ["web_safari", "mweb"]}}}))
+    if _proxies_configured():
+        out.append((_PROXY_LABEL, {}))
     return out
+
+
+_PROXY_LABEL = "proxy"
+
+
+def _proxies_configured() -> bool:
+    from core import youtube as yt
+    from core import proxy_pool
+    return bool(proxy_pool.pool_active() or yt._static_youtube_proxies())
+
+
+def _lookup_once(base: dict, extra: dict, url: str):
+    """``(info, error)`` of one metadata lookup; exactly one of them is set."""
+    from core import youtube as yt
+    try:
+        return yt._extract_info_with_backoff({**base, **extra}, url, process=False) or {}, None
+    except Exception as e:
+        return None, e
+
+
+def _lookup_via_proxy(base: dict, url: str):
+    """The last resort for a flagged server IP: the same cookie-less lookup through the proxy
+    pool, the way downloads get past the block. A few proxies are tried (STORYBOARD_PROXY_TRIES,
+    default 3) because most free ones are dead; one that errors is dropped from the pool. Returns
+    ``(info, error)`` like ``_lookup_once`` — the first answer that lists formats, else the last."""
+    from core import youtube as yt
+    from core import proxy_pool
+    result = ({}, None)
+    for _ in range(max(1, _env_int("STORYBOARD_PROXY_TRIES", 3))):
+        opts = yt._youtube_proxy_opts()
+        if not opts:
+            break
+        result = _lookup_once(base, opts, url)
+        info, err = result
+        if info and info.get("formats"):
+            return result
+        if err is not None and proxy_pool.pool_active():
+            proxy_pool.mark_dead(opts["proxy"])
+    return result
 
 
 def _fetch_spec(url: str) -> dict:
@@ -168,15 +216,19 @@ def _fetch_spec(url: str) -> dict:
     empty, errors = [], 0
     last = None
     for label, extra in live:
-        try:
-            info = yt._extract_info_with_backoff({**base, **extra}, url, process=False) or {}
-        except Exception as e:
-            last, errors = e, errors + 1
+        if label == _PROXY_LABEL:
+            info, err = _lookup_via_proxy(base, url)
+        else:
+            info, err = _lookup_once(base, extra, url)
+        if err is not None:
+            last, errors = err, errors + 1
             empty.append(label)
             continue
         formats = info.get("formats") or []
         level = _pick_level(formats)
         if level:
+            with _tally_lock:
+                _state["via"] = label
             if empty:
                 with _tally_lock:
                     _state["skip"].update(empty)

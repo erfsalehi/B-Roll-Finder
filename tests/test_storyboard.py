@@ -670,21 +670,30 @@ class _Lookup:
         self.answers, self.calls = answers, []
 
     def __call__(self, opts, url, **k):
-        label = ("cookies" if opts.get("cookiefile") else
+        label = ("proxy" if opts.get("proxy") else
+                 "cookies" if opts.get("cookiefile") else
                  "web clients" if opts.get("extractor_args") else "no cookies")
         self.calls.append(label)
         a = self.answers[label]
+        if isinstance(a, list):                     # one answer per call (successive proxies)
+            a = a.pop(0)
         if isinstance(a, Exception):
             raise a
         return a
 
 
-def _patch_lookup(monkeypatch, answers, cookies=True):
+def _patch_lookup(monkeypatch, answers, cookies=True, proxy=None):
     import core.youtube as yt
+    from core import proxy_pool
     look = _Lookup(answers)
     monkeypatch.setattr(yt, "_extract_info_with_backoff", look)
     monkeypatch.setattr(yt, "_get_cookie_opts", lambda: {"cookiefile": "c.txt"} if cookies else {})
     monkeypatch.delenv("YT_DOWNLOAD_NO_COOKIES", raising=False)
+    for var in ("YT_DLP_PROXY", "YOUTUBE_PROXY", "YT_DLP_PROXY_URL", "STORYBOARD_PROXY_TRIES"):
+        monkeypatch.delenv(var, raising=False)
+    if proxy:
+        monkeypatch.setenv("YT_DLP_PROXY", proxy)
+    monkeypatch.setattr(proxy_pool, "pool_active", lambda: False)
     sb.reset_run_stats()
     return look
 
@@ -738,6 +747,64 @@ def test_downloads_told_to_skip_cookies_make_the_lookup_skip_them_too(monkeypatc
     look = _patch_lookup(monkeypatch, {"no cookies": WITH_SB, "web clients": EMPTY}, cookies=False)
     sb._fetch_spec("https://www.youtube.com/watch?v=" + "a" * 11)
     assert look.calls == ["no cookies"]                                          # nothing configured: no cookie try
+
+
+URL = "https://www.youtube.com/watch?v=" + "a" * 11
+
+
+def test_without_a_proxy_configured_the_lookup_never_goes_through_one(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": EMPTY, "web clients": EMPTY})
+    assert sb._fetch_spec(URL)["blocked"]
+    assert "proxy" not in look.calls
+
+
+def test_a_blocked_server_falls_back_to_the_proxy_as_the_last_resort(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": EMPTY, "web clients": EMPTY,
+                                       "proxy": WITH_SB}, proxy="http://1.2.3.4:80")
+    assert sb._fetch_spec(URL)["level"]["format_id"] == "sb2"
+    assert look.calls == ["cookies", "no cookies", "web clients", "proxy"]
+    assert sb.lookup_route() == "proxy"
+
+
+def test_once_the_proxy_was_the_only_one_that_worked_later_videos_go_straight_to_it(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": EMPTY, "web clients": EMPTY,
+                                       "proxy": WITH_SB}, proxy="http://1.2.3.4:80")
+    sb._fetch_spec(URL)
+    sb._fetch_spec("https://www.youtube.com/watch?v=" + "b" * 11)
+    assert look.calls[4:] == ["proxy"]
+
+
+def test_the_proxy_lookup_is_never_sent_the_session_cookies(monkeypatch):
+    seen = []
+    _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": EMPTY, "web clients": EMPTY},
+                  proxy="http://1.2.3.4:80")
+    import core.youtube as yt
+    monkeypatch.setattr(yt, "_extract_info_with_backoff",
+                        lambda opts, url, **k: seen.append(opts) or (WITH_SB if opts.get("proxy") else EMPTY))
+    sb._fetch_spec(URL)
+    assert seen[-1]["proxy"] == "http://1.2.3.4:80" and "cookiefile" not in seen[-1]
+
+
+def test_dead_proxies_are_skipped_and_dropped_from_the_pool(monkeypatch):
+    from core import proxy_pool
+    boom = OSError("Unable to connect to proxy")
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": EMPTY, "web clients": EMPTY,
+                                       "proxy": [boom, EMPTY, WITH_SB]}, proxy="http://1.2.3.4:80")
+    monkeypatch.setattr(proxy_pool, "pool_active", lambda: True)
+    monkeypatch.setattr(proxy_pool, "get_proxy", lambda: "socks5://9.9.9.9:1080")
+    dropped = []
+    monkeypatch.setattr(proxy_pool, "mark_dead", dropped.append)
+    assert sb._fetch_spec(URL)["level"]
+    assert look.calls.count("proxy") == 3
+    assert dropped == ["socks5://9.9.9.9:1080"]                    # only the one that errored
+
+
+def test_a_proxy_that_never_answers_is_bounded_and_reported_as_blocked(monkeypatch):
+    look = _patch_lookup(monkeypatch, {"cookies": EMPTY, "no cookies": EMPTY, "web clients": EMPTY,
+                                       "proxy": [EMPTY, EMPTY, EMPTY, EMPTY]}, proxy="http://1.2.3.4:80")
+    spec = sb._fetch_spec(URL)
+    assert spec["blocked"] and spec["tried"][-1] == "proxy"
+    assert look.calls.count("proxy") == 3                          # STORYBOARD_PROXY_TRIES default
 
 
 def test_blocked_lookups_are_counted_and_explained(monkeypatch):

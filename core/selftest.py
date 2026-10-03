@@ -263,8 +263,10 @@ def _storyboard_check(state):
     if entry is None:
         return False, "the vision model answered without a candidates list"
     a = storyboard.analyze(entry, p["times"])
+    via = storyboard.lookup_route()
     return True, (f"ok — {len(p['times'])} frames sheet, verdict {a['verdict']} "
-                  f"({a['relevant']:.0%} on-subject), {time.time() - t0:.0f}s")
+                  f"({a['relevant']:.0%} on-subject), {time.time() - t0:.0f}s"
+                  + (f", lookup via {via}" if via else ""))
 
 
 def _download_one_with_timeout(url, out, quality, timeout):
